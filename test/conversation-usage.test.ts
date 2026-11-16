@@ -21,6 +21,7 @@ import {
   CONVERSATION_USAGE_READ_ERROR,
   CONVERSATION_USAGE_TOOL_NAME,
   conversationUsageTool,
+  formatConversationUsageLine,
   summarizeConversationUsage,
   type ConversationUsageReport,
 } from "../src/conversation-usage.js";
@@ -494,4 +495,47 @@ test("the tool is offered like the other internal tools and reads only the curre
     await app.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("status line shows tokens and USD, or tokens only when the price is unknown", () => {
+  const priced = summarizeConversationUsage({
+    models: {
+      "openai/priced": usage({
+        input: 1000,
+        output: 200,
+        totalTokens: 1200,
+        cost: { input: 0.3, output: 0.12, total: 0.42 },
+      }),
+    },
+    tools: {},
+  });
+  assert.equal(
+    formatConversationUsageLine(priced),
+    "Usage: 1,200 tokens · $0.42",
+  );
+  const tiny = summarizeConversationUsage({
+    models: {
+      "openai/tiny": usage({
+        input: 10,
+        output: 1,
+        totalTokens: 11,
+        cost: { input: 0.0001, output: 0.0002, total: 0.0003 },
+      }),
+    },
+    tools: {},
+  });
+  assert.equal(formatConversationUsageLine(tiny), "Usage: 11 tokens · $0.0003");
+  const unpriced = summarizeConversationUsage({
+    models: {
+      "llm/legacy": usage({ input: 1000, output: 40, totalTokens: 1040 }),
+    },
+    tools: {},
+  });
+  const line = formatConversationUsageLine(unpriced);
+  assert.equal(line, "Usage: 1,040 tokens");
+  assert.equal(line.includes("$"), false);
+  const empty = formatConversationUsageLine(
+    summarizeConversationUsage(undefined),
+  );
+  assert.equal(empty, "Usage: 0 tokens · $0.00");
 });

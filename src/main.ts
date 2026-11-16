@@ -23,6 +23,7 @@ import {
   type StoredSetup,
 } from "./setup.js";
 import { Store, SqlCredentials } from "./store.js";
+import { vaultFromStore, withOauthBearer } from "./mcp-oauth.js";
 
 /**
  * A bot with no provider cannot answer, and killing the container would take away the
@@ -163,7 +164,18 @@ try {
   const allowlistMisconfig = telegramAllowlistMisconfiguration(bot.id, config);
   if (allowlistMisconfig) throw new Error(allowlistMisconfig);
   rmSync(`${dir}/health.json`, { force: true });
-  const gateway = new McpGateway(config.mcp);
+  let notifyFlush = () => {};
+  const mcp = withOauthBearer(
+    config.mcp,
+    vaultFromStore(bootstrapStore),
+    (text, id) => {
+      const chat = config.users[0];
+      if (!chat) return;
+      bootstrapStore.queueTelegram(`mcp-oauth:${id}`, chat, text);
+      notifyFlush();
+    },
+  );
+  const gateway = new McpGateway(mcp);
   // Status for a tool call that outlives a minute; best effort, never durable.
   const heartbeat = new LongCallHeartbeat({
     send: async (chat, text, options) =>
@@ -209,7 +221,7 @@ try {
         TELEGRAM_BOT_TOKEN: config.token,
         TELEGRAM_BOT_TOKEN_FILE: "",
       },
-      config.mcp,
+      mcp,
     ),
     initialize: (store) => configureTelegram(store, config, bot),
   });
@@ -219,6 +231,7 @@ try {
   app.flushTelegramPending = () => {
     void polling.engine.flush();
   };
+  notifyFlush = () => app.flushTelegramPending?.();
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {

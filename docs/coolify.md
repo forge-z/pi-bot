@@ -64,17 +64,23 @@ Todas as variáveis são opcionais. Quando definidas, vencem o valor gravado no 
 
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_FILE` e `TELEGRAM_ALLOWED_USERS`: override do que o `npm run setup` gravou. Sem elas, vale o volume.
 - `LLM_BASE_URL` e `LLM_API_KEY`: não fazem parte do caminho oficial. Use `npm run setup` ou `npm run login`. Essas duas variáveis só ligam o provedor compatível `llm` (menu "Outro") e não substituem um setup oficial já gravado no volume.
-- `EXECUTOR_MCP_URL` e `EXECUTOR_TOKEN`: opcionais (em par). O caminho normal é `npm run setup`, que pergunta Executor, Composio ou ambos e grava URL, chave e user id no volume. `COMPOSIO_MCP_URL`, `COMPOSIO_API_KEY` e `COMPOSIO_USER_ID` só substituem esse registro. Sem agregador, o bot sobe normalmente, apenas sem ferramentas externas MCP.
+- `EXECUTOR_MCP_URL` e `EXECUTOR_TOKEN`: opcionais (em par). O caminho normal é `npm run setup`, que pergunta Composio, Executor, Upsy, Self-hosted, ambos ou nenhum e grava URL, chave e user id no volume. `COMPOSIO_MCP_URL`, `COMPOSIO_API_KEY` e `COMPOSIO_USER_ID` só substituem esse registro. `SELF_HOSTED_MCP_URL` liga um gateway genérico (token opcional em `SELF_HOSTED_TOKEN`, header opcional em `SELF_HOSTED_HEADER`). Upsy não tem variável: o menu faz o login OAuth (PKCE) e grava os tokens em `credentials` (`mcp-upsy`). Sem agregador, o bot sobe normalmente, apenas sem ferramentas externas MCP.
 - `TELEGRAM_ALLOWED_CHATS`: opcional (IDs negativos de grupos/supergrupos; por padrão copia os usuários permitidos para DMs). Continua só no ambiente.
 - `TZ`: opcional (fuso do relógio do container para logs, ex.: `America/Sao_Paulo`; omitido usa UTC). Agendamentos gravam seu próprio timezone IANA. O setup não grava `TZ`.
 - `LLM_MODELS`, `LLM_INPUT`, `VISION_*`, `AUDIO_*`, `ASYNC_JOB_*`, `INSTABOX_*`: opcionais para recursos específicos. A referência completa com exemplos está em [.env.example](.env.example).
 
 A única forma de o assistente alcançar algo fora da conversa é MCP: ele não tem shell,
 arquivo, patch nem browser, e não enxerga o host, o volume ou o código-fonte.
-[Executor](https://executor.sh) ou [Composio](https://composio.dev) expõem os MCPs num
-endpoint autenticado. Executor continua `Authorization: Bearer`. Composio Connect
-(`https://connect.composio.dev/mcp`) usa `x-consumer-api-key`; as outras URLs MCP
-da Composio usam `x-api-key` e o query `user_id`. `NODE_ENV`, `DATA_DIR` e o SHA do commit não são
+[Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs)
+ou um gateway self-hosted expõem os MCPs num endpoint autenticado. Executor continua
+`Authorization: Bearer`. Composio Connect (`https://connect.composio.dev/mcp`)
+usa `x-consumer-api-key`; as outras URLs MCP da Composio usam `x-api-key` e o
+query `user_id`. Upsy (`https://upsy.ai/connect`) usa OAuth 2.1 com PKCE: o setup
+imprime o link, o operador cola a URL final do navegador
+(`http://127.0.0.1:33418/callback`; nada escuta nessa porta), e o bot manda
+`Authorization: Bearer` com o access token (renovado sozinho). Self-hosted usa
+`Authorization: Bearer` ou o header nomeado em
+`SELF_HOSTED_HEADER`. `NODE_ENV`, `DATA_DIR` e o SHA do commit não são
 configuração: dois são fixados pela imagem (`Dockerfile`) e o SHA é injetado pela plataforma.
 
 Não existem mais variáveis de modelo: `MODEL_PROVIDER` e `MODEL_ID` saíram, e as chaves

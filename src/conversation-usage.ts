@@ -221,6 +221,23 @@ function noteFor(
   return `${SCOPE_NOTE} USD é estimativa de catálogo.`;
 }
 
+function formatUsd(total: number) {
+  const digits = total > 0 && total < 0.01 ? 4 : 2;
+  return `$${total.toFixed(digits)}`;
+}
+
+/**
+ * One `/status` line for this conversation.
+ * Tokens always. USD only when the existing price calculation has a figure.
+ */
+export function formatConversationUsageLine(
+  report: ConversationUsageReport,
+): string {
+  const tokens = report.tokens.totalTokens.toLocaleString("en-US");
+  if (!report.usd.available) return `Usage: ${tokens} tokens`;
+  return `Usage: ${tokens} tokens · ${formatUsd(report.usd.total)}`;
+}
+
 /** Structured summary of one conversation's UsageDoc. Never reads another conversation. */
 export function summarizeConversationUsage(
   state: UsageState | undefined,

@@ -11,7 +11,12 @@ import {
   fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadHarnessConfig } from "../src/harness-config.js";
-import { loadOperatorSkills } from "../src/operator-skills.js";
+import type { Registry, ToolExecutionApi } from "@earendil-works/pi-durable";
+import {
+  loadOperatorSkills,
+  operatorSkillCatalog,
+  READ_SKILL_TOOL_NAME,
+} from "../src/operator-skills.js";
 import { Runtime } from "../src/runtime.js";
 
 const gateway = { catalog: async () => [] };
@@ -131,8 +136,8 @@ test("no skills folder leaves the system prompt unchanged", async () => {
       logged.join("\n"),
       /skill weekly-review ignorada \(não encontrada\)/,
     );
-    assert.equal(loadOperatorSkills(env(plain)), "");
-    assert.equal(loadOperatorSkills(env(listed)), "");
+    assert.deepEqual(loadOperatorSkills(env(plain)), []);
+    assert.deepEqual(loadOperatorSkills(env(listed)), []);
   } finally {
     await rm(plain, { recursive: true, force: true });
     await rm(listed, { recursive: true, force: true });
@@ -151,6 +156,7 @@ test("a listed skill is appended after the base instructions and stays on a sche
       "skills:\n  always:\n    - weekly-review\n",
     );
     const baseline = (await promptFor(plain))[0];
+    const catalog = operatorSkillCatalog(loadOperatorSkills(env(root)));
     const prompts = await promptFor(
       root,
       async (app, id) => {
@@ -165,17 +171,19 @@ test("a listed skill is appended after the base instructions and stays on a sche
     );
     assert.equal(prompts.length, 2);
     const prompt = prompts[0]!;
-    assert.equal(prompt, `${baseline}\n\n${body}`);
+    assert.equal(prompt, `${baseline}\n\n${catalog}`);
+    assert.equal(prompt.includes(body), false);
     assert.equal(prompts[1], prompt);
     const scheduling = prompt.indexOf("Use tasks_list and tasks_create");
     const policy = prompt.indexOf("You are a personal assistant");
     const longTask = prompt.indexOf("call sandbox_code_task once");
-    const skill = prompt.lastIndexOf(body);
+    const skill = prompt.lastIndexOf("- weekly-review:");
     assert.ok(scheduling >= 0 && scheduling < policy);
     assert.ok(policy < longTask);
     assert.ok(longTask < skill);
-    assert.equal(skill, prompt.length - body.length);
-    assert.equal(loadOperatorSkills(env(root)), body);
+    assert.equal(skill, prompt.length - catalog.split("\n").at(-1)!.length);
+    assert.equal(loadOperatorSkills(env(root))[0]?.body, body);
+    assert.equal(loadOperatorSkills(env(root))[0]?.name, "weekly-review");
   } finally {
     await rm(plain, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
@@ -230,8 +238,10 @@ test("a missing, invalid, or unreadable skill is skipped and the bot still boots
       ].join("\n"),
     );
     const logged = errorsOf(() => {
-      assert.equal(loadOperatorSkills(env(root)), body);
-      assert.equal(loadOperatorSkills(env(root)), body);
+      const loaded = loadOperatorSkills(env(root));
+      assert.equal(loaded.length, 1);
+      assert.equal(loaded[0]?.body, body);
+      assert.deepEqual(loadOperatorSkills(env(root)), loaded);
     });
     const text = logged.join("\n");
     assert.match(text, /missing-skill ignorada \(não encontrada\)/);
@@ -247,7 +257,11 @@ test("a missing, invalid, or unreadable skill is skipped and the bot still boots
     assert.equal(text.includes("BAD YAML"), false);
     const prompts = await promptFor(root);
     assert.equal(prompts.length, 1);
-    assert.equal(prompts[0]?.endsWith(body), true);
+    assert.equal(prompts[0]?.includes(body), false);
+    assert.match(
+      prompts[0] ?? "",
+      /- weekly-review: Notes for weekly-review\./,
+    );
     assert.equal(prompts[0]?.includes(outside), false);
     assert.equal(prompts[0]?.includes("BAD YAML BODY"), false);
     assert.equal(prompts[0]?.includes("WRONG NAME BODY"), false);
@@ -267,11 +281,19 @@ test("skill text is deterministic and follows skills.always order", async () => 
     );
     const once = loadOperatorSkills(env(root));
     const twice = loadOperatorSkills(env(root));
-    assert.equal(once, "ZETA BODY\n\nALPHA BODY");
-    assert.equal(twice, once);
+    assert.deepEqual(
+      once.map((skill) => skill.name),
+      ["zeta-note", "alpha-note"],
+    );
+    assert.equal(once[0]?.body, "ZETA BODY");
+    assert.equal(once[1]?.body, "ALPHA BODY");
+    assert.deepEqual(twice, once);
+    const catalog = operatorSkillCatalog(once);
+    assert.equal(catalog.includes("ZETA BODY"), false);
+    assert.equal(catalog.includes("ALPHA BODY"), false);
     const prompts = await promptFor(root);
-    assert.equal(prompts[0]?.endsWith(once), true);
-    assert.equal(prompts[0]?.includes("ALPHA BODY\n\nZETA BODY"), false);
+    assert.equal(prompts[0]?.endsWith(catalog), true);
+    assert.equal(prompts[0]?.includes("ALPHA BODY"), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -296,6 +318,66 @@ test("skills.always must be a list of names and replaces the default", async () 
     assert.deepEqual(loadHarnessConfig({ CONFIG_FILE: good }).skillsAlways, [
       "weekly-review",
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("read_skill returns the listed body and rejects an unknown name", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-skills-tool-"));
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  try {
+    await skillFile(root, "notes", "SENTINEL_NOTES");
+    await skillFile(root, "hidden", "HIDDEN_SENTINEL");
+    await writeFile(
+      join(root, "config.yaml"),
+      "skills:\n  always:\n    - notes\n",
+    );
+    const app = await Runtime.open({
+      dir: root,
+      gateway,
+      models,
+      env: { DATA_DIR: root, TZ: "UTC" },
+      now: () => Date.parse("2026-11-09T18:04:00Z"),
+    });
+    try {
+      const tool = (app as unknown as { registry: Registry }).registry
+        .snapshot()
+        .installed()
+        .flatMap((extension) => extension.tools ?? [])
+        .find((item) => item.name === READ_SKILL_TOOL_NAME);
+      assert.ok(tool);
+      const call = async (name: string) => {
+        const result = await tool.execute(
+          { name },
+          {} as ToolExecutionApi,
+          context,
+        );
+        const part = result.output?.[0];
+        assert.equal(part?.type, "text");
+        return {
+          error: result.isError === true,
+          text: part && part.type === "text" ? part.text : "",
+        };
+      };
+      const listed = await call("notes");
+      assert.equal(listed.error, false);
+      assert.equal(listed.text, "SENTINEL_NOTES");
+      const padded = await call(" notes ");
+      assert.equal(padded.error, false);
+      assert.equal(padded.text, "SENTINEL_NOTES");
+      const hidden = await call("hidden");
+      assert.equal(hidden.error, true);
+      assert.match(hidden.text, /Unknown skill "hidden"/);
+      assert.equal(hidden.text.includes("HIDDEN_SENTINEL"), false);
+      const missing = await call("gone");
+      assert.equal(missing.error, true);
+      assert.match(missing.text, /Unknown skill "gone"/);
+    } finally {
+      await app.close();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

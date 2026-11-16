@@ -25,7 +25,8 @@ export const cleanCommands = [
   { command: "new", description: "Start another conversation in this topic" },
   { command: "resume", description: "Resume a stuck task" },
   { command: "stop", description: "Stop this topic" },
-  { command: "status", description: "Model, MCPs, run, and version" },
+  { command: "compact", description: "Compact this topic's history" },
+  { command: "status", description: "Model, usage, MCPs, run, and version" },
   { command: "help", description: "Help" },
 ];
 /**

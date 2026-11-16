@@ -4,7 +4,11 @@ import type {
   StoredSetup,
   StoredTelegram,
 } from "./setup.js";
-import { validAggregatorUserId, validTelegramToken } from "./setup.js";
+import {
+  validAggregatorUserId,
+  validMcpHeaderName,
+  validTelegramToken,
+} from "./setup.js";
 import { readFileSync } from "node:fs";
 import {
   createModels,
@@ -18,6 +22,11 @@ import type {
   ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
 import type { McpConfig } from "./mcp.js";
+import {
+  accessTokenFresh,
+  UPSY_MCP_URL,
+  UPSY_SERVER_NAME,
+} from "./mcp-oauth.js";
 import {
   anySubscriptionAuthenticated,
   chatgptAuthMode,
@@ -83,6 +92,20 @@ function endpoint(value: string) {
 /** Hosted Composio Connect MCP. Project URLs use `x-api-key` instead. */
 export const COMPOSIO_CONNECT_URL = "https://connect.composio.dev/mcp";
 export const COMPOSIO_SERVER_NAME = "composio";
+export const SELF_HOSTED_SERVER_NAME = "self-hosted";
+
+/**
+ * Header for a self-hosted gateway token.
+ * Empty or `Authorization` sends `Authorization: Bearer`. Any other name sends
+ * the raw token, the same way Composio's `x-api-key` does.
+ */
+export function selfHostedTokenHeader(value: string | undefined) {
+  const name = value?.trim();
+  if (!name || name.toLowerCase() === "authorization") return undefined;
+  if (!validMcpHeaderName(name))
+    throw new Error("SELF_HOSTED_HEADER inválido.");
+  return name;
+}
 
 /**
  * Header Composio documents for this host.
@@ -114,9 +137,12 @@ function blank(value: string | undefined) {
 }
 
 /**
- * Executor and Composio from the volume, with env vars overriding each field.
- * A complete env pair also turns that aggregator on. `MCP_SERVERS_JSON` does not
- * come through here.
+ * Executor, Composio, Upsy and a self-hosted gateway from the volume, with env
+ * vars overriding each field except Upsy. A complete Executor or Composio env
+ * pair, or a self-hosted URL, also turns that aggregator on. Upsy turns on
+ * only when the menu choice is `upsy`. Its access token, when still fresh, is
+ * the bearer; refresh runs when the client connects. The self-hosted token is
+ * optional. `MCP_SERVERS_JSON` does not come through here.
  */
 export function mcpServersFromAggregators(
   env: Env,
@@ -131,6 +157,9 @@ export function mcpServersFromAggregators(
   const composioKey =
     operatorSecret(env, "COMPOSIO_API_KEY") || stored?.composioKey;
   const composioUser = blank(env.COMPOSIO_USER_ID) || record?.composio?.userId;
+  const selfUrl = blank(env.SELF_HOSTED_MCP_URL);
+  const selfToken =
+    operatorSecret(env, "SELF_HOSTED_TOKEN") || stored?.selfHostedToken;
   const legacy = !record;
   const envExecutor = Boolean(
     executorUrl && operatorSecret(env, "EXECUTOR_TOKEN"),
@@ -138,12 +167,15 @@ export function mcpServersFromAggregators(
   const envComposio = Boolean(
     composioUrl && operatorSecret(env, "COMPOSIO_API_KEY"),
   );
+  const envSelf = Boolean(selfUrl);
   const wantExecutor = legacy
     ? envExecutor
     : choice === "executor" || choice === "both" || envExecutor;
   const wantComposio = legacy
     ? envComposio
     : choice === "composio" || choice === "both" || envComposio;
+  const wantSelf = legacy ? envSelf : choice === "self-hosted" || envSelf;
+  const wantUpsy = !legacy && choice === "upsy";
   const servers: McpConfig[] = [];
   if (wantExecutor) {
     const url = executorUrl || record?.executor?.url;
@@ -173,6 +205,30 @@ export function mcpServersFromAggregators(
         token: composioKey,
         tokenHeader: composioAuthHeader(normalized),
         ...(sendUser && composioUser ? { userId: composioUser } : {}),
+      });
+    }
+  }
+  if (wantUpsy) {
+    const fresh = accessTokenFresh(stored?.upsy, Date.now());
+    servers.push({
+      name: UPSY_SERVER_NAME,
+      url: endpoint(UPSY_MCP_URL),
+      mode: "direct",
+      ...(fresh && stored?.upsy?.access ? { token: stored.upsy.access } : {}),
+    });
+  }
+  if (wantSelf) {
+    const url = selfUrl || record?.selfHosted?.url;
+    if (url) {
+      const tokenHeader = selfHostedTokenHeader(
+        blank(env.SELF_HOSTED_HEADER) || record?.selfHosted?.header,
+      );
+      servers.push({
+        name: SELF_HOSTED_SERVER_NAME,
+        url: endpoint(url),
+        mode: "direct",
+        ...(selfToken ? { token: selfToken } : {}),
+        ...(tokenHeader ? { tokenHeader } : {}),
       });
     }
   }

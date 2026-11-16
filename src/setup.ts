@@ -3,6 +3,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFunctions } from "./functions.js";
 import {
+  readOauthCredential,
+  UPSY_OAUTH_CREDENTIAL,
+  type McpOauthCredential,
+} from "./mcp-oauth.js";
+import {
   canonicalProviderId,
   compatEnvConfigured,
   findCatalogModel,
@@ -262,29 +267,43 @@ export function migrateLegacyOfficialSetup(
   return { providerId, modelId: model.id };
 }
 
-/** Which MCP aggregators `npm run setup` turned on. Secrets stay in `credentials`. */
-export type AggregatorChoice = "executor" | "composio" | "both" | "none";
+/**
+ * Which MCP aggregators `npm run setup` turned on. Secrets stay in `credentials`.
+ * Menu order is Composio, Executor, Upsy, Self-hosted, then both and none.
+ * `both` is Executor plus Composio. Upsy tokens live in the OAuth credential,
+ * not in this meta row.
+ */
+export type AggregatorChoice =
+  "composio" | "executor" | "upsy" | "self-hosted" | "both" | "none";
 
 export interface AggregatorRecord {
   choice: AggregatorChoice;
   executor?: { url: string };
   composio?: { url: string; userId: string };
+  /** `header` omitted means `Authorization: Bearer`. */
+  selfHosted?: { url: string; header?: string };
 }
 
 export interface StoredAggregators {
   record?: AggregatorRecord;
   executorToken?: string;
   composioKey?: string;
+  selfHostedToken?: string;
+  /** OAuth tokens for Upsy. Absent when that credential was never written. */
+  upsy?: McpOauthCredential;
 }
 
 export const aggregatorsKey = (mode = "live") => `aggregators:${mode}`;
 /** Volume credential ids. Not env var names. */
 export const EXECUTOR_VOLUME_CREDENTIAL = "mcp-executor";
 export const COMPOSIO_VOLUME_CREDENTIAL = "mcp-composio";
+export const SELF_HOSTED_VOLUME_CREDENTIAL = "mcp-self-hosted";
 
 const AGGREGATOR_CHOICES = new Set<AggregatorChoice>([
-  "executor",
   "composio",
+  "executor",
+  "upsy",
+  "self-hosted",
   "both",
   "none",
 ]);
@@ -294,15 +313,29 @@ export function validAggregatorUserId(value: string) {
   return /^[\w.:@+-]{1,200}$/.test(value);
 }
 
-/** Menu number or name from `npm run setup`. */
+/** Header name for an MCP token. `Authorization` is the bearer default. */
+export function validMcpHeaderName(value: string) {
+  return /^[\w-]{1,64}$/.test(value);
+}
+
+/**
+ * Menu number or name from `npm run setup`.
+ * 1 Composio, 2 Executor, 3 Upsy, 4 Self-hosted, 5 both, 6 none.
+ */
 export function parseAggregatorChoice(
   value: string,
 ): AggregatorChoice | undefined {
-  const raw = value.trim().toLowerCase();
-  if (raw === "1" || raw === "executor") return "executor";
-  if (raw === "2" || raw === "composio") return "composio";
-  if (raw === "3" || raw === "both" || raw === "ambos") return "both";
-  if (raw === "4" || raw === "none" || raw === "nenhum") return "none";
+  const raw = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+  if (raw === "1" || raw === "composio") return "composio";
+  if (raw === "2" || raw === "executor") return "executor";
+  if (raw === "3" || raw === "upsy") return "upsy";
+  if (raw === "4" || raw === "self-hosted" || raw === "selfhosted")
+    return "self-hosted";
+  if (raw === "5" || raw === "both" || raw === "ambos") return "both";
+  if (raw === "6" || raw === "none" || raw === "nenhum") return "none";
   return undefined;
 }
 
@@ -319,6 +352,16 @@ function usableAggregatorRecord(
     if (typeof value.composio.url !== "string" || !value.composio.url)
       return false;
     if (!validAggregatorUserId(value.composio.userId ?? "")) return false;
+  }
+  if (value.selfHosted !== undefined) {
+    if (typeof value.selfHosted.url !== "string" || !value.selfHosted.url)
+      return false;
+    if (
+      value.selfHosted.header !== undefined &&
+      (typeof value.selfHosted.header !== "string" ||
+        !validMcpHeaderName(value.selfHosted.header))
+    )
+      return false;
   }
   return true;
 }
@@ -341,10 +384,14 @@ export function readStoredAggregators(
     const usable = usableAggregatorRecord(record) ? record : undefined;
     const executorToken = credentialKey(db, EXECUTOR_VOLUME_CREDENTIAL);
     const composioKey = credentialKey(db, COMPOSIO_VOLUME_CREDENTIAL);
+    const selfHostedToken = credentialKey(db, SELF_HOSTED_VOLUME_CREDENTIAL);
+    const upsy = readOauthCredential(db, UPSY_OAUTH_CREDENTIAL);
     return {
       ...(usable ? { record: usable } : {}),
       ...(executorToken ? { executorToken } : {}),
       ...(composioKey ? { composioKey } : {}),
+      ...(selfHostedToken ? { selfHostedToken } : {}),
+      ...(upsy ? { upsy } : {}),
     };
   } catch {
     return {};
@@ -362,7 +409,7 @@ export function readStoredAggregators(
 export function writeStoredAggregators(
   db: DatabaseSync,
   record: AggregatorRecord,
-  keys: { executor?: string; composio?: string } = {},
+  keys: { executor?: string; composio?: string; selfHosted?: string } = {},
   mode = "live",
 ) {
   if (!usableAggregatorRecord(record))
@@ -394,6 +441,11 @@ export function writeStoredAggregators(
     write.run(
       COMPOSIO_VOLUME_CREDENTIAL,
       JSON.stringify({ type: "api_key", key: keys.composio }),
+    );
+  if (keys.selfHosted)
+    write.run(
+      SELF_HOSTED_VOLUME_CREDENTIAL,
+      JSON.stringify({ type: "api_key", key: keys.selfHosted }),
     );
 }
 

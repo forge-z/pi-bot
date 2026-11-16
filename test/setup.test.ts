@@ -673,6 +673,12 @@ test("the setup menu routes sections, save and back, and gateway restart", () =>
   for (const route of [routeTelegramMenu, routeTextMenu, routeAudioMenu])
     assert.equal(route("save and back"), "save");
   assert.equal(routeMcpMenu("s"), "save");
+  assert.equal(routeMcpMenu("1"), "composio");
+  assert.equal(routeMcpMenu("2"), "executor");
+  assert.equal(routeMcpMenu("3"), "upsy");
+  assert.equal(routeMcpMenu("4"), "self-hosted");
+  assert.equal(routeMcpMenu("5"), "both");
+  assert.equal(routeMcpMenu("6"), "none");
   assert.equal(routeImageMenu("s", true), "save");
   assert.equal(routeImageMenu("1", true), "use-text");
   assert.equal(routeImageMenu("1", false), "provider");
