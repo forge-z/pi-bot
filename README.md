@@ -10,7 +10,7 @@
 
 A personal AI assistant that lives in Telegram: one container, one volume, no web panel. It runs on the [pi.dev](https://pi.dev) harness. Tools come from [Executor](https://executor.sh) and, optionally, [Composio](https://composio.dev).
 
-**Alpha.** This project is still in alpha: expect breaking changes, rough edges, and incomplete features. It is not yet recommended for critical use.
+**Status: Beta.** Usable day to day; configuration and commands may still change between releases.
 
 ## Install
 
