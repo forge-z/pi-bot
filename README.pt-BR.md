@@ -2,7 +2,7 @@
 
 Um assistente de IA pessoal que vive no Telegram: um container, um volume, nenhum painel web. Roda sobre o harness do [pi.dev](https://pi.dev). As ferramentas vêm do [Executor](https://executor.sh) e, se quiser, do [Composio](https://composio.dev).
 
-**Alfa.** Este projeto ainda está em alfa: espere mudanças incompatíveis, imperfeições e recursos incompletos. Ainda não é recomendado para uso crítico.
+**Status: Beta.** Pode ser usado no dia a dia; a configuração e os comandos ainda podem mudar entre as versões.
 
 ## Instalar
 
