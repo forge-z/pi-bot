@@ -1234,7 +1234,7 @@ test("the provider vocabulary is mapped, and an unknown word is never a failure"
   }
 });
 
-test("a webhook event delivers without a single poll", async () => {
+test("a webhook manifest does not deliver without a poll", async () => {
   const f = await fixture([], [], {
     ASYNC_JOB_MANIFESTS: JSON.stringify([
       {
@@ -1245,14 +1245,75 @@ test("a webhook event delivers without a single poll", async () => {
     ]),
   });
   try {
-    f.jobs.registerDelegated("7", {
-      code: "await tools.tinyfish.agent.automation.runAsync({})",
-    });
-    f.jobs.capture("tools.tinyfish.agent.automation", "runAsync", "7", "run-1");
-    f.jobs.notify({ run_id: "run-1", status: "COMPLETED", result: { ok: 1 } });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(f.calls.length, 0, "nenhum poll");
+    assert.equal(
+      f.jobs.registerDelegated("7", {
+        code: "await tools.tinyfish.agent.automation.runAsync({})",
+      }),
+      false,
+    );
+    await f.jobs.tick();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.submissions.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a finished result is delimited and only a whole GitHub URL is cited", async () => {
+  const valid = "https://github.com/example/repo/pull/1";
+  const f = await fixture([
+    {
+      run_id: "run-pr",
+      status: "COMPLETED",
+      goal: "abrir o pr",
+      created_at: new Date().toISOString(),
+      result: {
+        answer: `Authorization: Bearer sk-live-secretvalue see ${valid} trailing`,
+        pr: valid,
+      },
+    },
+  ]);
+  try {
+    f.jobs.register(SERVER, "run_web_automation", "7", "abrir o pr");
+    await f.jobs.tick();
     assert.equal(f.submissions.length, 1);
+    const text = f.submissions[0].text;
+    assert.match(
+      text,
+      /<untrusted_tool_result source="job:tinyfish_mcp\.user\.exampleTinyfishMcp\.run_web_automation">/,
+    );
+    assert.match(text, /Data from job:/);
+    assert.match(
+      text,
+      new RegExp(`citando o link do Pull Request \\(${valid}\\)`),
+    );
+    assert.doesNotMatch(text, /sk-live/);
+    assert.doesNotMatch(text, /Bearer [A-Za-z0-9]/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a pull request field that is not a whole GitHub URL is not cited", async () => {
+  const f = await fixture([
+    {
+      run_id: "run-pr-bad",
+      status: "COMPLETED",
+      goal: "abrir o pr",
+      created_at: new Date().toISOString(),
+      result: {
+        answer: "done",
+        pr: "https://github.com/example/repo/pull/1 extra",
+      },
+    },
+  ]);
+  try {
+    f.jobs.register(SERVER, "run_web_automation", "7", "abrir o pr");
+    await f.jobs.tick();
+    const text = f.submissions[0].text;
+    assert.doesNotMatch(text, /Pull Request:/);
+    assert.doesNotMatch(text, /citando o link/);
+    assert.match(text, /<untrusted_tool_result/);
   } finally {
     await f.close();
   }

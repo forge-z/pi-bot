@@ -48,7 +48,7 @@ is exactly one. Zero accounts is `missing_account`; two or more is
 | `tool`                                           | path that starts the job, as the Executor sees it                                       |
 | `dispatch.mode`                                  | `immediate` (id in the response), `deferred` (id arrives later), `opaque` (no id)       |
 | `dispatch.idPath`                                | dotted path to the id, e.g. `value.run_id`                                              |
-| `observe.mode`                                   | `poll` (one id), `reconcile` (a search, needs `match`), `webhook`                       |
+| `observe.mode`                                   | `poll` (one id) or `reconcile` (a search, needs `match`). There is no webhook ingress.  |
 | `observe.tool` / `observe.args`                  | how the job is read; `${id}`, `${goal}`, `${row}`, `${since}`, `${now}` are substituted |
 | `observe.statePath` / `resultPath` / `errorPath` | dotted paths inside the observed payload                                                |
 | `observe.states`                                 | extra vocabulary, e.g. `{ "failed": ["TIMED_OUT"] }`                                    |
@@ -89,6 +89,8 @@ which is why the id is required.
 6. a finished job whose payload carries no result becomes `expired`, once, with a notice;
 7. the worker never dispatches: it only reads and delivers;
 8. provider read failures (`poll_attempts`) and delivery failures (`delivery_attempts`) are counted separately. Three failed reads do not expire a finished result. Three rejected deliveries do. A successful read clears only `poll_attempts`. Delivery uses the stable request id `job:<row>:<run>`, which the runtime dedupes.
+
+The Telegram text is HTML. A 400 whose `description` says the entities cannot be parsed is sent once more as plain text, to the same chat, topic and reply. The row is marked sent only when that second call succeeds; the refused call did not deliver a copy. Any other refusal, including a non-parse 400 such as chat not found or blocked, stays failed and is not resent. That `description` is stored on the failed row and written to the log after the secret redactor. No new environment variable is read. Who is notified, and whether a run stays silent, is unchanged.
 
 ## Counters, retention, and old databases
 
@@ -198,7 +200,7 @@ sandbox_code_task:
 - O disparo gera um `jobId` (`<idPrefix><timestamp-base36>-<random>`) e registra a linha em `pending_jobs` antes de chamar a sandbox. No caso do Instabox, o `jobId` vira `cmd` e os parâmetros vão apenas no `stdin` em JSON — o prompt nunca trafega pela linha de comando nem por variáveis de ambiente.
 - A ferramenta retorna imediatamente (`{ jobId, status: "dispatched" }`, ou `{ status: "approval_pending" }` quando `writes` é true), liberando o turno do Telegram.
 - O poller usa o manifesto `job` para ler o status; no padrão, `/data/home/jobs/${id}/status.json` via `tools.instabox.machines.readFiles` a cada 20 segundos (com backoff). O `status:"completed"` do Executor é o envelope da chamada, não o estado do job. Um `status.json` ausente (404) durante a carência fica em silêncio.
-- Quando o job conclui, o poller entrega o resultado como um turno novo no tópico original. Um job com `writes: true` pode incluir o link do Pull Request (`result.pr`). Com `writes` omitido ou false, o disparo não abre cartão: o comando de início ganha o prefixo `readonly.env` e o prompt do agente ganha `readonly.prompt`.
+- Quando o job conclui, o poller entrega o resultado como um turno novo no tópico original. Um job com `writes: true` pode incluir o link do Pull Request (`result.pr`) e o nome da branch. Com `writes` omitido ou false, o disparo não abre cartão: o comando de início ganha o prefixo `readonly.env`, o JSON do pedido leva `writes: false`, o prompt do agente ganha `readonly.prompt`, e o runner não faz push, não abre pull request e não grava branch no `status.json`. O resultado entra no turno dentro de um bloco que o modelo trata como dado, não como instrução. O link só é citado quando a URL inteira é `https://github.com/...`.
 - `writes: true` não registra a linha nem chama o exec até o cartão de aprovação (o mesmo "Aprovação MCP pendente", com repositório, agente, branch e um trecho curto do prompt). Recusar não dispara nada.
 - Linhas antigas de `instabox_code_task` continuam resolvendo porque o manifesto padrão mantém `tool: internal.instabox.codeTask`.
 - **Instalação na Sandbox Instabox**:
@@ -216,7 +218,7 @@ sandbox_code_task:
      export OPENAI_API_KEY="..."
      ```
   3. Certifique-se de que as ferramentas `git`, `gh`, `node` e os agentes CLI (`agy`, `pi`, `claude`) estejam instalados no ambiente da sandbox.
-  4. Atualize o `~/bin/run-job.sh` da máquina com a cópia do repositório. `start-job.sh` não muda: ele herda o ambiente, então `JOB_READONLY=1 bash ~/bin/start-job.sh <jobId>` chega no runner. Com essa variável, depois do clone o script apaga `GH_TOKEN`, `GITHUB_TOKEN` e `GH_ENTERPRISE_TOKEN`, aponta `GH_CONFIG_DIR` para um diretório vazio (um `gh` já logado ignora o token apagado e usa `~/.config/gh`), remove o `credential.helper` do worktree, define `GIT_TERMINAL_PROMPT=0`, pula commit, push e `gh pr create`, e acrescenta a frase de somente leitura ao prompt se ela ainda não estiver lá.
+  4. Atualize `~/bin/start-job.sh` e `~/bin/run-job.sh` com as cópias do repositório. `JOB_READONLY=1` no comando grava um marcador no diretório do job, e o JSON do pedido traz `writes: false`, então o runner continua somente leitura mesmo se o wrapper do exec descartar a variável. Depois do clone (que ainda usa a credencial de leitura) e antes do `npm ci` e do agente, o script apaga `GH_TOKEN`, `GITHUB_TOKEN` e `GH_ENTERPRISE_TOKEN`, tira essas linhas de `~/.agents-env.sh` durante o agente, afasta `~/.config/gh`, `~/.gitconfig` e o helper de credencial, zera o helper local (um helper vazio anula os de cima), tira usuário e token da URL do remote, aponta o push para `no-push`, define `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` e `GH_CONFIG_DIR` vazio, não faz commit, push nem `gh pr create`, não grava `branch` no `status.json`, e acrescenta a frase de somente leitura ao prompt se ela ainda não estiver lá. As credenciais de escrita voltam ao lugar quando o job termina, inclusive a URL do remote e o credential helper do worktree, para um `writes: true` seguinte. `writes: true` não muda: push e pull request seguem iguais.
 
 - **Variáveis de Ambiente**:
   - `INSTABOX_MACHINE_ID`: opcional. Sem ela, o `discover` do manifesto escolhe a máquina somente quando existe exatamente uma em execução. Zero ou várias é erro e a lista é mostrada. Não há nome padrão.

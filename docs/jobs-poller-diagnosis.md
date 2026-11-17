@@ -1,5 +1,7 @@
 # Diagnóstico: poller de jobs assíncronos sem entrega (PR #96)
 
+> Histórico. Nota do incidente de 21/10/2026. O arquivo `src/job-account.ts` não existe mais; as linhas citadas são do código daquela data.
+
 Data do incidente: 21/10/2026. `run_id` `dfa4e4d6-32c6-4271-b235-5cd2009ba699`
 terminou `COMPLETED` em 26 s, mas 3,9 min depois não houve entrega nem aviso.
 

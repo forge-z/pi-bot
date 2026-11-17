@@ -492,7 +492,7 @@ function loadNativeCatalog(providerId) {
 }
 
 mkdirSync(dir, { recursive: true, mode: 0o700 });
-const db = new DatabaseSync(join(dir, "app.sqlite"));
+const db = new DatabaseSync(join(dir, "app.sqlite"), { timeout: 5000 });
 let dbClosed = false;
 function closeDb() {
   if (dbClosed) return;

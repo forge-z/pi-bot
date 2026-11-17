@@ -46,7 +46,7 @@ export class Store {
   providerAdmissions = 0;
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    this.db = new DatabaseSync(`${dir}/app.sqlite`);
+    this.db = new DatabaseSync(`${dir}/app.sqlite`, { timeout: 5000 });
     const hadGrants = !!this.get(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_grants'",
     );

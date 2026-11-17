@@ -200,6 +200,19 @@ export class McpUrlElicitationRequiredError extends McpError {
     this.elicitations = elicitations;
   }
 }
+/** One active elicitation handler, or none when zero or several calls could own it. */
+export function chooseElicitation<T extends { onElicitation?: unknown }>(
+  active: Iterable<T> | undefined,
+): T | undefined {
+  let chosen: T | undefined;
+  for (const opt of active ?? []) {
+    if (!opt.onElicitation) continue;
+    if (chosen) return undefined;
+    chosen = opt;
+  }
+  return chosen;
+}
+
 export interface ToolGateway {
   catalog?(): Promise<unknown>;
 }
@@ -392,8 +405,6 @@ const configKeys = new Set([
   "tokenHeader",
   "userId",
   "resolveToken",
-  // Legacy key: still accepted so stored configs keep loading; ignored.
-  "cuaViewer",
 ]);
 function validateEntry(item: McpConfig) {
   if (!item || typeof item !== "object" || Array.isArray(item))
@@ -644,8 +655,7 @@ export class McpGateway implements ToolGateway {
   private operations = 0;
   private locks = new Map<string, ServerRwLock>();
   private active = new Map<string, Set<McpCallOptions>>();
-  // shortcut: progress is keyed by server, not by conversation, so two chats on
-  // the same server can briefly see each other's text; key it per call if that matters.
+  // Kept only while a single call is active on the server. Two calls drop it.
   private progressMessages = new Map<string, string>();
   constructor(readonly config: McpConfig[]) {
     if (!Array.isArray(config))
@@ -952,6 +962,11 @@ export class McpGateway implements ToolGateway {
                 resetTimeoutOnProgress: true,
                 maxTotalTimeout: timeout,
                 onprogress: (progress) => {
+                  // Progress is stored per server. Two calls would show the wrong text.
+                  if ((this.active.get(server)?.size ?? 0) !== 1) {
+                    this.progressMessages.delete(server);
+                    return;
+                  }
                   if (progress.message)
                     this.progressMessages.set(server, progress.message);
                 },
@@ -1056,7 +1071,7 @@ export class McpGateway implements ToolGateway {
         const url = connectionUrl(config);
         const makeClient = () => {
           const client = new Client(
-            { name: "pi-agent", version: "0.1.0" },
+            { name: "pi-agent", version: "0.3.0" },
             {
               capabilities: { elicitation: { form: {}, url: {} } },
               jsonSchemaValidator: this.schemas,
@@ -1072,14 +1087,9 @@ export class McpGateway implements ToolGateway {
           client.setRequestHandler(
             ElicitRequestSchema,
             async (request, extra) => {
-              const activeSet = this.active.get(server);
-              if (activeSet) {
-                for (const opt of activeSet) {
-                  if (opt.onElicitation) {
-                    return opt.onElicitation(request.params, extra.signal);
-                  }
-                }
-              }
+              const chosen = chooseElicitation(this.active.get(server));
+              if (chosen?.onElicitation)
+                return chosen.onElicitation(request.params, extra.signal);
               return { action: "cancel" };
             },
           );

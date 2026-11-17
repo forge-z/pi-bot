@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type Delivery } from "../src/store.js";
 import { Runtime } from "../src/runtime.js";
-import { Telegram, TelegramHttp } from "../src/telegram.js";
+import {
+  Telegram,
+  TelegramHttp,
+  TelegramSendRefused,
+} from "../src/telegram.js";
+import { TelegramApiError, TelegramBotApi } from "../src/telegram-api.js";
 import { PendingJobs } from "../src/pending-jobs.js";
 
 test("delivery migration preserves legacy chunks and uncertainty while new queues are atomic HTML", async () => {
@@ -255,6 +260,180 @@ test("HTTP transport sends explicit HTML only for new formatted ledger payloads"
     assert.equal(bodies[0].text, "<b>Olá</b>");
     assert.equal(bodies[1].parse_mode, undefined);
     assert.equal(bodies[1].text, "**old plain text**");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a parse-entity 400 is sent once as plain text and other refusals are not", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-html-fallback-"));
+  const app = await Runtime.open({
+    dir,
+    mode: "demo",
+    gateway: { catalog: async () => [] },
+    redact: (text) => text.replaceAll("sk-live-secret", "[REDACTED]"),
+  });
+  const sent: { text: string; mode?: string; replyTo?: number }[] = [];
+  const logs: string[] = [];
+  const errorLog = console.error;
+  console.error = (...parts: unknown[]) => {
+    logs.push(parts.map(String).join(" "));
+  };
+  const transport = {
+    send: async (
+      _chat: string,
+      text: string,
+      options?: { parseMode?: "HTML"; replyTo?: number },
+    ) => {
+      sent.push({ text, mode: options?.parseMode, replyTo: options?.replyTo });
+      if (options?.parseMode === "HTML")
+        throw new TelegramSendRefused(
+          400,
+          0,
+          'Bad Request: can\'t parse entities: Unsupported start tag "b" at byte offset 0 token sk-live-secret',
+        );
+      return { message_id: 1 };
+    },
+  };
+  const telegram = new Telegram(app, transport, ["42"], ["42"]);
+  try {
+    app.store.queueTelegram("parse", "42", "**Olá**");
+    await telegram.flush();
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].mode, "HTML");
+    assert.equal(sent[1].mode, undefined);
+    assert.match(sent[1].text, /Olá/);
+    assert.doesNotMatch(sent[1].text, /<b>/);
+    assert.equal(
+      app.store.get<Delivery>(
+        "SELECT * FROM deliveries WHERE id LIKE 'parse:%'",
+      )?.state,
+      "sent",
+    );
+    assert.equal(
+      logs.some((line) => line.includes("sk-live-secret")),
+      false,
+    );
+    assert.match(logs.join("\n"), /\[REDACTED\]/);
+
+    sent.length = 0;
+    const blocked = {
+      send: async (
+        _chat: string,
+        text: string,
+        options?: { parseMode?: "HTML" },
+      ) => {
+        sent.push({ text, mode: options?.parseMode });
+        throw new TelegramSendRefused(
+          400,
+          0,
+          "Bad Request: chat not found sk-live-secret",
+        );
+      },
+    };
+    const other = new Telegram(app, blocked, ["42"], ["42"]);
+    app.store.queueTelegram("blocked", "42", "**Olá**");
+    await other.flush();
+    assert.equal(sent.length, 1);
+    const row = app.store.get<{ state: string; result: string | null }>(
+      "SELECT * FROM deliveries WHERE id LIKE 'blocked:%'",
+    );
+    assert.equal(row?.state, "failed");
+    assert.match(row?.result ?? "", /\[REDACTED\]/);
+    assert.doesNotMatch(row?.result ?? "", /sk-live-secret/);
+    assert.match(row?.result ?? "", /not be resent/);
+  } finally {
+    console.error = errorLog;
+    await telegram.drain();
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a reply target that Telegram rejects still gets one plain resend", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-html-reply-"));
+  const app = await Runtime.open({
+    dir,
+    mode: "demo",
+    gateway: { catalog: async () => [] },
+  });
+  const sent: { mode?: string; replyTo?: number }[] = [];
+  const transport = {
+    send: async (
+      _chat: string,
+      _text: string,
+      options?: { parseMode?: "HTML"; replyTo?: number },
+    ) => {
+      sent.push({ mode: options?.parseMode, replyTo: options?.replyTo });
+      if (options?.replyTo)
+        throw new TelegramSendRefused(
+          400,
+          0,
+          "Bad Request: message to be replied not found",
+        );
+      if (options?.parseMode === "HTML")
+        throw new TelegramSendRefused(
+          400,
+          0,
+          "Bad Request: can't parse entities",
+        );
+      return { message_id: 2 };
+    },
+  };
+  const telegram = new Telegram(app, transport, ["42"], ["42"]);
+  try {
+    app.store.queueTelegram(
+      "reply",
+      "42",
+      "**Olá**",
+      3500,
+      undefined,
+      undefined,
+      undefined,
+      9,
+    );
+    await telegram.flush();
+    assert.equal(sent.length, 3);
+    assert.equal(sent[0].replyTo, 9);
+    assert.equal(sent[1].replyTo, undefined);
+    assert.equal(sent[1].mode, "HTML");
+    assert.equal(sent[2].mode, undefined);
+    assert.equal(
+      app.store.get<Delivery>("SELECT * FROM deliveries")?.state,
+      "sent",
+    );
+  } finally {
+    await telegram.drain();
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Telegram API keeps the description off the error message", async () => {
+  const original = globalThis.fetch;
+  const secret = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: `Bad Request: can't parse entities ${secret}`,
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+  try {
+    const api = new TelegramBotApi("123:synthetic-only");
+    await assert.rejects(
+      () => api.call("sendMessage", { chat_id: "42", text: "x" }),
+      (error: unknown) => {
+        assert.ok(error instanceof TelegramApiError);
+        assert.equal(error.refusedCode, 400);
+        assert.match(error.description, /can't parse entities/);
+        assert.equal(error.message.includes(secret), false);
+        assert.equal(error.message.includes("parse entities"), false);
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = original;
   }

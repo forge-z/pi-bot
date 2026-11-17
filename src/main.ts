@@ -25,11 +25,6 @@ import {
 import { Store, SqlCredentials } from "./store.js";
 import { vaultFromStore, withOauthBearer } from "./mcp-oauth.js";
 
-/**
- * A bot with no provider cannot answer, and killing the container would take away the
- * terminal needed to run the wizard. Wait instead, re-reading the volume: `npm run
- * setup` finishes and the bot starts on its own a few seconds later.
- */
 function migrateVolume(dir: string) {
   const file = join(dir, "app.sqlite");
   if (!existsSync(file)) return;
@@ -69,6 +64,11 @@ function waitMessage(error: SetupRequiredError) {
   );
 }
 
+/**
+ * A bot with no provider cannot answer, and killing the container would take away the
+ * terminal needed to run the wizard. Wait instead, re-reading the volume: `npm run
+ * setup` finishes and the bot starts on its own a few seconds later.
+ */
 async function modelsOrWait(dir: string) {
   let announced = "";
   for (;;) {
@@ -222,6 +222,15 @@ try {
         TELEGRAM_BOT_TOKEN_FILE: "",
       },
       mcp,
+      () => {
+        try {
+          return bootstrapStore
+            .all<{ value: string }>("SELECT value FROM credentials")
+            .map((row) => row.value);
+        } catch {
+          return [];
+        }
+      },
     ),
     initialize: (store) => configureTelegram(store, config, bot),
   });

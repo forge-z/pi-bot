@@ -18,10 +18,24 @@ async function dir() {
   return mkdtemp(join(tmpdir(), "pi-harness-"));
 }
 
+test("sqlite busy_timeout waits for the other connection", async () => {
+  const root = await dir();
+  const store = new Store(root);
+  try {
+    const row = store.db.prepare("PRAGMA busy_timeout").get() as {
+      timeout: number;
+    };
+    assert.equal(row.timeout, 5000);
+  } finally {
+    store.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("defaults reproduce the old read classification", () => {
   assert.equal(mcpCallIsReadOnly("tools.instabox.machines.list"), true);
   assert.equal(mcpCallIsReadOnly("tools.tinyfish.fetch.root.fetchUrls"), true);
-  assert.equal(mcpCallIsReadOnly("tools.github.repos.get_or_create"), true);
+  assert.equal(mcpCallIsReadOnly("tools.github.repos.get_or_create"), false);
   assert.equal(
     mcpCallIsReadOnly("listRuns", undefined, { server: "mock" }),
     true,

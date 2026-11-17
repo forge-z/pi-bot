@@ -37,6 +37,11 @@ export class TelegramApiError extends Error {
     readonly retryAfter = 0,
     /** Set only when Telegram itself answered with a 4xx refusal. */
     readonly refusedCode?: number,
+    /**
+     * Telegram's `description`, unchanged. It can echo a request URL, so
+     * callers redact it before any log line or stored result.
+     */
+    readonly description = "",
   ) {
     super(
       {
@@ -102,22 +107,27 @@ export class TelegramBotApi implements TelegramApi {
       ok?: boolean;
       result?: unknown;
       error_code?: number;
+      description?: unknown;
       parameters?: { retry_after?: number };
     };
     const code = data.error_code ?? status;
+    const description =
+      typeof data.description === "string" ? data.description : "";
     if (data.ok !== true) {
       const refused =
         data.ok === false && code >= 400 && code < 500 ? code : undefined;
       if (code === 401 || code === 404)
-        throw new TelegramApiError("invalid_token", 0, refused);
-      if (code === 409) throw new TelegramApiError("conflict", 0, refused);
+        throw new TelegramApiError("invalid_token", 0, refused, description);
+      if (code === 409)
+        throw new TelegramApiError("conflict", 0, refused, description);
       if (code === 429)
         throw new TelegramApiError(
           "rate_limit",
           Number(data.parameters?.retry_after) || 1,
           refused,
+          description,
         );
-      throw new TelegramApiError("unavailable", 0, refused);
+      throw new TelegramApiError("unavailable", 0, refused, description);
     }
     return data.result;
   }

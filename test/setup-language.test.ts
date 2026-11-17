@@ -50,7 +50,6 @@ const ALLOW_PT = [
   "Deu certo",
   "Não rodou",
   "Verificação registrada. Nada foi reenviado.",
-  "Verificação registrada.",
 ];
 function allowedPortuguese(value: string) {
   let rest = value;

@@ -9,6 +9,7 @@ import {
   fauxAssistantMessage,
   fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
+import { secretRedactor } from "../src/config.js";
 import { Runtime } from "../src/runtime.js";
 import { runNotified } from "../src/task-telegram.js";
 import { Tasks } from "../src/tasks.js";
@@ -68,6 +69,7 @@ async function open() {
     models,
     env: { ASYNC_JOB_MANIFESTS: JSON.stringify([MANIFEST]) },
     gateway,
+    redact: secretRedactor({}),
   });
   const id = await app.create("Tópico do job");
   app.store.run(
@@ -254,6 +256,60 @@ test("a scheduled routine with no news stays silent", async () => {
     for (const line of logged) assert.match(line, /notify=não/);
     assert.ok(logged.some((line) => line.includes(job!.requestId)));
     assert.equal(f.tasks.runs(task.id)[0]?.status, "silencioso");
+  } finally {
+    console.log = log;
+    await f.close();
+  }
+});
+
+test("a job answer with a bearer token is redacted in chat and in the quiet log", async () => {
+  const token = "sk-teste-1234567890abcdef1234567890abcdef";
+  const leak = `curl -v https://example.test\n> Authorization: Bearer ${token}`;
+  const f = await open();
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...parts: unknown[]) => {
+    lines.push(parts.map(String).join(" "));
+  };
+  f.faux.setResponses([
+    async () => {
+      register(f.app, f.id, "cj-redact-1", "mostrar o curl");
+      return fauxAssistantMessage("Disparei.");
+    },
+    async () => fauxAssistantMessage(leak),
+  ]);
+  try {
+    await f.app.admit(f.id, "telegram:dispara", "dispara a tarefa", {
+      source: "telegram",
+      chat: "42",
+      user: "42",
+    });
+    await f.settle();
+    await f.app.pendingJobs.tick();
+    await f.settle();
+    await f.engine().flush();
+    const completion = f.sent.filter((row) => /curl -v/.test(row.text));
+    assert.equal(completion.length, 1, JSON.stringify(f.sent));
+    assert.equal(completion[0]!.chat, "42");
+    assert.doesNotMatch(completion[0]!.text, new RegExp(token));
+    assert.doesNotMatch(completion[0]!.text, /Bearer\s+\S+/);
+    assert.match(completion[0]!.text, /\[REDACTED\]/);
+    const requestId = f.app.store.get<{ requestId: string }>(
+      "SELECT requestId FROM requests WHERE source='job'",
+    )?.requestId;
+    assert.ok(requestId);
+    const logged = lines.find(
+      (line) =>
+        line.includes("run agendado") &&
+        line.includes(requestId) &&
+        line.includes("texto="),
+    );
+    assert.ok(logged, JSON.stringify(lines));
+    assert.match(logged, /notify=sim/);
+    assert.match(logged, /texto=/);
+    assert.doesNotMatch(logged, new RegExp(token));
+    assert.doesNotMatch(logged, /Bearer\s+\S+/);
+    assert.match(logged, /\[REDACTED\]/);
   } finally {
     console.log = log;
     await f.close();

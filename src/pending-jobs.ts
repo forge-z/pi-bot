@@ -11,7 +11,11 @@ import {
 } from "./executor-result.js";
 
 export { programPayload };
-import { ensureDiscovered } from "./discover.js";
+import { ensureDiscovered, sandboxCall } from "./discover.js";
+import { wrapUntrustedToolResult } from "./untrusted.js";
+import { redactSecretPatterns } from "./config.js";
+
+export { sandboxCall };
 import {
   buildReadInput,
   isTerminal,
@@ -704,7 +708,6 @@ export class PendingJobs {
    * invocation or a later catalog lookup can still supply it.
    */
   private shapeError(entry: JobTool, accountId?: string): string | undefined {
-    if (entry.manifest.observe.mode === "webhook") return undefined;
     const vars = this.previewVars(entry);
     if (accountId) vars.accountId = accountId;
     const checks = [
@@ -1033,7 +1036,6 @@ export class PendingJobs {
   }
 
   private observeTool(manifest: JobManifest) {
-    if (manifest.observe.mode === "webhook") return true;
     return !!(manifest.observe.tool ?? manifest.reconcile?.tool);
   }
   /**
@@ -1140,7 +1142,8 @@ export class PendingJobs {
     const accounts = invocationAccountIds(payload);
     if (accounts.length > 1) {
       const message = `ambiguous_account: a chamada passou mais de uma conta (${accounts.join(", ")}). Nada foi lido.`;
-      if (row) void this.failNamed(row, "ambiguous_account", message);
+      if (row)
+        void this.failNamed(row, "ambiguous_account", message).catch(() => {});
       else
         void this.announce(
           conversationId,
@@ -1598,7 +1601,7 @@ export class PendingJobs {
           continue;
         }
         const observe = entry.manifest.observe;
-        if (observe.mode !== "webhook" && observe.tool) {
+        if (observe.tool) {
           for (const row of rows) {
             if (
               this.usesSandbox(entry.manifest) &&
@@ -2196,7 +2199,9 @@ export class PendingJobs {
           ? error
           : formatExecutorError(error) || String(error ?? "");
     const flat = message.replace(/\s+/g, " ").trim();
-    const hidden = redactLogSecrets(this.app.options.redact?.(flat) ?? flat);
+    const hidden = redactSecretPatterns(
+      this.app.options.redact?.(flat) ?? flat,
+    );
     const text = hidden.trim();
     if (!text) return "erro desconhecido";
     return text.length > LOG_ERROR_MAX ? text.slice(0, LOG_ERROR_MAX) : text;
@@ -2322,18 +2327,6 @@ export class PendingJobs {
         conversationId,
       )?.source ?? null
     );
-  }
-  /** Webhook entry point: an event converges on the same delivery path as a poll. */
-  notify(payload: unknown) {
-    this.ensure();
-    for (const row of this.pending()) {
-      const entry = this.match(row.integration, row.tool);
-      if (!entry || entry.manifest.observe.mode !== "webhook") continue;
-      const run = this.runFromPayload(entry.manifest, payload, row.run_id);
-      if (!run) continue;
-      if (row.run_id && run.run_id !== row.run_id) continue;
-      void this.settle(row, [run]);
-    }
   }
   /** The object inside a payload that actually describes the job. */
   private jobObject(
@@ -2463,9 +2456,13 @@ export class PendingJobs {
           ? (outcome.result as unknown as Record<string, unknown>).pr
           : undefined;
     const pr =
-      typeof prCandidate === "string" && prCandidate.trim()
+      typeof prCandidate === "string" &&
+      /^https:\/\/github\.com\/\S+$/.test(prCandidate.trim())
         ? prCandidate.trim()
         : undefined;
+    const shown = redactSecretPatterns(
+      this.app.options.redact?.(resultText ?? "") ?? resultText ?? "",
+    );
     const prompt =
       resultText !== undefined
         ? [
@@ -2473,7 +2470,7 @@ export class PendingJobs {
             row.goal ? `Objetivo: ${row.goal}` : "",
             `Status: ${outcome.result?.status ?? "COMPLETED"}`,
             pr ? `Pull Request: ${pr}` : "",
-            `Resultado:\n${resultText.slice(0, 8000)}`,
+            `Resultado:\n${wrapUntrustedToolResult(`job:${row.tool}`, shown.slice(0, 8000))}`,
             pr
               ? `Resuma em poucas linhas o que aconteceu e o que importa para o usuário, citando o link do Pull Request (${pr}). Não dispare novos jobs.`
               : "Resuma em poucas linhas o que aconteceu e o que importa para o usuário. Não dispare novos jobs.",
@@ -2585,34 +2582,6 @@ interface Run {
   num_of_steps?: number | null;
   created_at: number;
   result?: unknown;
-}
-
-const TOOL_IDENT = /^[A-Za-z_$][\w$]*$/;
-const TOOL_SEGMENT = /^[A-Za-z0-9_$:.-]+$/;
-
-/**
- * A tool call as the Executor sandbox sees it. `tools.instabox.machines.exec` is a
- * property of the `tools` proxy, not an MCP tool name. The proxy is not a data value:
- * `o == null` is rejected as InvalidDataValue, so the program calls the path directly.
- * A hyphenated segment (`fish-audio`) uses a string key, which is still not a comparison.
- */
-export function sandboxCall(tool: string, args: unknown) {
-  return `return JSON.stringify(await ${sandboxToolExpression(tool)}(${JSON.stringify(args)}));`;
-}
-
-function sandboxToolExpression(tool: string) {
-  const parts = String(tool ?? "")
-    .split(".")
-    .filter(Boolean);
-  if (!parts.length || parts.some((part) => !TOOL_SEGMENT.test(part)))
-    throw new Error(`caminho de ferramenta inválido: ${tool}`);
-  if (parts[0] !== "tools") parts.unshift("tools");
-  let expression = "tools";
-  for (const part of parts.slice(1))
-    expression += TOOL_IDENT.test(part)
-      ? `.${part}`
-      : `[${JSON.stringify(part)}]`;
-  return expression;
 }
 
 /** Accepts the provider's envelope (`{data:[…]}`) or the bare array. */
@@ -2771,18 +2740,6 @@ function isExecutorEnvelope(
   const body = asRecord(value);
   const execution = asRecord(body?.execution);
   return !!body && !!execution && typeof body.status === "string";
-}
-
-/** Shapes that must never reach a poll-error line. Applied after known values. */
-function redactLogSecrets(text: string) {
-  return text
-    .replace(/Bearer\s+\S+/gi, "[REDACTED]")
-    .replace(/\bsk-[\w-]{8,}/gi, "[REDACTED]")
-    .replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]")
-    .replace(
-      /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization|token)\s*[=:]\s*\S+/gi,
-      "[REDACTED]",
-    );
 }
 
 function notFoundText(message: string) {

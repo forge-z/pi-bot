@@ -69,7 +69,12 @@ mcp_servers:
         - "**.view*"
         - "**.status*"
       # Globs for write tools. Takes precedence over read globs.
-      write: []
+      # A name like get_or_create matches **.get* and must still be a write.
+      write:
+        - "**.*create*"
+        - "**.*send*"
+        - "**.*delete*"
+        - "**.*update*"
   # Composio slugs are TOOLKIT_ACTION. An infix verb (*_GET_*, *_LIST_*, *_SEARCH_*, and the same set) is a read.
   composio:
     # Own tool list, so a scheduled write is still refused before it is sent.

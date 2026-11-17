@@ -22,11 +22,7 @@ import type {
   ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
 import type { McpConfig } from "./mcp.js";
-import {
-  accessTokenFresh,
-  UPSY_MCP_URL,
-  UPSY_SERVER_NAME,
-} from "./mcp-oauth.js";
+import { UPSY_MCP_URL, UPSY_SERVER_NAME } from "./mcp-oauth.js";
 import {
   anySubscriptionAuthenticated,
   chatgptAuthMode,
@@ -209,12 +205,10 @@ export function mcpServersFromAggregators(
     }
   }
   if (wantUpsy) {
-    const fresh = accessTokenFresh(stored?.upsy, Date.now());
     servers.push({
       name: UPSY_SERVER_NAME,
       url: endpoint(UPSY_MCP_URL),
       mode: "direct",
-      ...(fresh && stored?.upsy?.access ? { token: stored.upsy.access } : {}),
     });
   }
   if (wantSelf) {
@@ -1110,8 +1104,69 @@ export function startupErrorMessage(error: unknown) {
   return message;
 }
 
+const SECRET_LABELS = new Set(["api_key", "oauth", "bearer", "chatgpt"]);
+
+function walkSecrets(value: unknown, into: string[]) {
+  if (typeof value === "string") {
+    if (value.length >= 8 && !SECRET_LABELS.has(value)) into.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) walkSecrets(item, into);
+    return;
+  }
+  if (value && typeof value === "object")
+    for (const item of Object.values(value)) walkSecrets(item, into);
+}
+
+/** Strings stored in `credentials`, including keys refreshed after startup. */
+export function credentialSecretValues(rows: readonly string[]) {
+  const found: string[] = [];
+  for (const row of rows) {
+    let parsed: unknown = row;
+    try {
+      parsed = JSON.parse(row);
+    } catch {
+      parsed = row;
+    }
+    walkSecrets(parsed, found);
+  }
+  return found;
+}
+
+function redactionVariants(value: string) {
+  return [
+    value,
+    value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;"),
+    encodeURIComponent(value),
+  ];
+}
+
+/**
+ * Tokens that are not in the configured secret list. `secretRedactor` applies this
+ * after the known values: Bearer tokens, `sk-` keys, bot-token shapes, and labeled secrets.
+ */
+export function redactSecretPatterns(text: string) {
+  return text
+    .replace(/Bearer\s+\S+/gi, "[REDACTED]")
+    .replace(/\bsk-[\w-]{8,}/gi, "[REDACTED]")
+    .replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]")
+    .replace(
+      /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization|token)\s*[=:]\s*\S+/gi,
+      "[REDACTED]",
+    );
+}
+
 /** Values stay in memory; error and Telegram output must not echo configured credentials. */
-export function secretRedactor(env: Env = process.env, mcp: McpConfig[] = []) {
+export function secretRedactor(
+  env: Env = process.env,
+  mcp: McpConfig[] = [],
+  credentials?: () => readonly string[],
+) {
   const names = new Set(
     Object.keys(env)
       .filter((name) =>
@@ -1129,17 +1184,21 @@ export function secretRedactor(env: Env = process.env, mcp: McpConfig[] = []) {
     ...new Set(
       values
         .filter((v): v is string => !!v && v.length >= 6)
-        .flatMap((value) => [
-          value,
-          value
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-            .replaceAll('"', "&quot;"),
-          encodeURIComponent(value),
-        ]),
+        .flatMap(redactionVariants),
     ),
   ].sort((a, b) => b.length - a.length);
-  return (text: string) =>
-    known.reduce((safe, value) => safe.split(value).join("[REDACTED]"), text);
+  return (text: string) => {
+    const live = credentials ? credentialSecretValues(credentials()) : [];
+    const all = live.length
+      ? [
+          ...new Set([
+            ...known,
+            ...live.filter((v) => v.length >= 8).flatMap(redactionVariants),
+          ]),
+        ].sort((a, b) => b.length - a.length)
+      : known;
+    return redactSecretPatterns(
+      all.reduce((safe, value) => safe.split(value).join("[REDACTED]"), text),
+    );
+  };
 }

@@ -39,7 +39,7 @@ async function dir() {
 
 test("name-based reads and known paths stay reads, including batches", () => {
   assert.equal(mcpCallIsReadOnly("tools.instabox.machines.list"), true);
-  assert.equal(mcpCallIsReadOnly("tools.github.repos.get_or_create"), true);
+  assert.equal(mcpCallIsReadOnly("tools.github.repos.get_or_create"), false);
   assert.equal(mcpCallIsReadOnly("tools.call"), false);
   assert.equal(mcpCallIsReadOnly("resume"), false);
   assert.equal(
@@ -122,9 +122,27 @@ test("a read delegated through call times out without blocking the server", asyn
   });
   const calls = new McpCalls(
     store,
-    gateway(async (_server, tool) => {
+    gateway(async (_server, tool, _args, options) => {
       if (tool === "call") {
-        await hung;
+        // The gateway deadline is what ends a silent call. This fake applies it.
+        const timeout = Number(process.env.MCP_CALL_TIMEOUT_MS);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error("Request timed out")),
+            timeout,
+          );
+          const abort = () => {
+            clearTimeout(timer);
+            reject(new Error("This operation was aborted"));
+          };
+          if (options?.signal?.aborted) abort();
+          else
+            options?.signal?.addEventListener("abort", abort, { once: true });
+          void hung.then(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
         return { content: [{ type: "text", text: "late" }] };
       }
       return { content: [{ type: "text", text: "next" }] };

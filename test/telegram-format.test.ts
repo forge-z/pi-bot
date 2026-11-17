@@ -46,6 +46,14 @@ test("splits long inline formatting with balanced reopened tags under 3800 visib
   assertValidChunks(chunks);
 });
 
+test("drops empty tags left by bold around inline code", () => {
+  const chunks = formatTelegramMessage("**STDERR literal do `-v`**");
+  const output = chunks.join("");
+  assert.doesNotMatch(output, /<b>\s*<\/b>/);
+  assert.match(output, /<code>-v<\/code>/);
+  assertValidChunks(chunks);
+});
+
 test("keeps code outside style tags and drops whitespace-only trailing chunks", () => {
   const inline = formatTelegramMessage("**bold `code` after**");
   assert.match(

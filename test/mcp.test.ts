@@ -140,6 +140,10 @@ test("MCP configuration rejects unknown fields and malformed entries, naming the
     /unknown field: "denyTools" \(MCP server 2 "beta"\)/,
   );
   assert.throws(
+    invalid([{ ...base, cuaViewer: true }]),
+    /unknown field: "cuaViewer"/,
+  );
+  assert.throws(
     invalid([{ ...base, token: "first\nAuthorization: other" }]),
     /token and tokenFile/,
   );

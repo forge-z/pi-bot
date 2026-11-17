@@ -17,6 +17,7 @@ import {
   ensureMcpOauthAccess,
   promptMcpOauthLogin,
   refreshOauthCredential,
+  withOauthBearer,
   writeOauthCredential,
   type McpOauthCredential,
   type OauthVault,
@@ -56,6 +57,7 @@ function discoveryFetch(
       });
     if (url.includes("/.well-known/oauth-authorization-server"))
       return jsonResponse(200, {
+        issuer: "https://upsy.ai",
         authorization_endpoint: "https://upsy.ai/oauth/authorize",
         token_endpoint: "https://upsy.ai/api/oauth/token",
         registration_endpoint: "https://upsy.ai/api/oauth/register",
@@ -477,9 +479,58 @@ test("Upsy on the volume is listed like the other MCP servers", async () => {
     ).mcp[0];
     assert.equal(server?.name, "upsy");
     assert.equal(server?.url, UPSY_MCP_URL);
-    assert.equal(server?.token, "access-secret");
+    assert.equal(server?.token, undefined);
     assert.equal(server?.mode, "direct");
+    const vault: OauthVault = {
+      read: () => credential({ access: "access-secret" }),
+      write: () => {},
+    };
+    const [bound] = withOauthBearer([server!], vault, () => {});
+    assert.equal(typeof bound.resolveToken, "function");
+    const [other] = withOauthBearer(
+      [{ ...server!, url: "https://evil.example/mcp" }],
+      vault,
+      () => {},
+    );
+    assert.equal(other.resolveToken, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("discovery rejects a resource or issuer that does not match the request", async () => {
+  const login = (onRequest: Parameters<typeof discoveryFetch>[0]) =>
+    beginMcpOauthLogin({
+      resource: UPSY_MCP_URL,
+      redirectUri: REDIRECT,
+      now: NOW,
+      fetchImpl: discoveryFetch(onRequest),
+    });
+  await assert.rejects(
+    () =>
+      login((url) => {
+        if (url.includes("/.well-known/oauth-protected-resource"))
+          return jsonResponse(200, {
+            resource: "https://evil.example/mcp",
+            authorization_servers: ["https://upsy.ai"],
+          });
+        return undefined;
+      }),
+    /MCP sign-in could not start/,
+  );
+  await assert.rejects(
+    () =>
+      login((url) => {
+        if (url.includes("/.well-known/oauth-authorization-server"))
+          return jsonResponse(200, {
+            issuer: "https://evil.example",
+            authorization_endpoint: "https://upsy.ai/oauth/authorize",
+            token_endpoint: "https://upsy.ai/api/oauth/token",
+            registration_endpoint: "https://upsy.ai/api/oauth/register",
+            code_challenge_methods_supported: ["S256"],
+          });
+        return undefined;
+      }),
+    /MCP sign-in could not start/,
+  );
 });

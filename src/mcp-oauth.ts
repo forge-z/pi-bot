@@ -84,6 +84,19 @@ function singleLine(value: unknown) {
     : undefined;
 }
 
+function sameHttps(left: string, right: string) {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    const path = (url: URL) => url.pathname.replace(/\/$/, "") || "/";
+    return (
+      a.protocol === b.protocol && a.host === b.host && path(a) === path(b)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function httpsUrl(value: unknown) {
   const text = singleLine(value);
   if (!text) return undefined;
@@ -430,12 +443,18 @@ async function discoverMcpOauth(resource: string, fetchImpl: FetchImpl) {
     resource?: unknown;
     authorization_servers?: unknown[];
   };
+  const published = httpsUrl(metadata.resource);
+  // RFC 9728: a published resource identifier must be the one we asked for.
+  if (published && !sameHttps(published, resource)) startError();
   const issuer = httpsUrl(metadata.authorization_servers?.[0]);
   if (!issuer) startError();
   const as = (await readJson(
     wellKnown("oauth-authorization-server", issuer),
     fetchImpl,
   )) as Record<string, unknown> | undefined;
+  const publishedIssuer = httpsUrl(as?.issuer);
+  // RFC 8414: issuer in the metadata must be the issuer we fetched.
+  if (!publishedIssuer || !sameHttps(publishedIssuer, issuer)) startError();
   const authorizationEndpoint = httpsUrl(as?.authorization_endpoint);
   const tokenEndpoint = httpsUrl(as?.token_endpoint);
   if (!authorizationEndpoint || !tokenEndpoint) startError();
@@ -814,14 +833,15 @@ export async function ensureMcpOauthAccess(input: {
   });
 }
 
-export function withOauthBearer<T extends { name: string }>(
+export function withOauthBearer<T extends { name: string; url?: string }>(
   servers: T[],
   vault: OauthVault,
   notify: (text: string, id: string) => void,
   fetchImpl?: FetchImpl,
 ): Array<T & { resolveToken?: () => Promise<string> }> {
   return servers.map((server) => {
-    if (server.name !== UPSY_SERVER_NAME) return server;
+    if (server.name !== UPSY_SERVER_NAME || server.url !== UPSY_MCP_URL)
+      return server;
     return {
       ...server,
       resolveToken: () =>

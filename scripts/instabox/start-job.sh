@@ -26,6 +26,11 @@ cat > "$JOB_DIR/request.json"
 echo '{"state":"PENDING"}' > "$JOB_DIR/status.json.tmp"
 mv "$JOB_DIR/status.json.tmp" "$JOB_DIR/status.json"
 
+# The runner reads this file. The env prefix can be dropped by the exec wrapper.
+if [ "${JOB_READONLY:-}" = "1" ]; then
+  : > "$JOB_DIR/readonly"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/run-job.sh" ]; then
   cp "$SCRIPT_DIR/run-job.sh" "$JOB_DIR/run-job.sh"

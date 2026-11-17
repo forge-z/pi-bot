@@ -8,7 +8,7 @@ A lista leitura/escrita não decide a aprovação do Executor: quem decide é o 
 
 ## O que conta como leitura
 
-Nomes que começam com `get`, `list`, `read`, `search`, `fetch`, `find`, `query`, `describe`, `show`, `view` ou `status`, mais um conjunto pequeno de caminhos conhecidos (`tools.instabox.machines.list`, `tools.tinyfish.fetch.root.fetchUrls` e os outros em `KNOWN_READS`). O mesmo coletor de caminhos vale para um `call` direto, um lote `calls` e um envelope `execution`. O lote só é leitura se todo caminho coletado for leitura. `resume` nunca é leitura: o modelo não pode chamar `resume`; só a decisão humana em `decide` despacha.
+A lista mora nos globs de `config.default.yaml` (`mcp_servers.*.tools.read` e `tools.write`), não num conjunto `KNOWN_READS`. Escrita tem precedência: `**.*create*`, `**.*send*`, `**.*delete*` e `**.*update*` são escrita mesmo quando o nome também casa com `**.get*` (`get_or_create`). `search`, `describe` e `skills` continuam leitura no código. O mesmo coletor de caminhos vale para um `call` direto, um lote `calls` e um envelope `execution`. O lote só é leitura se todo caminho coletado for leitura. Um `execute` ou `call` com código só é leitura se cada ocorrência de `tools` for uma chamada reconhecida (`tools.a.b(...)` ou `pick("...")`); um alias (`const g = tools.gmail`) ou colchetes (`tools["gmail"].send`) contam como escrita. `resume` nunca é leitura: o modelo não pode chamar `resume`; só a decisão humana em `decide` despacha.
 
 ## O que não é incerteza
 
