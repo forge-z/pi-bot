@@ -14,6 +14,7 @@ import {
 import type { TelegramApi } from "../src/telegram-api.js";
 import { TelegramBotApi } from "../src/telegram-api.js";
 import { secretRedactor } from "../src/config.js";
+import { Store } from "../src/store.js";
 
 const config = {
   token: "123:synthetic-only",
@@ -352,6 +353,19 @@ test("redaction covers API-key environment names and MCP token files", async () 
       ),
       "[REDACTED] [REDACTED] [REDACTED] [REDACTED]",
     );
+    const store = new Store(dir);
+    try {
+      store.db
+        .prepare("INSERT INTO credentials (provider, value) VALUES (?, ?)")
+        .run("openai", "sk-live-secretvalue");
+      const live = secretRedactor({}, [], () =>
+        store.all("SELECT value FROM credentials"),
+      );
+      assert.match(live("prefix sk-live-secretvalue suffix"), /\[REDACTED\]/);
+      assert.doesNotMatch(live("prefix sk-live-secretvalue suffix"), /sk-live/);
+    } finally {
+      store.db.close();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

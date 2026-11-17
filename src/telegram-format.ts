@@ -71,7 +71,7 @@ class HtmlChunks {
     if (!this.visible) return;
     for (const tag of [...this.tags].reverse())
       this.current += `</${tag.name}>`;
-    this.chunks.push(this.current);
+    this.chunks.push(stripEmptyTags(this.current));
     this.current = this.tags.map((tag) => tag.open).join("");
     this.visible = 0;
     this.visibleText = "";
@@ -81,7 +81,7 @@ class HtmlChunks {
     if (this.visible && this.visibleText.trim()) {
       for (const tag of [...this.tags].reverse())
         this.current += `</${tag.name}>`;
-      this.chunks.push(this.current);
+      this.chunks.push(stripEmptyTags(this.current));
     }
     return this.chunks;
   }
@@ -287,6 +287,23 @@ function decodeEntities(value: string) {
         : "\ufffd";
     },
   );
+}
+
+/** Telegram rejects an empty entity (`<b></b>`). Nested leftovers collapse too. */
+function stripEmptyTags(html: string) {
+  const empty = /<(b|i|s|code|pre|a)(?:\s[^<>]*)?><\/\1>/g;
+  let current = html;
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = current.replace(empty, "");
+    if (next === current) return current;
+    current = next;
+  }
+  return current;
+}
+
+/** Tags removed and entities decoded, for one resend without parse_mode. */
+export function telegramPlainText(html: string) {
+  return decodeEntities(html.replace(/<[^>]*>/g, ""));
 }
 
 function escapeText(value: string) {

@@ -199,12 +199,12 @@ function prepareExec(
     field &&
     typeof text === "string" &&
     !text.includes(mode.prompt)
-      ? { ...input, [field]: `${text}\n\n${mode.prompt}` }
-      : input;
+      ? { ...input, writes, [field]: `${text}\n\n${mode.prompt}` }
+      : { ...input, writes };
   const args = renderExec(task, env, jobId, goal, noted);
   if (!mode?.command) return args;
   const slot = commandSlot(args, mode.command);
-  if (!slot) return renderExec(task, env, jobId, goal, input);
+  if (!slot) return renderExec(task, env, jobId, goal, { ...input, writes });
   if (!mode.env) return args;
   const current = String(slot.parent[slot.key]);
   if (current !== mode.env && !current.startsWith(`${mode.env} `))

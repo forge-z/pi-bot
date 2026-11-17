@@ -37,6 +37,7 @@ import { resolveFunctions } from "./functions.js";
 import { transcribeAudio } from "./transcribe.js";
 import { describeImage } from "./vision.js";
 import { hash, type Delivery } from "./store.js";
+import { telegramPlainText } from "./telegram-format.js";
 import { imageVerdict, type OutboundMedia } from "./outbound.js";
 import { CommandError } from "./commands.js";
 import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
@@ -382,9 +383,46 @@ export class TelegramSendRefused extends Error {
   constructor(
     readonly code: number,
     readonly retryAfter = 0,
+    /**
+     * Telegram's `description`, unchanged. Redact before logging or storing.
+     * The Error message stays generic so a credential in the description cannot
+     * leak through a logger that prints `error.message`.
+     */
+    readonly description = "",
   ) {
     super(`Telegram refused the send (code ${code}).`);
   }
+}
+type DeliverySendOptions = NonNullable<
+  Parameters<TelegramTransport["send"]>[2]
+>;
+/**
+ * A 400 while parse_mode is set is a plain-text retry only when Telegram says
+ * it could not parse entities. Chat-not-found, blocked, too long and every
+ * other refusal were not delivered either, and are not sent again.
+ */
+function isHtmlParseRefusal(
+  error: unknown,
+  parseMode?: "HTML",
+): error is TelegramSendRefused {
+  return (
+    parseMode === "HTML" &&
+    error instanceof TelegramSendRefused &&
+    error.code === 400 &&
+    /can['’]t parse entities/i.test(error.description)
+  );
+}
+function redactedRefusal(
+  error: TelegramSendRefused,
+  redact?: (text: string) => string,
+) {
+  const raw = error.description
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 2000);
+  if (!raw) return "";
+  return (redact?.(raw) ?? raw).replace(/\s+/g, " ").trim().slice(0, 500);
 }
 const CLEAN_HELP = [
   "/model — provider and model",
@@ -622,7 +660,7 @@ export class Telegram {
       );
       if (data.kind === "mcp-check") {
         await verifyMcp(this.app, data, message.message_id);
-        await answer("Verificação registrada.");
+        await answer("Verification recorded.");
       } else if (data.kind === "mcp") {
         const work = decideMcp(this.app, data, message.message_id);
         this.approvalWork.add(work);
@@ -645,7 +683,7 @@ export class Telegram {
           message.message_id,
           this.transport,
         );
-        await answer("Menu de agendamentos atualizado.");
+        await answer("Schedule menu updated.");
       } else if (data.kind === "model") {
         await handleModelMenu(
           this.app,
@@ -663,7 +701,7 @@ export class Telegram {
               );
           },
         );
-        await answer("Menu de modelo atualizado.");
+        await answer("Model menu updated.");
       }
       return { control: true, conversationId: data.conversationId };
     } catch (error) {
@@ -1540,6 +1578,31 @@ export class Telegram {
     }
     return results;
   }
+  /**
+   * The HTML send was refused before delivery. One plain-text send, same
+   * destination. A network error on this call stays uncertain and is not tried
+   * again: the plain message may already have been accepted.
+   */
+  private async sendPlainAfterParseRefusal(
+    delivery: Delivery,
+    payload: string,
+    options: DeliverySendOptions | undefined,
+    error: TelegramSendRefused,
+  ) {
+    const plain = telegramPlainText(payload);
+    if (!plain.trim()) throw error;
+    const description = redactedRefusal(error, this.app.options.redact);
+    console.error(
+      `Pi-Agent: Telegram refused HTML for ${delivery.id} (code ${error.code}): ${description}. Sending once as plain text.`,
+    );
+    const rest: DeliverySendOptions = { ...(options ?? {}) };
+    delete rest.parseMode;
+    return this.transport.send(
+      delivery.chat,
+      plain,
+      Object.keys(rest).length ? rest : undefined,
+    );
+  }
   flush() {
     if (this.closing) return Promise.resolve();
     if (this.flushWork) return this.flushWork;
@@ -1726,16 +1789,26 @@ export class Telegram {
         if (delivery.text) {
           const payload =
             this.app.options.redact?.(delivery.text) ?? delivery.text;
+          const htmlOptions = hasOptions ? sendOptions : undefined;
           try {
             result = await this.transport.send(
               delivery.chat,
               payload,
-              hasOptions ? sendOptions : undefined,
+              htmlOptions,
             );
           } catch (error) {
-            // A deleted or missing reply target must not drop the message.
-            // The chat and topic stay the ones already on the delivery.
-            if (
+            // Entity HTML was refused, so it was not delivered. One plain
+            // resend keeps the same chat, topic and reply target.
+            if (isHtmlParseRefusal(error, sendOptions.parseMode)) {
+              result = await this.sendPlainAfterParseRefusal(
+                delivery,
+                payload,
+                htmlOptions,
+                error,
+              );
+            } else if (
+              // A deleted or missing reply target must not drop the message.
+              // The chat and topic stay the ones already on the delivery.
               sendOptions.replyTo &&
               error instanceof TelegramSendRefused &&
               error.code !== 429
@@ -1745,11 +1818,22 @@ export class Telegram {
               );
               const rest = { ...sendOptions };
               delete rest.replyTo;
-              result = await this.transport.send(
-                delivery.chat,
-                payload,
-                Object.keys(rest).length ? rest : undefined,
-              );
+              try {
+                result = await this.transport.send(
+                  delivery.chat,
+                  payload,
+                  Object.keys(rest).length ? rest : undefined,
+                );
+              } catch (retryError) {
+                if (isHtmlParseRefusal(retryError, rest.parseMode)) {
+                  result = await this.sendPlainAfterParseRefusal(
+                    delivery,
+                    payload,
+                    Object.keys(rest).length ? rest : undefined,
+                    retryError,
+                  );
+                } else throw retryError;
+              }
             } else throw error;
           }
         }
@@ -1782,9 +1866,21 @@ export class Telegram {
         }
         const failed =
           error instanceof TelegramSendRefused ? "failed" : "uncertain";
+        const description =
+          error instanceof TelegramSendRefused
+            ? redactedRefusal(error, this.app.options.redact)
+            : "";
+        if (error instanceof TelegramSendRefused)
+          console.error(
+            description
+              ? `Pi-Agent: Telegram refused ${delivery.id} (code ${error.code}): ${description}`
+              : `Pi-Agent: Telegram refused ${delivery.id} (code ${error.code}).`,
+          );
         const detail =
           error instanceof TelegramSendRefused
-            ? `${error.message} It was not delivered and will not be resent.`
+            ? description
+              ? `${error.message} ${description} It was not delivered and will not be resent.`
+              : `${error.message} It was not delivered and will not be resent.`
             : "Check Telegram. Not resent automatically.";
         this.app.store.run(
           "UPDATE deliveries SET state=?,result=? WHERE id=?",

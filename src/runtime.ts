@@ -9,6 +9,7 @@ import {
   type OutboundMedia,
 } from "./outbound.js";
 import { deterministicFailure, PendingJobs } from "./pending-jobs.js";
+import { redactSecretPatterns } from "./config.js";
 import { deadlineFailure } from "./mcp-calls.js";
 import {
   createReadSkillTool,
@@ -2804,10 +2805,11 @@ export class Runtime {
       requestId,
     )?.taskId;
     const flat = answer.replace(/\s+/g, " ").trim();
+    const hidden = redactSecretPatterns(this.options.redact?.(flat) ?? flat);
     const text =
-      flat.length > QUIET_LOG_LIMIT
-        ? `${flat.slice(0, QUIET_LOG_LIMIT)}…`
-        : flat;
+      hidden.length > QUIET_LOG_LIMIT
+        ? `${hidden.slice(0, QUIET_LOG_LIMIT)}…`
+        : hidden;
     const notified = runNotified(this.store, conversationId, requestId);
     console.log(
       `Pi-Agent: run agendado id=${taskId ?? requestId} notify=${notified ? "sim" : "não"} texto=${text}`,

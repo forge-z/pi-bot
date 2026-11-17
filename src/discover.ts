@@ -170,8 +170,12 @@ function renderValue(value: unknown, vars: Env): unknown {
   return value;
 }
 
-/** A dotted tool path inside Executor `execute`, not an MCP tool name. */
-function executorProgram(tool: string, args: unknown) {
+/**
+ * A tool call as the Executor sandbox sees it. `tools.instabox.machines.exec` is a
+ * property of the `tools` proxy, not an MCP tool name. A hyphenated segment uses a
+ * string key. The same expression is what job reads send.
+ */
+export function sandboxCall(tool: string, args: unknown) {
   const parts = String(tool ?? "")
     .split(".")
     .filter(Boolean);
@@ -358,7 +362,7 @@ async function invoke(
   return call(
     server,
     "execute",
-    { code: executorProgram(step.tool, args) },
+    { code: sandboxCall(step.tool, args) },
     { signal },
   );
 }

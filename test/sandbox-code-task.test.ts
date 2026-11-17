@@ -207,7 +207,12 @@ test("default config dispatches the configured Executor tool and registers the r
     );
     assert.equal(input.input.timeoutSeconds, 15);
     assert.doesNotMatch(input.input.cmd, new RegExp(secret));
-    const payload = JSON.parse(input.input.stdin) as Record<string, string>;
+    const payload = JSON.parse(input.input.stdin) as {
+      prompt: string;
+      repo: string;
+      writes: boolean;
+    };
+    assert.equal(payload.writes, false);
     assert.equal(
       payload.prompt,
       `${secret}\n\nSomente leitura: não faça push, não abra pull requests e não comente.`,
@@ -483,7 +488,7 @@ test("a config file swaps the sandbox without code changes", async () => {
     assert.deepEqual(f.calls[0], {
       server: "freestyle",
       tool: "freestyle.jobs.start",
-      args: { task: JSON.stringify({ task: "gerar" }) },
+      args: { task: JSON.stringify({ task: "gerar", writes: false }) },
     });
     const row = f.app.store.get<{ tool: string }>(
       "SELECT tool FROM pending_jobs WHERE conversation_id=?",

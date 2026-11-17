@@ -187,6 +187,7 @@ export class TelegramPolling {
               throw new TelegramSendRefused(
                 error.refusedCode,
                 error.retryAfter,
+                error.description,
               );
             throw error;
           }
@@ -397,9 +398,9 @@ export class TelegramPolling {
               try {
                 await this.engine.receive(value, signal);
               } catch (error) {
-                if (isRetryableError(error)) {
-                  const attempts =
-                    (this.retries.get(value.update_id)?.attempts ?? 0) + 1;
+                const attempts =
+                  (this.retries.get(value.update_id)?.attempts ?? 0) + 1;
+                if (isRetryableError(error) && attempts < 8) {
                   this.retries.set(value.update_id, {
                     lane,
                     attempts,
@@ -424,11 +425,15 @@ export class TelegramPolling {
                       : `Telegram update ${value.update_id} failed; the topic continues.`,
                     known ? undefined : error,
                   );
-                  const text =
+                  const raw =
                     error instanceof Error && error.message
                       ? error.message
                       : "I could not process this message. The topic continues.";
-                  await this.replyToUpdate(value, text, signal);
+                  await this.replyToUpdate(
+                    value,
+                    this.app.options.redact?.(raw) ?? raw,
+                    signal,
+                  );
                 }
               } finally {
                 this.inFlightUpdates.delete(value.update_id);
@@ -439,11 +444,13 @@ export class TelegramPolling {
               }
             });
           this.lanes.set(lane, task);
-          task.finally(() => {
-            if (this.lanes.get(lane) === task) {
-              this.lanes.delete(lane);
-            }
-          });
+          task
+            .finally(() => {
+              if (this.lanes.get(lane) === task) {
+                this.lanes.delete(lane);
+              }
+            })
+            .catch(() => {});
         }
         failures = 0;
         if (newUpdatesCount === 0) await delay(100, undefined, { signal });

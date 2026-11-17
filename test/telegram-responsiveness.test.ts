@@ -1,9 +1,11 @@
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Runtime } from "../src/runtime.js";
+import { CommandError } from "../src/commands.js";
+import { retryableError, Runtime } from "../src/runtime.js";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { configureTelegram, TelegramPolling } from "../src/telegram-polling.js";
@@ -262,6 +264,72 @@ test("updates de chats diferentes rodam em paralelo e offset avança apenas de f
 
     await polling.close();
   } finally {
+    await f.close();
+  }
+});
+
+test("a retryable update settles and replies after 8 attempts", async (t) => {
+  const f = await fixture();
+  const sent: string[] = [];
+  f.app.tasks.start = () => {};
+  f.app.options.redact = (text) =>
+    text.replaceAll("sk-live-secret", "[REDACTED]");
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
+  const polling = new TelegramPolling(
+    f.app,
+    {
+      call: async (method: string, payload?: Record<string, unknown>) => {
+        if (method === "getUpdates") {
+          const offset = Number((payload as { offset?: number }).offset ?? 0);
+          if (offset > 1) return [];
+          return [
+            {
+              update_id: 1,
+              message: {
+                message_id: 10,
+                from: { id: 42, is_bot: false },
+                chat: { id: -100123, type: "supergroup" },
+                text: "oi",
+                date: 1,
+              },
+            },
+          ];
+        }
+        if (method === "sendMessage") {
+          sent.push(String((payload as { text?: string }).text ?? ""));
+          return { message_id: 11 };
+        }
+        return {};
+      },
+    } as unknown as TelegramApi,
+    config,
+    { id: 123 },
+  );
+  polling.engine.receive = async () => {
+    throw retryableError(new CommandError("route failed sk-live-secret"));
+  };
+  try {
+    polling.start();
+    for (let step = 0; step < 12 && sent.length === 0; step += 1) {
+      const kicked = delay(100);
+      t.mock.timers.tick(31_000);
+      await kicked;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].includes("sk-live-secret"), false);
+    assert.match(sent[0], /\[REDACTED\]/);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      f.app.store.get<{ value: string }>(
+        "SELECT value FROM meta WHERE key=?",
+        "telegram:offset:123",
+      )?.value,
+      "2",
+    );
+  } finally {
+    t.mock.timers.reset();
+    await polling.close();
     await f.close();
   }
 });

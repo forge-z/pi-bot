@@ -9,6 +9,7 @@ import {
   MCP_SESSION_PROBE_TTL_MS,
   McpGateway,
   McpNotSentError,
+  chooseElicitation,
 } from "../src/mcp.js";
 import { McpCalls, mcpCallIsReadOnly } from "../src/mcp-calls.js";
 import { Store } from "../src/store.js";
@@ -1327,7 +1328,36 @@ test("mcpCallIsReadOnly accepts exact read contracts and literal call templates"
     }),
     false,
   );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const g = tools.gmail; await tools.gmail.listLabels({}); await g.sendMessage({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'await tools["gmail"].sendMessage({})',
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "await tools.gmail.listLabels({}); await tools.search({})",
+    }),
+    true,
+  );
   assert.equal(mcpCallIsReadOnly("execute", undefined), false);
+});
+
+test("elicitation cancels when two calls on the same server could own it", () => {
+  const first = { onElicitation: async () => ({ action: "accept" as const }) };
+  const second = {
+    onElicitation: async () => ({ action: "decline" as const }),
+  };
+  assert.equal(chooseElicitation([first, second]), undefined);
+  assert.equal(chooseElicitation([{}, first]), first);
+  assert.equal(chooseElicitation(undefined), undefined);
+  assert.equal(chooseElicitation([{}]), undefined);
 });
 
 test("an uncertain result blocks actions but never reads", async () => {
@@ -1351,10 +1381,7 @@ test("an uncertain result blocks actions but never reads", async () => {
     // A name-based read stays open. It does not clear the uncertain write.
     const sandboxRead = await calls
       .execute("conversation", 31, "mock", "execute", {
-        code: [
-          'const pick = (p) => p.split(".").reduce((o, k) => o[k], tools);',
-          'return JSON.stringify(await pick("tools.mock.agent.runs.listRuns")({}));',
-        ].join("\n"),
+        code: 'return JSON.stringify(await pick("tools.mock.agent.runs.listRuns")({}));',
       })
       .then(
         (result) => text(result),
@@ -1362,6 +1389,13 @@ test("an uncertain result blocks actions but never reads", async () => {
       );
     assert.doesNotMatch(text(sandboxRead), /resultado MCP incerto/i);
     assert.equal(calls.list("conversation")[0].state, "uncertain");
+    // An alias hides the call from the recognizer, so the execute is a write.
+    await assert.rejects(
+      calls.execute("conversation", 33, "mock", "execute", {
+        code: "const g = tools.gmail; await g.listLabels({})",
+      }),
+      /resultado MCP incerto/i,
+    );
     store.run(
       `INSERT INTO mcp_calls(id,conversationId,server,tool,args,state,result,binding,updatedAt)
        VALUES ('lost3','conversation','mock','execute','{}','uncertain','{"isError":true}','mock',0)`,

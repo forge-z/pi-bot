@@ -223,6 +223,30 @@ function readTimeoutText(label: string, read: boolean) {
   return `A chamada ${label} estourou o prazo de ${seconds}s e foi encerrada. ${timeoutTail(read)}${longJobHint()}`;
 }
 
+/** `tools` words in code must each be a recognized call. An alias or `tools["a"]` is a write. */
+function codeIsAccounted(value: unknown, depth = 0): boolean {
+  if (depth > 8 || value == null) return true;
+  if (typeof value === "string") {
+    if (!/\btools\b|\bpick\s*\(/.test(value)) return true;
+    const found: InnerCall[] = [];
+    pushCodeCalls(value, found);
+    return (value.match(/\btools\b/g)?.length ?? 0) === found.length;
+  }
+  if (Array.isArray(value))
+    return value.every((item) => codeIsAccounted(item, depth + 1));
+  if (!object(value)) return true;
+  const target =
+    typeof value.path === "string" ||
+    typeof value.address === "string" ||
+    typeof value.tool === "string";
+  for (const key of ["calls", "execution", "code", "body"] as const) {
+    if (key in value && !codeIsAccounted(value[key], depth + 1)) return false;
+  }
+  if (!target && "input" in value && !codeIsAccounted(value.input, depth + 1))
+    return false;
+  return true;
+}
+
 /** A read never needs a decision and never changes state. Reads stay open while
  * another call on this server is uncertain, because checking that result means reading.
  * A later read does not clear the uncertainty. */
@@ -277,6 +301,8 @@ export function mcpCallIsReadOnly(
   const safeArgs = object(args) ? args : {};
   if (DELEGATED.has(tool)) {
     const inner = innerCalls(safeArgs);
+    // A `tools` word that is not a call (alias, brackets) is a write.
+    if (!codeIsAccounted(safeArgs)) return false;
     // Inner targets use config globs. The outer tool's readOnlyHint is not theirs.
     return (
       inner.length > 0 &&
@@ -999,14 +1025,13 @@ export class McpCalls {
     const combined = signal
       ? AbortSignal.any([controller.signal, signal])
       : controller.signal;
-    const deadlineMs = mcpCallTimeoutMs();
-    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (this.closed)
         throw new McpNotSentError(
           "Aplicação encerrando; nenhuma chamada MCP foi enviada",
         );
-      const attempt = this.gateway.callDirect(call.server, tool, args, {
+      // The gateway deadline is the timeout. A second race here only duplicated it.
+      const result = await this.gateway.callDirect(call.server, tool, args, {
         signal: combined,
         binding: call.binding,
         readOnly: this.isRead(call.server, tool, args),
@@ -1019,21 +1044,6 @@ export class McpCalls {
               : combined,
           ),
       });
-      void attempt.catch(() => {});
-      const result = await Promise.race([
-        attempt,
-        new Promise<CallToolResult>((_, reject) => {
-          deadlineTimer = setTimeout(() => {
-            controller.abort();
-            void this.gateway.releaseSession(call.server);
-            reject(
-              new McpError(
-                readTimeoutText(tool, this.isRead(call.server, tool, args)),
-              ),
-            );
-          }, deadlineMs);
-        }),
-      ]);
       const links = authRedirects(result);
       if (links.length)
         throw new McpUrlElicitationRequiredError(
@@ -1245,7 +1255,6 @@ export class McpCalls {
       if (scheduledSkip) return result;
       throw outgoing;
     } finally {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
       // If the call never left `running` (the await wedged, or the ledger write
       // failed), the conversation must not stay locked.
       this.forceRelease(

@@ -13,8 +13,8 @@ export type JobState =
 
 /** Where the id comes from: at dispatch, later, or nowhere (blocking call). */
 type DispatchMode = "immediate" | "deferred" | "opaque";
-/** How the job is watched: a status call, an pushed event, or a search. */
-type ObserveMode = "poll" | "webhook" | "reconcile";
+/** How the job is watched: a status call, or a search. There is no webhook ingress. */
+type ObserveMode = "poll" | "reconcile";
 
 export interface JobManifest {
   /** Tool path that starts the job, e.g. `tools.tinyfish.agent.automation.runAsync`. */
@@ -242,7 +242,7 @@ function normalizeManifest(entry: Record<string, unknown>): JobManifest {
     },
     observe: {
       ...manifest.observe,
-      mode: manifest.observe?.mode ?? "poll",
+      mode: manifest.observe?.mode === "reconcile" ? "reconcile" : "poll",
     },
   };
 }
