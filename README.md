@@ -8,7 +8,7 @@
 
 # Pi Bot
 
-A personal AI assistant that lives in Telegram: one container, one volume, no web panel. It runs on the [pi.dev](https://pi.dev) harness. Tools come from [Executor](https://executor.sh) and, optionally, [Composio](https://composio.dev).
+A personal AI assistant that lives in Telegram: one container, one volume, no web panel. It runs on the [pi.dev](https://pi.dev) harness. Tools come from [Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs), or a self-hosted MCP gateway.
 
 **Status: Beta.** Usable day to day; configuration and commands may still change between releases.
 
@@ -34,12 +34,16 @@ docker exec -it <container> npm run setup
 The menu edits one section at a time. **Save and back** writes that section. **Save and restart gateway** reloads the running bot from the volume.
 
 1. **Setup gateway** → **Telegram** — bot token (hidden; Enter keeps the saved value) and allowed numeric user ids.
-2. **Text model** — an official pi-ai provider, or `[0]` ChatGPT (Plus/Pro OAuth, no API key). `npm run login` is OAuth only.
+2. **Text model** — an official pi-ai provider, or `[0]` ChatGPT (Plus/Pro OAuth, no API key). `npm run login` is ChatGPT/Codex OAuth only.
 3. **Image model**
 4. **Audio model**
-5. **MCP platform** — Executor, Composio, both, or none.
+5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, both (Executor plus Composio), or none.
 
-There is no `/login` command. OAuth needs a localhost callback or a pasted redirect URL.
+Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram for the first allowed user. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
+
+Self-hosted is one generic MCP URL, an optional token (credential `mcp-self-hosted`), and an optional header. An empty header sends `Authorization: Bearer`. Another name sends the raw token. An empty token sends no auth header. Optional overrides, none required: `SELF_HOSTED_MCP_URL`, `SELF_HOSTED_TOKEN`, `SELF_HOSTED_HEADER`. A set URL turns the server on even when the menu choice is something else. UsefulSoftwareCo/executor speaks Streamable HTTP at `<origin>/mcp` (local CLI `http://127.0.0.1:4312/mcp`, Docker `http://127.0.0.1:4400/mcp`) with a personal access token or local API key as `Authorization: Bearer`. The Executor menu item is still the one that keeps Executor's approval relay and jobs. runelay speaks Streamable HTTP at `<origin>/v1/mcp` (local app `http://127.0.0.1:4312/v1/mcp`) with a per-agent `rnl_…` key as `Authorization: Bearer`.
+
+There is no `/login` command. ChatGPT/Codex OAuth needs a localhost callback or a pasted redirect URL. That path is separate from Upsy.
 
 Environment variables are optional overrides. When one is set, it wins over the value stored on the volume. `TZ` is the container clock (log timestamps). Schedules keep their own IANA timezone. Setup does not store `TZ`. Omit it for UTC.
 
@@ -77,13 +81,13 @@ skills:
     - weekly-review
 ```
 
-Each body is read once at startup and appended, in that order, to the system prompt after the base instructions and before the MCP sections. An empty list, or a skills folder that is not there, leaves the prompt unchanged. A missing name, invalid frontmatter, or an unreadable file is logged and skipped. The bot still starts.
+The system prompt lists each name and description, in that order, after the base instructions and before the MCP sections. The model loads a body with the read-only `read_skill` tool. The list is the same on every reply, including scheduled runs. An empty list, or a skills folder that is not there, leaves the prompt unchanged and does not register the tool. A missing name, invalid frontmatter, or an unreadable file is logged and skipped. An unknown `read_skill` name returns an error and no body. The bot still starts.
 
 ## There's an API or MCP for that
 
 Steve Jobs closed the 2010 iPad event with "there's an app for that" ([CBS](https://www.cbsnews.com/news/steve-jobs-at-the-heavenly-gates-theres-an-app-for-that/)). Before adding a capability to the bot, connect an API or an MCP server that already does the job.
 
-`npm run setup` attaches [Executor](https://executor.sh), [Composio](https://composio.dev), both, or neither, and stores the choice on the volume. Further servers go in an MCP list: a JSON file named by `MCP_CONFIG_FILE`, or the same JSON in `MCP_SERVERS_JSON`. That list replaces the aggregators that setup saved, so repeat Executor or Composio in it when you still want them. Each entry has `name`, `url`, and, when the server needs a key, `tokenEnv` (the environment variable that holds the raw key). Leave the key out of the file. The bot sends `Authorization: Bearer <key>` unless `tokenHeader` names another header. The env value is the raw key, with no `Bearer` prefix. A URL with a query string is rejected, so use the bare endpoint even when a provider's docs show `?login` or `?tools=`. Naming a `tokenEnv` variable that is unset stops startup. Executor decides which of its calls need approval; the bot only relays that pause. It does not add a second approval from the read/write lists. An interactive pause is the existing card. A scheduled run cannot wait: the call is still sent, and if Executor returns approval-required the tool fails with `needs approval; not available in scheduled runs` plus the tool path. No card is posted and resume is not called. A server with no `tools` list of its own uses Executor's lists and the same rule. Composio has its own list, so a write there is still refused in a scheduled run before it is sent. `sandbox_code_task` with `writes=true` still waits for its card.
+`npm run setup` attaches [Composio](https://composio.dev), [Executor](https://executor.sh), [Upsy](https://upsy.ai/connect), a self-hosted gateway, both (Executor plus Composio), or neither, and stores the choice on the volume. Upsy uses OAuth 2.1 with PKCE and has no API key. Self-hosted takes a URL and an optional token or header (`SELF_HOSTED_MCP_URL`, `SELF_HOSTED_TOKEN`, `SELF_HOSTED_HEADER`). Further servers go in an MCP list: a JSON file named by `MCP_CONFIG_FILE`, or the same JSON in `MCP_SERVERS_JSON`. That list replaces the aggregators that setup saved, so repeat Executor or Composio in it when you still want them. Each entry has `name`, `url`, and, when the server needs a key, `tokenEnv` (the environment variable that holds the raw key). Leave the key out of the file. The bot sends `Authorization: Bearer <key>` unless `tokenHeader` names another header. The env value is the raw key, with no `Bearer` prefix. A URL with a query string is rejected, so use the bare endpoint even when a provider's docs show `?login` or `?tools=`. Naming a `tokenEnv` variable that is unset stops startup. Executor decides which of its calls need approval; the bot only relays that pause. It does not add a second approval from the read/write lists. An interactive pause is the existing card. A scheduled run cannot wait: the call is still sent, and if Executor returns approval-required the tool fails with `needs approval; not available in scheduled runs` plus the tool path. No card is posted and resume is not called. A server with no `tools` list of its own uses Executor's lists and the same rule. Composio has its own list, so a write there is still refused in a scheduled run before it is sent. `sandbox_code_task` with `writes=true` still waits for its card.
 
 `$DATA_DIR/config.yaml` does not connect servers. Its `mcp_servers` map classifies tools as read or write. Those lists still apply to uncertain results, timeouts, and retries. A server with no `tools` list of its own uses the executor globs in `config.default.yaml`.
 
@@ -128,16 +132,17 @@ Executor and Composio use those same fields. The Executor v2 cloud URL in [docs/
 
 The app registers this menu on start. There is nothing to set in BotFather.
 
-| Command     | What it does                                                             |
-| ----------- | ------------------------------------------------------------------------ |
-| `/model`    | Provider and model for this topic                                        |
-| `/thinking` | Effort for this topic                                                    |
-| `/crons`    | Create and manage schedules                                              |
-| `/new`      | Another conversation in this topic. The previous one stays on the volume |
-| `/resume`   | Resume a stuck task: a crash-parked task, or an uncertain MCP result     |
-| `/stop`     | Stop this topic                                                          |
-| `/status`   | Model, MCPs, the current run, and the version                            |
-| `/help`     | This list                                                                |
+| Command     | What it does                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| `/model`    | Provider and model for this topic                                                                 |
+| `/thinking` | Effort for this topic                                                                             |
+| `/crons`    | Create and manage schedules                                                                       |
+| `/new`      | Another conversation in this topic. The previous one stays on the volume                          |
+| `/resume`   | Resume a stuck task: a crash-parked task, or an uncertain MCP result                              |
+| `/stop`     | Stop this topic                                                                                   |
+| `/compact`  | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
+| `/status`   | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
+| `/help`     | This list                                                                                         |
 
 `/resume` dismisses an uncertain MCP result without repeating the call (the call may already have run) and continues a task that was parked after a crash. `/new` does not clear an uncertain result.
 

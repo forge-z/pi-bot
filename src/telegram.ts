@@ -40,6 +40,11 @@ import { hash, type Delivery } from "./store.js";
 import { imageVerdict, type OutboundMedia } from "./outbound.js";
 import { CommandError } from "./commands.js";
 import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
+import {
+  acceptStoredOauthPaste,
+  UPSY_OAUTH_CREDENTIAL,
+  vaultFromStore,
+} from "./mcp-oauth.js";
 import { SettingsError } from "./settings.js";
 import { TaskError } from "./tasks.js";
 import {
@@ -388,9 +393,10 @@ const CLEAN_HELP = [
   "/new — another conversation in this topic (the previous one stays)",
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
-  "/status — status",
+  "/compact — compact this topic (optional instructions)",
+  "/status — status, including tokens and cost",
   "/help — help",
-  "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort.",
+  "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort. /compact runs that same compaction now; text after the command is optional focus for this topic. Upsy sign-in: open the link the bot sends (or the one npm run setup prints) and paste the final browser URL back, even if the page does not load.",
 ].join("\n");
 
 /** One reply for /resume: parked work, an uncertain MCP result, both, or neither. */
@@ -1169,6 +1175,15 @@ export class Telegram {
     }
     const reply = (message: string) =>
       queueControl(this.app, `telegram:clean:${updateId}`, owner, id, message);
+    const oauthPaste = await acceptStoredOauthPaste(
+      vaultFromStore(this.app.store),
+      UPSY_OAUTH_CREDENTIAL,
+      text,
+    );
+    if (oauthPaste.handled) {
+      reply(oauthPaste.message);
+      return { conversationId: id, control: true };
+    }
     try {
       const command = /^\/([a-z]+)(?:\s|$)/.exec(text)?.[1];
       if (command === "model" || command === "thinking") {
@@ -1215,6 +1230,7 @@ export class Telegram {
           this.app.settings.setup(),
           this.app.settings.setupKeys(),
         );
+        const usage = await this.app.usageLine(id);
         reply(
           [
             "Models:",
@@ -1224,6 +1240,7 @@ export class Telegram {
             `Audio: ${this.featureLabel(functions.audio, "off")}`,
             "",
             `Runs in this topic: ${active.length} · Pending approvals: ${pending}`,
+            usage,
             "",
             "MCP ledger:",
             ledger,
@@ -1236,6 +1253,14 @@ export class Telegram {
             `Version: ${info.version ?? "dev"} (${info.commit ?? "no SHA"})`,
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
+        );
+      } else if (command === "compact") {
+        const instructions = text.slice("/compact".length).trim();
+        reply(
+          await this.app.compactConversation(
+            id,
+            instructions ? instructions : undefined,
+          ),
         );
       } else if (text === "/resume") {
         // Dismiss uncertain MCP first, then continue a crash-parked task.

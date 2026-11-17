@@ -10,7 +10,11 @@ import {
 } from "./outbound.js";
 import { deterministicFailure, PendingJobs } from "./pending-jobs.js";
 import { deadlineFailure } from "./mcp-calls.js";
-import { loadOperatorSkills } from "./operator-skills.js";
+import {
+  createReadSkillTool,
+  loadOperatorSkills,
+  operatorSkillCatalog,
+} from "./operator-skills.js";
 import {
   createSandboxCodeTaskTool,
   JOB_INDETERMINATE,
@@ -29,6 +33,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { Type } from "typebox";
 import type { ImageContent, Message } from "@earendil-works/pi-ai";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import {
   Harness,
   createRegistry,
@@ -38,6 +43,8 @@ import {
   hook,
   GenerationTask,
   LiveDoc,
+  UsageDoc,
+  type CompactionResult,
   type ConversationId,
   type ToolExecutionApi,
   type Registry,
@@ -109,7 +116,11 @@ import {
 import { recentChatLines, scheduledChat } from "./telegram-reply.js";
 import { Commands, CommandError, type CommandAccess } from "./commands.js";
 import { MAX_TEXT, REQUEST_ID } from "./limits.js";
-import { conversationUsageTool } from "./conversation-usage.js";
+import {
+  conversationUsageTool,
+  formatConversationUsageLine,
+  summarizeConversationUsage,
+} from "./conversation-usage.js";
 import { createAskUserTool } from "./ask-user.js";
 import {
   executorDecidesApproval,
@@ -557,9 +568,11 @@ export class Runtime {
     try {
       app = new Runtime(options);
       app.release = release;
-      // Read once. The same string is returned on every turn, including
-      // scheduled runs, so the prefix stays cacheable. Empty omits the section.
+      // Read once. The prompt lists name and trigger. The body stays behind
+      // read_skill. Empty omits the section and the tool, including on
+      // scheduled runs, so the prefix stays cacheable.
       const operatorSkills = loadOperatorSkills(options.env ?? process.env);
+      const operatorSkillPrompt = operatorSkillCatalog(operatorSkills);
       const registry = (app.registry = createRegistry());
       registry.install(
         defineExtension({
@@ -588,7 +601,7 @@ export class Runtime {
             ),
             section(
               "operator-skills",
-              () => (operatorSkills ? operatorSkills : undefined),
+              () => (operatorSkillPrompt ? operatorSkillPrompt : undefined),
               { tag: false },
             ),
           ],
@@ -935,6 +948,9 @@ export class Runtime {
               },
             }),
             conversationUsageTool,
+            ...(operatorSkillPrompt
+              ? [createReadSkillTool(operatorSkills)]
+              : []),
             defineTool({
               name: "mcp_tools",
               description:
@@ -3028,6 +3044,97 @@ export class Runtime {
         row.requestId,
       );
       this.monitorSubmission(conversation, submission, row);
+    }
+  }
+  /** One `/status` line: this conversation's tokens, and USD when the price is known. */
+  async usageLine(id: string): Promise<string> {
+    try {
+      const state = await this.harness.snapshot(
+        UsageDoc,
+        Number(id) as ConversationId,
+        context,
+      );
+      return formatConversationUsageLine(summarizeConversationUsage(state));
+    } catch {
+      return "Usage: unavailable";
+    }
+  }
+  /**
+   * Manual compaction for this conversation. Uses the harness task, including
+   * optional focus instructions. Refuses while the topic still has work, the
+   * same gate as a model change.
+   */
+  async compactConversation(
+    id: string,
+    instructions?: string,
+  ): Promise<string> {
+    const active = await this.harness.inspect(context);
+    if (
+      active.tasks.some(({ record }) => String(record.conversationId) === id) ||
+      this.store.get(
+        "SELECT 1 FROM requests WHERE conversationId=? AND status='pending'",
+        id,
+      )
+    )
+      throw new CommandError(
+        "Wait for this topic to finish before compacting.",
+      );
+    let conversation: Awaited<ReturnType<Runtime["conversation"]>>;
+    let taskId: Awaited<
+      ReturnType<Awaited<ReturnType<Runtime["conversation"]>>["compact"]>
+    >;
+    const focus = instructions?.trim();
+    let before: number | undefined;
+    try {
+      conversation = await this.conversation(id);
+      before = await this.contextTokens(conversation);
+      taskId = await conversation.compact(focus ? focus : undefined, context);
+    } catch (error) {
+      if (
+        error instanceof ConversationBusy ||
+        error instanceof ConversationBusyError
+      )
+        throw new CommandError(
+          "Wait for this topic to finish before compacting.",
+        );
+      throw error;
+    }
+    const settled = await this.harness.waitForTask(taskId, context);
+    const outcome = settled.state.outcome;
+    if (outcome.status === "failed") {
+      const detail = outcome.error.message.replace(/\s+/g, " ").trim();
+      return detail
+        ? `Compaction did not finish. ${detail.slice(0, 200)}`
+        : "Compaction did not finish.";
+    }
+    if (outcome.status !== "completed") return "Compaction did not finish.";
+    const result: CompactionResult = outcome.result;
+    if (result.entryId === undefined && result.submissionId === undefined)
+      return "Nothing to compact in this topic.";
+    if (result.submissionId !== undefined) {
+      const submission = await this.harness.submission(
+        result.submissionId,
+        context,
+      );
+      const placed = submission ? await submission.wait(context) : undefined;
+      if (!placed || placed.status !== "done")
+        return "Compaction did not finish.";
+    }
+    const after = await this.contextTokens(conversation);
+    if (before === undefined || after === undefined)
+      return "Compacted this topic.";
+    const count = (value: number) => Math.round(value).toLocaleString("en-US");
+    return `Compacted this topic. Tokens: ${count(before)} → ${count(after)}.`;
+  }
+  private async contextTokens(
+    conversation: Awaited<ReturnType<Runtime["conversation"]>>,
+  ): Promise<number | undefined> {
+    try {
+      const view = await conversation.context(context);
+      const tokens = estimateContextTokens(view.messages).tokens;
+      return Number.isFinite(tokens) ? tokens : undefined;
+    } catch {
+      return undefined;
     }
   }
   async snapshot(id: string) {

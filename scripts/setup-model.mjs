@@ -59,6 +59,7 @@ import {
   setupMenuStatus,
   telegramChatsNote,
   validAggregatorUserId,
+  validMcpHeaderName,
   validTelegramToken,
   writeStoredAggregators,
   writeStoredSetup,
@@ -75,6 +76,14 @@ import {
   subscriptionChatCatalog,
   writeChatgptAuthMode,
 } from "../dist/src/subscription-login.js";
+import {
+  McpOauthError,
+  promptMcpOauthLogin,
+  readOauthCredential,
+  UPSY_OAUTH_CREDENTIAL,
+  UPSY_OAUTH_PROFILE,
+  writeOauthCredential,
+} from "../dist/src/mcp-oauth.js";
 
 const MODE = "live";
 const usage = `Usage: npm run setup -- [options]
@@ -97,19 +106,25 @@ const usage = `Usage: npm run setup -- [options]
   --audio-api <openai|gemini> audio request shape
   --audio-language <code>     transcription language (empty = detect)
   --dry-run                   show what would be written, without writing
-  --aggregators <choice>      executor | composio | both | none
+  --aggregators <choice>      composio | executor | upsy | self-hosted | both | none
+                              (1 composio, 2 executor, 3 upsy, 4 self-hosted, 5 both, 6 none)
   --executor-url <url>        Executor MCP URL (with --aggregators)
   --executor-token-stdin      Executor token from stdin
   --composio-url <url>        Composio MCP URL (default: Connect)
   --composio-user <id>        Composio user id
   --composio-key-stdin        Composio key from stdin
+  --self-hosted-url <url>     self-hosted MCP URL (with --aggregators self-hosted)
+  --self-hosted-header <name> header for the token (default: Authorization, sent as Bearer)
+  --self-hosted-token-stdin   self-hosted token from stdin (optional)
   --telegram-token-stdin      bot token from stdin
   --telegram-users <ids>      comma-separated numeric user ids
                               (empty keeps the saved list)
 
 A saved secret is never printed. Enter keeps it. One secret per stdin.
-TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, COMPOSIO_* and EXECUTOR_* override
-the volume when set. TELEGRAM_ALLOWED_CHATS and TZ stay environment-only.
+TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, COMPOSIO_*, EXECUTOR_* and
+SELF_HOSTED_* override the volume when set. SELF_HOSTED_TOKEN is optional.
+Upsy has no environment variable; --aggregators upsy needs a refresh token
+already stored. TELEGRAM_ALLOWED_CHATS and TZ stay environment-only.
 LLM_API_KEY still feeds the compat reserve ("Other") and is read when
 --key-stdin is absent. LLM_BASE_URL and LLM_API_KEY are not required and do not
 replace a saved official setup. Without a terminal, use the flags.`;
@@ -137,6 +152,9 @@ const options = {
   composioUrl: undefined,
   composioUser: undefined,
   composioKeyStdin: false,
+  selfHostedUrl: undefined,
+  selfHostedHeader: undefined,
+  selfHostedTokenStdin: false,
   telegramTokenStdin: false,
   telegramUsers: undefined,
 };
@@ -160,6 +178,12 @@ for (let index = 0; index < argv.length; index += 1) {
   else if (arg === "--composio-url") options.composioUrl = argv[(index += 1)];
   else if (arg === "--composio-user") options.composioUser = argv[(index += 1)];
   else if (arg === "--composio-key-stdin") options.composioKeyStdin = true;
+  else if (arg === "--self-hosted-url")
+    options.selfHostedUrl = argv[(index += 1)];
+  else if (arg === "--self-hosted-header")
+    options.selfHostedHeader = argv[(index += 1)] ?? "";
+  else if (arg === "--self-hosted-token-stdin")
+    options.selfHostedTokenStdin = true;
   else if (arg === "--telegram-token-stdin") options.telegramTokenStdin = true;
   else if (arg === "--telegram-users")
     options.telegramUsers = argv[(index += 1)] ?? "";
@@ -856,8 +880,13 @@ function loadSession() {
       composioUser: aggregators.record?.composio?.userId,
       executorToken: aggregators.executorToken,
       composioKey: aggregators.composioKey,
+      selfHostedUrl: aggregators.record?.selfHosted?.url,
+      selfHostedHeader: aggregators.record?.selfHosted?.header,
+      selfHostedToken: aggregators.selfHostedToken,
+      upsySignedIn: Boolean(aggregators.upsy?.refresh),
       newExecutor: undefined,
       newComposio: undefined,
+      newSelfHosted: undefined,
     },
   };
 }
@@ -2071,14 +2100,61 @@ async function mcpFields(readline, draft) {
     );
     if (typed) draft.newComposio = typed;
   }
-  if (draft.choice === "none")
-    console.log(
-      "MCP platform set to none. Saved Executor and Composio credentials are kept.",
+  if (draft.choice === "upsy") {
+    try {
+      const existing = readOauthCredential(db, UPSY_OAUTH_CREDENTIAL);
+      const result = await promptMcpOauthLogin(
+        UPSY_OAUTH_PROFILE,
+        {
+          log: (line) => console.log(line),
+          ask: (prompt) => readline.question(prompt),
+          save: (credential) =>
+            writeOauthCredential(db, UPSY_OAUTH_CREDENTIAL, credential),
+        },
+        existing,
+      );
+      if (result === "kept" || result === "signed-in")
+        draft.upsySignedIn = true;
+      if (result === "signed-in") console.log("Save and back turns Upsy on.");
+    } catch (error) {
+      console.log(
+        error instanceof McpOauthError ? error.message : "Upsy sign-in failed.",
+      );
+    }
+  }
+  if (draft.choice === "self-hosted") {
+    const current =
+      process.env.SELF_HOSTED_MCP_URL?.trim() || draft.selfHostedUrl || "";
+    draft.selfHostedUrl =
+      (
+        await readline.question(`MCP URL${current ? ` [${current}]` : ""}: `)
+      ).trim() || current;
+    const typed = await askSecret(
+      readline,
+      "Token",
+      Boolean(draft.selfHostedToken || draft.newSelfHosted),
     );
+    if (typed) draft.newSelfHosted = typed;
+    const shown =
+      process.env.SELF_HOSTED_HEADER?.trim() ||
+      draft.selfHostedHeader ||
+      "Authorization";
+    const header = (
+      await readline.question(
+        `Header [${shown}] (Authorization sends Bearer): `,
+      )
+    ).trim();
+    const next = header || shown;
+    draft.selfHostedHeader =
+      !next || next.toLowerCase() === "authorization" ? "" : next;
+  }
+  if (draft.choice === "none")
+    console.log("MCP platform set to none. Saved credentials are kept.");
 }
 
 function saveMcp(draft) {
-  if (!draft.choice) return "Choose Executor, Composio, both, or none.";
+  if (!draft.choice)
+    return "Choose Composio, Executor, Upsy, Self-hosted, both, or none.";
   const built = aggregatorFields({
     choice: draft.choice,
     executorUrl: draft.executorUrl,
@@ -2086,11 +2162,16 @@ function saveMcp(draft) {
     composioUrl: draft.composioUrl,
     composioUser: draft.composioUser,
     composioKey: draft.newComposio || draft.composioKey,
+    selfHostedUrl: draft.selfHostedUrl,
+    selfHostedHeader: draft.selfHostedHeader,
+    selfHostedToken: draft.newSelfHosted || draft.selfHostedToken,
+    upsyReady: Boolean(draft.upsySignedIn),
   });
   if (built.error) return built.error;
   persistAggregators(built.record, {
     ...(draft.newExecutor ? { executor: draft.newExecutor } : {}),
     ...(draft.newComposio ? { composio: draft.newComposio } : {}),
+    ...(draft.newSelfHosted ? { selfHosted: draft.newSelfHosted } : {}),
   });
   return "";
 }
@@ -2100,17 +2181,19 @@ async function mcpMenu(readline, session) {
   for (;;) {
     console.log("\nMCP platform");
     console.log(
-      "Switching platform keeps the other credential. None turns both off without deleting keys.",
+      "Switching platform keeps the other credentials. None turns them off without deleting keys.",
     );
     console.log(`Choice: ${draft.choice || "not set"}`);
-    console.log("1 - Executor");
-    console.log("2 - Composio");
-    console.log("3 - Both");
-    console.log("4 - None");
+    console.log("1 - Composio");
+    console.log("2 - Executor");
+    console.log("3 - Upsy");
+    console.log("4 - Self-hosted");
+    console.log("5 - Both");
+    console.log("6 - None");
     printSectionEnd();
     const action = routeMcpMenu(await readline.question("Choice: "));
     if (!action) {
-      console.log("Unknown choice. Use 1, 2, 3, 4, or s.");
+      console.log("Unknown choice. Use 1, 2, 3, 4, 5, 6, or s.");
       continue;
     }
     if (action === "back") return;
@@ -2165,7 +2248,7 @@ function restartGateway() {
   }
   if (!result.restarted) {
     console.log(
-      "Saved. No gateway is running in this container. Start it to apply the volume. Changing environment variables (TZ, TELEGRAM_*, LLM_*, EXECUTOR_*, COMPOSIO_*, CONFIG_FILE) still needs a new container.",
+      "Saved. No gateway is running in this container. Start it to apply the volume. Changing environment variables (TZ, TELEGRAM_*, LLM_*, EXECUTOR_*, COMPOSIO_*, SELF_HOSTED_*, CONFIG_FILE) still needs a new container.",
     );
     return;
   }
@@ -2255,6 +2338,12 @@ function aggregatorLabel() {
   const parts = [choice];
   const executorOn = choice === "executor" || choice === "both";
   const composioOn = choice === "composio" || choice === "both";
+  const selfOn = choice === "self-hosted";
+  const upsyOn = choice === "upsy";
+  if (choice === "upsy" || stored.upsy)
+    parts.push(
+      `upsy https://upsy.ai/connect${stored.upsy?.refresh ? " (signed in)" : " (sign-in needed)"}${upsyOn ? "" : " (off)"}`,
+    );
   if (stored.record.executor)
     parts.push(
       `executor ${stored.record.executor.url}${stored.executorToken ? " (token on volume)" : ""}${executorOn ? "" : " (off)"}`,
@@ -2262,6 +2351,10 @@ function aggregatorLabel() {
   if (stored.record.composio)
     parts.push(
       `composio ${stored.record.composio.url} user ${stored.record.composio.userId}${stored.composioKey ? " (key on volume)" : ""}${composioOn ? "" : " (off)"}`,
+    );
+  if (stored.record.selfHosted)
+    parts.push(
+      `self-hosted ${stored.record.selfHosted.url}${stored.record.selfHosted.header ? ` header ${stored.record.selfHosted.header}` : ""}${stored.selfHostedToken ? " (token on volume)" : ""}${selfOn ? "" : " (off)"}`,
     );
   return `MCP platform: ${parts.join(" · ")}`;
 }
@@ -2314,6 +2407,10 @@ function aggregatorFields({
   composioUrl,
   composioUser,
   composioKey,
+  selfHostedUrl,
+  selfHostedHeader,
+  selfHostedToken,
+  upsyReady,
 }) {
   try {
     const record = { choice };
@@ -2344,6 +2441,34 @@ function aggregatorFields({
         composioSendsUserId(url)
           ? `  Composio: header ${header}; user id is sent as user_id.`
           : `  Composio: header ${header}. The user id stays on the volume.`,
+      );
+    }
+    if (choice === "upsy" && !upsyReady)
+      return {
+        error:
+          "Upsy is not signed in. Choose Upsy in the menu and paste the redirect URL.",
+      };
+    if (choice === "self-hosted") {
+      if (!selfHostedUrl) return { error: "Self-hosted MCP URL is missing." };
+      const url = validatePublicEndpoint(selfHostedUrl);
+      const rawHeader = (selfHostedHeader || "").trim();
+      let header;
+      if (rawHeader && rawHeader.toLowerCase() !== "authorization") {
+        if (!validMcpHeaderName(rawHeader))
+          return {
+            error:
+              "Header name is invalid. Use letters, digits, or hyphens, or leave it empty for Authorization: Bearer.",
+          };
+        header = rawHeader;
+      }
+      record.selfHosted = header ? { url, header } : { url };
+      if (selfHostedToken) keys.selfHosted = selfHostedToken;
+      console.log(
+        header
+          ? `  Self-hosted: header ${header} (raw token).`
+          : selfHostedToken
+            ? "  Self-hosted: Authorization: Bearer."
+            : "  Self-hosted: no token. The server is called without an auth header.",
       );
     }
     return { record, keys };
@@ -2394,12 +2519,16 @@ async function aggregatorsFromFlags() {
   const stored = readStoredAggregators(dir);
   let executorToken = stored.executorToken;
   let composioKey = stored.composioKey;
+  let selfHostedToken = stored.selfHostedToken;
   if (options.executorTokenStdin) {
     const typed = (await readStdin()).trim();
     if (typed) executorToken = typed;
   } else if (options.composioKeyStdin) {
     const typed = (await readStdin()).trim();
     if (typed) composioKey = typed;
+  } else if (options.selfHostedTokenStdin) {
+    const typed = (await readStdin()).trim();
+    if (typed) selfHostedToken = typed;
   }
   const built = aggregatorFields({
     choice,
@@ -2418,6 +2547,16 @@ async function aggregatorsFromFlags() {
       process.env.COMPOSIO_USER_ID?.trim() ||
       stored.record?.composio?.userId,
     composioKey,
+    selfHostedUrl:
+      options.selfHostedUrl ||
+      process.env.SELF_HOSTED_MCP_URL?.trim() ||
+      stored.record?.selfHosted?.url,
+    selfHostedHeader:
+      options.selfHostedHeader ??
+      (process.env.SELF_HOSTED_HEADER?.trim() ||
+        stored.record?.selfHosted?.header),
+    selfHostedToken,
+    upsyReady: Boolean(readOauthCredential(db, UPSY_OAUTH_CREDENTIAL)?.refresh),
   });
   if (built.error) fail(built.error);
   persistAggregators(built.record, built.keys);
@@ -2457,6 +2596,7 @@ try {
       options.keyStdin,
       options.composioKeyStdin,
       options.executorTokenStdin,
+      options.selfHostedTokenStdin,
       options.telegramTokenStdin,
     ].filter(Boolean).length > 1
   )

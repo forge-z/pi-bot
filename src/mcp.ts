@@ -19,6 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { McpOauthError } from "./mcp-oauth.js";
 
 /** Compile each distinct output schema once across catalog probes. */
 class CachedSchemaValidator implements jsonSchemaValidator {
@@ -64,6 +65,11 @@ export interface McpConfig {
   tokenHeader?: string;
   /** Appended as the `user_id` query when the MCP URL itself has none. */
   userId?: string;
+  /**
+   * Bearer resolved per request. Used by OAuth MCP servers whose access token
+   * expires. When set, the static `token` is not the session credential.
+   */
+  resolveToken?: () => Promise<string>;
 }
 /** Omitted mode is direct, including the default Executor server. */
 export function mcpServerMode(mode: McpConfig["mode"]): McpServerMode {
@@ -385,6 +391,7 @@ const configKeys = new Set([
   "token",
   "tokenHeader",
   "userId",
+  "resolveToken",
   // Legacy key: still accepted so stored configs keep loading; ignored.
   "cuaViewer",
 ]);
@@ -412,7 +419,8 @@ function validateEntry(item: McpConfig) {
         !/^[\w-]{1,64}$/.test(item.tokenHeader))) ||
     (item.userId !== undefined &&
       (typeof item.userId !== "string" ||
-        !/^[\w.:@+-]{1,200}$/.test(item.userId)))
+        !/^[\w.:@+-]{1,200}$/.test(item.userId))) ||
+    (item.resolveToken !== undefined && typeof item.resolveToken !== "function")
   )
     throw new PolicyError(
       "Invalid MCP configuration: token and tokenFile must be single-line text",
@@ -459,7 +467,11 @@ function validateEntry(item: McpConfig) {
     throw new PolicyError("MCP off loopback requires HTTPS");
 }
 function credentialMaterial(config: McpConfig, token: string | undefined) {
-  const material: unknown[] = [config.url, token, config.tokenFile];
+  const material: unknown[] = [
+    config.url,
+    config.resolveToken ? "oauth" : token,
+    config.tokenFile,
+  ];
   if (config.tokenHeader) material.push(config.tokenHeader);
   if (config.userId) material.push(config.userId);
   return JSON.stringify(material);
@@ -1037,7 +1049,7 @@ export class McpGateway implements ToolGateway {
     }
     if (!pending) {
       pending = (async () => {
-        const token = configuredToken(config);
+        const token = config.resolveToken ? undefined : configuredToken(config);
         if (token && /[\r\n]/.test(token))
           throw new PolicyError("Invalid MCP token file");
         const headers = authHeaders(config, token);
@@ -1080,6 +1092,23 @@ export class McpGateway implements ToolGateway {
           const requestClient = client;
           const establishedSsePost =
             legacyTransport && connected && init?.method === "POST";
+          let nextInit = init;
+          if (config.resolveToken) {
+            let fresh: string;
+            try {
+              fresh = await config.resolveToken();
+            } catch (error) {
+              if (error instanceof McpOauthError)
+                throw new McpError(error.message);
+              throw error;
+            }
+            if (/[\r\n]/.test(fresh))
+              throw new PolicyError("Invalid MCP token");
+            const headers = new Headers(init?.headers);
+            headers.set("Authorization", `Bearer ${fresh}`);
+            this.secrets.set(requestClient, fresh);
+            nextInit = { ...init, headers };
+          }
           const controller = new AbortController();
           // Tool calls (and their elicitation replies) use the configured
           // MCP_CALL_TIMEOUT_MS budget (default 60s). Discovery and connection setup stay bounded at 30s.
@@ -1091,10 +1120,10 @@ export class McpGateway implements ToolGateway {
           const timer = setTimeout(() => controller.abort(), timeout);
           try {
             const response = await fetch(input, {
-              ...init,
+              ...nextInit,
               signal: AbortSignal.any([
                 controller.signal,
-                ...(init?.signal ? [init.signal] : []),
+                ...(nextInit?.signal ? [nextInit.signal] : []),
               ]),
             });
             // Streamable HTTP identifies sessions in a header; legacy SSE
@@ -1102,7 +1131,7 @@ export class McpGateway implements ToolGateway {
             // Only classify SSE POST failures after initialization completed.
             if (
               response.status === 404 &&
-              (new Headers(init?.headers).has("mcp-session-id") ||
+              (new Headers(nextInit?.headers).has("mcp-session-id") ||
                 establishedSsePost)
             )
               this.expired.add(requestClient);

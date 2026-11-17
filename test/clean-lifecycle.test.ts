@@ -100,6 +100,7 @@ test("polling readiness, health and graceful stop stay offline and create no top
       "new",
       "resume",
       "stop",
+      "compact",
       "status",
       "help",
     ];
@@ -117,6 +118,7 @@ test("polling readiness, health and graceful stop stay offline and create no top
       .join("\n");
     assert.match(descriptions, /Choose provider and model/);
     assert.match(descriptions, /Resume a stuck task/);
+    assert.match(descriptions, /Compact this topic's history/);
     assert.doesNotMatch(
       descriptions,
       /Escolher|Interromper|Começar|agendamentos|Ajuda/,
@@ -161,11 +163,23 @@ test("/help lists the commands that remain and not the removed ones", async () =
         .split("\n")
         .map((line) => /^\/([a-z]+)\b/.exec(line)?.[1])
         .filter((command) => command !== undefined),
-      ["model", "thinking", "crons", "new", "resume", "stop", "status", "help"],
+      [
+        "model",
+        "thinking",
+        "crons",
+        "new",
+        "resume",
+        "stop",
+        "compact",
+        "status",
+        "help",
+      ],
     );
     assert.match(sent[0].text, /^\/resume\b/m);
     assert.doesNotMatch(sent[0].text, /^\/reload\b/m);
     assert.match(sent[0].text, /provider and model/);
+    assert.match(sent[0].text, /^\/compact\b/m);
+    assert.match(sent[0].text, /tokens and cost/);
     assert.doesNotMatch(sent[0].text, /provedor|esforço|agendamento/);
     assert.doesNotMatch(sent[0].text, /^\/polling\b/m);
     assert.doesNotMatch(sent[0].text, /^\/jobs\b/m);

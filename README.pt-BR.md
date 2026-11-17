@@ -1,6 +1,6 @@
 # Pi Bot
 
-Um assistente de IA pessoal que vive no Telegram: um container, um volume, nenhum painel web. Roda sobre o harness do [pi.dev](https://pi.dev). As ferramentas vêm do [Executor](https://executor.sh) e, se quiser, do [Composio](https://composio.dev).
+Um assistente de IA pessoal que vive no Telegram: um container, um volume, nenhum painel web. Roda sobre o harness do [pi.dev](https://pi.dev). As ferramentas vêm do [Executor](https://executor.sh), do [Composio](https://composio.dev), do [Upsy](https://upsy.ai/docs) ou de um gateway MCP self-hosted.
 
 **Status: Beta.** Pode ser usado no dia a dia; a configuração e os comandos ainda podem mudar entre as versões.
 
@@ -26,10 +26,14 @@ docker exec -it <container> npm run setup
 O menu edita uma seção de cada vez. **Save and back** grava essa seção. **Save and restart gateway** recarrega o bot em execução a partir do volume.
 
 1. **Setup gateway** → **Telegram** — token do bot (oculto; Enter mantém o valor gravado) e os ids numéricos dos usuários permitidos.
-2. **Text model** — um provedor oficial do pi-ai, ou `[0]` ChatGPT (OAuth Plus/Pro, sem chave de API). `npm run login` é só OAuth.
+2. **Text model** — um provedor oficial do pi-ai, ou `[0]` ChatGPT (OAuth Plus/Pro, sem chave de API). `npm run login` é só OAuth do ChatGPT/Codex.
 3. **Image model**
 4. **Audio model**
-5. **MCP platform** — Executor, Composio, os dois, ou nenhum.
+5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, os dois (Executor e Composio), ou nenhum.
+
+O Upsy (`https://upsy.ai/connect`) não tem chave de API. O setup imprime o link de login. Cole a URL final do navegador de volta, mesmo se a página não carregar. O redirect é `http://127.0.0.1:33418/callback` e nada escuta nessa porta. Os tokens ficam na credencial `mcp-upsy` do volume e são renovados sozinhos. A mesma cola funciona no Telegram para o primeiro usuário permitido. `--aggregators upsy` não inicia o login; só seleciona o Upsy quando já existe um refresh token. `npm run login` continua sendo ChatGPT/Codex e não é esse fluxo.
+
+Self-hosted é uma URL MCP genérica, um token opcional (credencial `mcp-self-hosted`) e um header opcional. Header vazio envia `Authorization: Bearer`. Outro nome envia o token cru. Sem token, a chamada sai sem header de autenticação. Overrides opcionais, nenhum obrigatório: `SELF_HOSTED_MCP_URL`, `SELF_HOSTED_TOKEN`, `SELF_HOSTED_HEADER`. Uma URL definida liga o servidor mesmo quando o menu escolheu outra coisa. O Executor self-host (UsefulSoftwareCo/executor) fala Streamable HTTP em `<origin>/mcp` (CLI local `http://127.0.0.1:4312/mcp`, Docker `http://127.0.0.1:4400/mcp`) com personal access token ou API key local em `Authorization: Bearer`. O item Executor do menu continua sendo o que preserva o relay de aprovação e os jobs. O runelay fala Streamable HTTP em `<origin>/v1/mcp` (app local `http://127.0.0.1:4312/v1/mcp`) com chave `rnl_…` em `Authorization: Bearer`.
 
 O Executor decide quais chamadas precisam de aprovação; o bot só encaminha essa pausa. Não há uma segunda aprovação a partir das listas de leitura/escrita. No chat, a pausa é o cartão que já existe. Num run agendado a chamada é enviada, e se o Executor devolver approval-required a ferramenta falha com `needs approval; not available in scheduled runs` mais o caminho da ferramenta. Não há cartão e não há resume. Um servidor sem lista `tools` própria usa as listas do Executor e a mesma regra. O Composio tem lista própria: uma escrita continua recusada antes do envio num run agendado. `writes=true` em `sandbox_code_task` continua esperando o cartão.
 
@@ -69,22 +73,23 @@ skills:
     - weekly-review
 ```
 
-Cada corpo é lido uma vez na subida e acrescentado, nessa ordem, ao prompt de sistema, depois das instruções base e antes das seções de MCP. Uma lista vazia, ou uma pasta de skills que não existe, deixa o prompt igual. Um nome ausente, frontmatter inválido ou arquivo ilegível é registrado no log e ignorado. O bot sobe mesmo assim.
+O prompt de sistema lista cada nome e descrição, nessa ordem, depois das instruções base e antes das seções de MCP. O modelo carrega o corpo com a ferramenta somente leitura `read_skill`. A lista é a mesma em toda resposta, inclusive nos runs agendados. Uma lista vazia, ou uma pasta de skills que não existe, deixa o prompt igual e não registra a ferramenta. Um nome ausente, frontmatter inválido ou arquivo ilegível é registrado no log e ignorado. Um nome desconhecido em `read_skill` devolve erro e nenhum corpo. O bot sobe mesmo assim.
 
 ## Comandos
 
 O app registra este menu ao subir. Não há o que configurar no BotFather. Os comandos são em inglês.
 
-| Comando     | O que faz                                                                               |
-| ----------- | --------------------------------------------------------------------------------------- |
-| `/model`    | Provedor e modelo deste tópico                                                          |
-| `/thinking` | Esforço deste tópico                                                                    |
-| `/crons`    | Criar e administrar agendamentos                                                        |
-| `/new`      | Outra conversa neste tópico. A anterior permanece no volume                             |
-| `/resume`   | Retoma uma tarefa presa: uma tarefa estacionada após crash, ou um resultado MCP incerto |
-| `/stop`     | Para este tópico                                                                        |
-| `/status`   | Modelo, MCPs, a execução atual e a versão                                               |
-| `/help`     | Esta lista                                                                              |
+| Comando     | O que faz                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------- |
+| `/model`    | Provedor e modelo deste tópico                                                                                  |
+| `/thinking` | Esforço deste tópico                                                                                            |
+| `/crons`    | Criar e administrar agendamentos                                                                                |
+| `/new`      | Outra conversa neste tópico. A anterior permanece no volume                                                     |
+| `/resume`   | Retoma uma tarefa presa: uma tarefa estacionada após crash, ou um resultado MCP incerto                         |
+| `/stop`     | Para este tópico                                                                                                |
+| `/compact`  | Compacta este tópico agora. O texto depois do comando é um foco opcional. Recusa enquanto o tópico está ocupado |
+| `/status`   | Modelo, tokens e custo deste tópico, MCPs, a execução atual e a versão                                          |
+| `/help`     | Esta lista                                                                                                      |
 
 `/resume` dispensa um resultado MCP incerto sem repetir a chamada (a chamada pode já ter ocorrido) e continua uma tarefa que ficou estacionada depois de um crash. `/new` não limpa um resultado incerto.
 

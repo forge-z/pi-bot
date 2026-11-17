@@ -251,11 +251,13 @@ sandbox_code_task:
 # Operator skills (prompt text on the volume). Not the MCP `skills` tool.
 # Each entry is a folder name under $DATA_DIR/skills/<name>/SKILL.md.
 # The file starts with YAML frontmatter (`name` equal to the folder, and
-# `description`) and a markdown body. Bodies are loaded once at startup and
-# appended, in this order, to the stable system prompt after the base
-# instructions and before MCP sections. They apply to every reply, including
-# scheduled runs. An empty list leaves the prompt unchanged. A missing folder,
-# a missing name, invalid frontmatter, or an unreadable file is logged at
-# startup and skipped; the bot still boots.
+# `description`) and a markdown body. The system prompt lists each name and
+# description, in that order, after the base instructions and before MCP
+# sections. The model loads a body with the read-only read_skill tool. The
+# list is the same on every reply, including scheduled runs. An empty list
+# leaves the prompt unchanged and does not register the tool. A missing
+# folder, a missing name, invalid frontmatter, or an unreadable file is logged
+# at startup and skipped; the bot still boots. An unknown read_skill name
+# returns an error and no body.
 skills:
   always: []

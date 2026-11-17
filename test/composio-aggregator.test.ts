@@ -35,7 +35,7 @@ const telegram = {
 
 function volume(
   record: AggregatorRecord,
-  keys: { executor?: string; composio?: string } = {},
+  keys: { executor?: string; composio?: string; selfHosted?: string } = {},
 ) {
   return mkdtemp(join(tmpdir(), "pi-aggregators-")).then((dir) => {
     const db = new DatabaseSync(join(dir, "app.sqlite"));
@@ -61,7 +61,14 @@ test("setup stores the aggregator choice and keeps the key out of meta", async (
   assert.equal(stored.record?.choice, "both");
   assert.equal(stored.executorToken, "executor-secret");
   assert.equal(stored.composioKey, "ck_composio_secret");
-  assert.equal(parseAggregatorChoice("3"), "both");
+  assert.equal(parseAggregatorChoice("1"), "composio");
+  assert.equal(parseAggregatorChoice("2"), "executor");
+  assert.equal(parseAggregatorChoice("3"), "upsy");
+  assert.equal(parseAggregatorChoice("upsy"), "upsy");
+  assert.equal(parseAggregatorChoice("4"), "self-hosted");
+  assert.equal(parseAggregatorChoice("self hosted"), "self-hosted");
+  assert.equal(parseAggregatorChoice("5"), "both");
+  assert.equal(parseAggregatorChoice("6"), "none");
   assert.equal(parseAggregatorChoice("nenhum"), "none");
   const db = new DatabaseSync(join(dir, "app.sqlite"), { readOnly: true });
   try {
@@ -219,6 +226,121 @@ test("empty input keeps an existing aggregator secret", async () => {
     db2.close();
   }
   assert.equal(readStoredAggregators(dir).executorToken, "replaced-secret");
+});
+
+test("self-hosted stores the URL on the volume and the token as a credential", async () => {
+  const dir = await volume(
+    {
+      choice: "self-hosted",
+      selfHosted: {
+        url: "https://gateway.example/v1/mcp",
+        header: "X-Api-Key",
+      },
+    },
+    { selfHosted: "rnl_secret" },
+  );
+  const stored = readStoredAggregators(dir);
+  assert.equal(stored.record?.choice, "self-hosted");
+  assert.equal(stored.record?.selfHosted?.header, "X-Api-Key");
+  assert.equal(stored.selfHostedToken, "rnl_secret");
+  const db = new DatabaseSync(join(dir, "app.sqlite"), { readOnly: true });
+  try {
+    const row = db
+      .prepare("SELECT value FROM meta WHERE key='aggregators:live'")
+      .get() as { value: string };
+    assert.equal(row.value.includes("rnl_secret"), false);
+  } finally {
+    db.close();
+  }
+  const server = readConfig(telegram, stored).mcp[0];
+  assert.equal(server?.name, "self-hosted");
+  assert.equal(server?.url, "https://gateway.example/v1/mcp");
+  assert.equal(server?.token, "rnl_secret");
+  assert.equal(server?.tokenHeader, "X-Api-Key");
+  assert.equal(server?.mode, "direct");
+
+  const bearer = readConfig(telegram, {
+    record: {
+      choice: "self-hosted",
+      selfHosted: { url: "http://127.0.0.1:4312/mcp" },
+    },
+    selfHostedToken: "local-key",
+  }).mcp[0];
+  assert.equal(bearer?.url, "http://127.0.0.1:4312/mcp");
+  assert.equal(bearer?.tokenHeader, undefined);
+  assert.equal(bearer?.token, "local-key");
+
+  const open = readConfig(telegram, {
+    record: {
+      choice: "self-hosted",
+      selfHosted: { url: "https://gateway.example/mcp" },
+    },
+  }).mcp[0];
+  assert.equal(open?.token, undefined);
+  assert.equal(open?.tokenHeader, undefined);
+
+  const withComposio = readConfig(
+    {
+      ...telegram,
+      SELF_HOSTED_MCP_URL: "https://gateway.example/v1/mcp",
+      SELF_HOSTED_TOKEN: "Bearer rnl_env",
+      SELF_HOSTED_HEADER: "Authorization",
+    },
+    {
+      record: {
+        choice: "composio",
+        composio: {
+          url: "https://connect.composio.dev/mcp",
+          userId: "user_1",
+        },
+      },
+      composioKey: "ck_volume",
+    },
+  ).mcp;
+  assert.deepEqual(
+    withComposio.map((item) => item.name),
+    ["composio", "self-hosted"],
+  );
+  assert.equal(withComposio[1]?.token, "rnl_env");
+  assert.equal(withComposio[1]?.tokenHeader, undefined);
+
+  assert.throws(
+    () =>
+      readConfig(
+        { ...telegram, SELF_HOSTED_MCP_URL: "http://gateway.example/mcp" },
+        { record: { choice: "none" } },
+      ),
+    /HTTPS/,
+  );
+  assert.throws(
+    () =>
+      readConfig(
+        {
+          ...telegram,
+          SELF_HOSTED_MCP_URL: "https://gateway.example/mcp",
+          SELF_HOSTED_HEADER: "Bad Header",
+        },
+        { record: { choice: "none" } },
+      ),
+    /SELF_HOSTED_HEADER/,
+  );
+
+  const db2 = new DatabaseSync(join(dir, "app.sqlite"));
+  try {
+    writeStoredAggregators(db2, { choice: "none" });
+  } finally {
+    db2.close();
+  }
+  const off = readStoredAggregators(dir);
+  assert.equal(off.record?.selfHosted?.url, "https://gateway.example/v1/mcp");
+  assert.equal(off.selfHostedToken, "rnl_secret");
+  assert.equal(readConfig(telegram, off).mcp.length, 0);
+  const overridden = readConfig(
+    { ...telegram, SELF_HOSTED_MCP_URL: "https://other.example/mcp" },
+    off,
+  ).mcp[0];
+  assert.equal(overridden?.url, "https://other.example/mcp");
+  assert.equal(overridden?.token, "rnl_secret");
 });
 
 test("switching aggregators keeps the other credential", async () => {

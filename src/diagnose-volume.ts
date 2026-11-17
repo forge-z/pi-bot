@@ -105,7 +105,7 @@ export function readVolumeSetupFacts(
 }
 
 export const SETUP_VERSUS_LOGIN =
-  "npm run setup é o assistente completo (provedor oficial, chave ou ChatGPT, modelo, esforço, visão e áudio). npm run login é só OAuth, inclusive o device-code do Codex sem TTY. Os dois gravam no volume. Um setup oficial não é trocado por LLM_BASE_URL/LLM_API_KEY; essas variáveis só valem no caminho compatível llm (menu Outro). Não há terceiro comando.";
+  "npm run setup é o assistente completo (provedor oficial, chave ou ChatGPT, modelo, esforço, visão e áudio). npm run login é só OAuth do ChatGPT/Codex, inclusive o device-code sem TTY. O login OAuth do Upsy fica no menu MCP do npm run setup, não no npm run login. Os dois gravam no volume. Um setup oficial não é trocado por LLM_BASE_URL/LLM_API_KEY; essas variáveis só valem no caminho compatível llm (menu Outro). Não há terceiro comando.";
 
 /** Lines for diagnose. Never includes secrets, endpoints, or credential values. */
 export function describeVolumeProvider(facts: VolumeProviderFacts): string[] {
