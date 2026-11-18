@@ -1,3 +1,4 @@
+import { channelChat, whatsappApprovalKey } from "./channel.js";
 import type { Runtime } from "./runtime.js";
 import {
   executorUsesExecutionIdResume,
@@ -6,7 +7,7 @@ import {
   type McpInteraction,
 } from "./mcp-calls.js";
 import { PolicyError } from "./mcp.js";
-import { clearTelegramDeliveryPrefix, hash } from "./store.js";
+import { clearTelegramDeliveryPrefix, hash, queueWhatsApp } from "./store.js";
 import { telegramIdentity } from "./telegram-identity.js";
 import { telegramConversationRoute } from "./task-telegram.js";
 import {
@@ -315,6 +316,35 @@ function remindApproval(
   );
   return true;
 }
+function clearWhatsappApproval(
+  app: Runtime,
+  item: McpInteraction,
+  text: string,
+) {
+  const key = whatsappApprovalKey(item.conversationId);
+  const raw = app.store.get<{ value: string }>(
+    "SELECT value FROM meta WHERE key=?",
+    key,
+  )?.value;
+  if (!raw) return;
+  let parsed: { interactionId?: unknown } | undefined;
+  try {
+    parsed = JSON.parse(raw) as { interactionId?: unknown };
+  } catch {
+    return;
+  }
+  if (!parsed || parsed.interactionId !== item.id) return;
+  app.store.run("DELETE FROM meta WHERE key=?", key);
+  const bound = channelChat(app.store, "whatsapp", item.conversationId);
+  if (!bound) return;
+  queueWhatsApp(
+    app.store,
+    `whatsapp:approval-expired:${item.id}`,
+    bound.chatId,
+    text,
+    item.conversationId,
+  );
+}
 async function expireApproval(
   app: Runtime,
   item: McpInteraction,
@@ -340,6 +370,7 @@ async function expireApproval(
   clearApprovalMeta(app, item.id);
   const text =
     "MCP approval expired — nobody answered within 24 hours. The pending item was declined and no resume was sent.";
+  clearWhatsappApproval(app, item, text);
   if (card && edit) {
     try {
       await edit(card.chat, card.messageId, text, { inline_keyboard: [] });
@@ -1174,6 +1205,25 @@ function card(app: Runtime, item: McpInteraction) {
     );
   });
 }
+/** Same review as the Telegram card, without buttons. WhatsApp numbers the choices. */
+export function mcpApprovalPrompt(app: Runtime, item: McpInteraction) {
+  if (item.state !== "pending") return;
+  const call = app.store.get<McpCall>(
+    "SELECT * FROM mcp_calls WHERE id=?",
+    item.callId,
+  );
+  if (!call) return;
+  const review = approvalReview(app, item, call);
+  const choices: { label: string; action: "accept" | "decline" }[] =
+    review.canAccept
+      ? [
+          { label: "Approve", action: "accept" },
+          { label: "Decline", action: "decline" },
+        ]
+      : [{ label: "Decline", action: "decline" }];
+  return { display: formatMcpApprovalDisplay(item, call, review), choices };
+}
+
 export function queueMcpApprovals(app: Runtime) {
   if (!app.mcpCalls) return;
   for (const row of app.store.all<McpInteraction>(
@@ -1258,6 +1308,7 @@ export function queueMcpUncertainNotices(app: Runtime) {
     });
   }
 }
+
 export async function decideMcp(
   app: Runtime,
   data: TelegramButton,

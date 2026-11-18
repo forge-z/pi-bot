@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { writeStoredSetup } from "../src/setup.js";
+import {
+  writePhoneGateway,
+  writeStoredSetup,
+  writeStoredWhatsapp,
+} from "../src/setup.js";
+import { Store } from "../src/store.js";
 import {
   describeVolumeProvider,
+  describeWhatsAppVolume,
   formatWaiting,
   readVolumeSetupFacts,
 } from "../src/diagnose-volume.js";
@@ -91,7 +97,52 @@ test("diagnose sem volume e waiting de setup ou login", async () => {
     assert.match(formatWaiting("login")!, /npm run login/);
     assert.equal(formatWaiting("other"), undefined);
     assert.equal(formatWaiting(undefined), undefined);
+    const empty = describeWhatsAppVolume(dir, {}).join("\n");
+    assert.match(empty, /números: nenhum/);
+    assert.match(empty, /sessão pareada: não/);
+    assert.match(empty, /entregas pendentes: banco ausente/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("whatsapp diagnose shows numbers, a paired session and pending deliveries", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-diagnose-wa-"));
+  const store = new Store(dir);
+  let closed = false;
+  try {
+    writePhoneGateway(store.db, "whatsapp");
+    writeStoredWhatsapp(store.db, ["15551234567"]);
+    store.queueTelegram(
+      "wa",
+      "15551234567@s.whatsapp.net",
+      "oi",
+      3500,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "whatsapp",
+    );
+    store.queueTelegram("tg", "1", "hello");
+    store.close();
+    closed = true;
+    await mkdir(join(dir, "whatsapp-auth"), { recursive: true });
+    await writeFile(join(dir, "whatsapp-auth", "creds.json"), "{}");
+    const text = describeWhatsAppVolume(dir, {}).join("\n");
+    assert.match(text, /números: \*\*\*4567/);
+    assert.equal(text.includes("15551234567"), false);
+    const overridden = describeWhatsAppVolume(dir, {
+      WHATSAPP_ALLOWED_USERS: "15550001111",
+    }).join("\n");
+    assert.match(overridden, /números: \*\*\*1111/);
+    assert.equal(overridden.includes("15550001111"), false);
+    assert.equal(overridden.includes("15551234567"), false);
+    assert.match(text, /sessão pareada: sim/);
+    assert.match(text, /entregas pendentes: 1/);
+    assert.doesNotMatch(text, /hello/);
+  } finally {
+    if (!closed) store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

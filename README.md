@@ -8,7 +8,7 @@
 
 # Pi Bot
 
-A personal AI assistant that lives in Telegram: one container, one volume, no web panel. It runs on the [pi.dev](https://pi.dev) harness. Tools come from [Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs), or a self-hosted MCP gateway.
+A personal AI assistant that lives in Telegram or WhatsApp: one container, one volume, no web panel. It runs on the [pi.dev](https://pi.dev) harness. Tools come from [Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs), or a self-hosted MCP gateway.
 
 **Status: Beta.** Usable day to day; configuration and commands may still change between releases.
 
@@ -33,19 +33,19 @@ docker exec -it <container> npm run setup
 
 The menu edits one section at a time. **Save and back** writes that section. **Save and restart gateway** reloads the running bot from the volume.
 
-1. **Setup gateway** → **Telegram** — bot token (hidden; Enter keeps the saved value) and allowed numeric user ids.
+1. **Setup gateway** — Telegram or WhatsApp, one per install. Saving one turns the other off. An install with no choice stays on Telegram. Yes/no questions prompt `(s/n)` and also accept sim, não, y, yes, and no. Telegram asks for the bot token (hidden; Enter keeps the saved value) and allowed numeric user ids. WhatsApp asks for the owner's number with country code (a Brazilian mobile matches with or without the extra 9 after the area code; extra numbers are comma-separated) and then a QR or a pairing code. The session stays on the volume. Setup does not open a second session while the gateway is running.
 2. **Text model** — an official pi-ai provider, or `[0]` ChatGPT (Plus/Pro OAuth, no API key). `npm run login` is ChatGPT/Codex OAuth only.
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, both (Executor plus Composio), or none.
 
-Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram for the first allowed user. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
+Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram or WhatsApp for the bound chat. On WhatsApp the sign-in notice goes to that chat. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
 
 Self-hosted is one generic MCP URL, an optional token (credential `mcp-self-hosted`), and an optional header. An empty header sends `Authorization: Bearer`. Another name sends the raw token. An empty token sends no auth header. Optional overrides, none required: `SELF_HOSTED_MCP_URL`, `SELF_HOSTED_TOKEN`, `SELF_HOSTED_HEADER`. A set URL turns the server on even when the menu choice is something else. UsefulSoftwareCo/executor speaks Streamable HTTP at `<origin>/mcp` (local CLI `http://127.0.0.1:4312/mcp`, Docker `http://127.0.0.1:4400/mcp`) with a personal access token or local API key as `Authorization: Bearer`. The Executor menu item is still the one that keeps Executor's approval relay and jobs. runelay speaks Streamable HTTP at `<origin>/v1/mcp` (local app `http://127.0.0.1:4312/v1/mcp`) with a per-agent `rnl_…` key as `Authorization: Bearer`.
 
 There is no `/login` command. ChatGPT/Codex OAuth needs a localhost callback or a pasted redirect URL. That path is separate from Upsy.
 
-Environment variables are optional overrides. When one is set, it wins over the value stored on the volume. `TZ` is the container clock (log timestamps). Schedules keep their own IANA timezone. Setup does not store `TZ`. Omit it for UTC.
+Environment variables are optional overrides. When one is set, it wins over the value stored on the volume. `TZ` is the container clock (log timestamps). Schedules keep their own IANA timezone. Setup does not store `TZ`. Omit it for UTC. `WHATSAPP_ALLOWED_USERS` overrides the numbers saved for WhatsApp. No new variable is required to boot.
 
 Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat reserve (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) is ignored when an official setup is already on the volume.
 
@@ -106,7 +106,7 @@ Steve Jobs closed the 2010 iPad event with "there's an app for that" ([CBS](http
 | [Parallel](https://parallel.ai)        | web search, page extraction, and research. Hosted MCP `https://mcp.parallel.ai/mcp` ([docs](https://docs.parallel.ai/integrations/mcp/quickstart)) |
 | [TinyFish](https://www.tinyfish.ai)    | web search and page fetch                                                                                                                          |
 
-A personal assistant usually needs them in this order: mail, web, voice, then scraping, browsing, calendar, code and compute. Voice here means the agent producing audio as a tool result: the bot still answers in text, and a Telegram voice bubble is not implemented.
+A personal assistant usually needs them in this order: mail, web, voice, then scraping, browsing, calendar, code and compute. Voice here means the agent producing audio as a tool result: the bot still answers in text, and a voice bubble is not implemented.
 
 Exa and Parallel use the same list as Executor and Composio. Point `MCP_CONFIG_FILE` at a file on the volume (for example `/app/data/mcp.json`) and set `EXA_API_KEY` and `PARALLEL_API_KEY` in the environment. Those names are placeholders for your own keys:
 
@@ -130,9 +130,15 @@ Exa documents the key in `x-api-key` ([MCP docs](https://exa.ai/docs/get-started
 
 Executor and Composio use those same fields. The Executor v2 cloud URL in [docs/jobs.md](docs/jobs.md) is `https://mcp.executor.sh/mcp` with `tokenEnv` set to `EXECUTOR_TOKEN`. Composio Connect is `https://connect.composio.dev/mcp` with `tokenEnv` set to `COMPOSIO_API_KEY` and `tokenHeader` set to `x-consumer-api-key`. Repeat the URL that `npm run setup` stored when it is different. Other Composio MCP hosts use `x-api-key` and a `userId`.
 
+## WhatsApp
+
+One phone gateway per install. WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks unofficial WhatsApp Web. That can lead to account restrictions. The owner, extra numbers saved with that number, and the linked account's own chat can send text, images, and voice notes. The bot replies in that chat. The linked account's own chat is prefixed with `Pi: `; other chats are not. Groups, broadcasts, and everyone else are ignored.
+
+Replies are plain text. There are no inline buttons. Approvals, `/model`, `/thinking`, and `/crons` are numbered lists. `ask_user` is not offered on WhatsApp. A message that starts with `//` is sent as text, not as a command (`//status` reaches the model as `/status`). `/stop` cancels this chat and is also sent to the model. A schedule created in this chat stays in this chat: `notify` is delivered here, and the run stays silent unless it calls `notify`. Starting a gateway cancels the other channel's pending sends. The scheduler starts with the gateway. On a WhatsApp install, `npm run diagnose` prints numbers masked to the last four digits and skips the Telegram checks.
+
 ## Commands
 
-The app registers this menu on start. There is nothing to set in BotFather.
+On Telegram the app registers this menu on start. There is nothing to set in BotFather. On WhatsApp the same commands are text in the conversation.
 
 | Command     | What it does                                                                                      |
 | ----------- | ------------------------------------------------------------------------------------------------- |

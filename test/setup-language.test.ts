@@ -41,6 +41,11 @@ const TELEGRAM_PT =
   /[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]|\b(não|inválid\w*|vírgula|catálogo|usuário|provedor|mantém|escolha|mesmo assim|código|aguardando|resposta|oficial|senha|visão|modelos|texto|nenhuma|conectado|ferramenta|rodar agora|último tick|versão|compactação)\b/i;
 
 const ALLOW = new Set(['"usuário"', "'usuário'", "`usuário`"]);
+/** The yes/no hint lists `não`, the word an operator may type. */
+const SETUP_ALLOW = new Set([
+  '"não"',
+  '"Answer s, n, y, yes, sim, no, nao, or não."',
+]);
 /** The uncertain-call notice and its confirmation are pt-BR. */
 const ALLOW_PT = [
   "Não sei se a chamada ao ${server} (${tool}) terminou. Confira no serviço e marque abaixo.",
@@ -85,8 +90,10 @@ function literals(source: string, keepBoundary: boolean) {
 test("setup output strings are English", () => {
   const hits: string[] = [];
   for (const file of SETUP_FILES) {
-    for (const value of literals(readFileSync(file, "utf8"), false))
+    for (const value of literals(readFileSync(file, "utf8"), false)) {
+      if (SETUP_ALLOW.has(value)) continue;
       if (SETUP_PT.test(value)) hits.push(`${file}: ${value.slice(0, 140)}`);
+    }
   }
   assert.deepEqual(hits, []);
 });

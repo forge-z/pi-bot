@@ -23,6 +23,8 @@ import {
   readStoredSetup,
   readStoredTelegram,
   requestGatewayRestart,
+  askYesNo,
+  parseYesNo,
   routeAudioMenu,
   routeGatewayMenu,
   routeImageMenu,
@@ -668,6 +670,7 @@ test("the setup menu routes sections, save and back, and gateway restart", () =>
   assert.equal(routeSetupMenu("s"), "restart");
   assert.equal(routeSetupMenu("1"), "gateway");
   assert.equal(routeGatewayMenu("1"), "telegram");
+  assert.equal(routeGatewayMenu("2"), "whatsapp");
   assert.equal(routeGatewayMenu("save and back"), "save");
   assert.equal(routeSetupMenu("q"), "exit");
   for (const route of [routeTelegramMenu, routeTextMenu, routeAudioMenu])
@@ -859,4 +862,31 @@ test("gateway restart signals the bot process and not setup", () => {
     ),
     { restarted: false },
   );
+});
+
+test("a yes or no accepts s/n/y/yes/sim and not true", async () => {
+  assert.equal(parseYesNo("s"), true);
+  assert.equal(parseYesNo(" sim "), true);
+  assert.equal(parseYesNo("y"), true);
+  assert.equal(parseYesNo("YES"), true);
+  assert.equal(parseYesNo("n"), false);
+  assert.equal(parseYesNo("nao"), false);
+  assert.equal(parseYesNo("no"), false);
+  assert.equal(parseYesNo("não"), false);
+  assert.equal(parseYesNo("NÃO"), false);
+  assert.equal(parseYesNo("true"), undefined);
+  assert.equal(parseYesNo(""), undefined);
+  const prompts: string[] = [];
+  const answers = ["true", "fromMe=true", ""];
+  const chosen = await askYesNo(
+    async (prompt) => {
+      prompts.push(prompt);
+      return answers.shift() ?? "";
+    },
+    "Device-code login (recommended on a VPS)?",
+    true,
+  );
+  assert.equal(chosen, true);
+  assert.match(prompts[0] ?? "", /\(s\/n\) \[s\]/);
+  assert.equal(prompts.length, 3);
 });

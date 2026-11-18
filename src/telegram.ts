@@ -6,7 +6,6 @@ import {
   verifyMcp,
 } from "./telegram-approvals.js";
 import { telegramIdentity } from "./telegram-identity.js";
-import { readAppInfo } from "./app-info.js";
 import {
   credentialBinding,
   observeTopic,
@@ -38,9 +37,14 @@ import { transcribeAudio } from "./transcribe.js";
 import { describeImage } from "./vision.js";
 import { hash, type Delivery } from "./store.js";
 import { telegramPlainText } from "./telegram-format.js";
+import { originHeader } from "./channel.js";
 import { imageVerdict, type OutboundMedia } from "./outbound.js";
-import { CommandError } from "./commands.js";
-import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
+import {
+  CommandError,
+  chatSeesImages,
+  commandStatus,
+  resumeReport,
+} from "./commands.js";
 import {
   acceptStoredOauthPaste,
   UPSY_OAUTH_CREDENTIAL,
@@ -146,9 +150,6 @@ function transcribeFailure(error: unknown) {
   const message = error instanceof Error ? error.message : "";
   const status = /(\d{3})$/.exec(message)?.[1];
   return status ? `response ${status}` : "transcription failed";
-}
-function originHeader(label: string, value: Record<string, unknown>) {
-  return `[${label} · ${JSON.stringify(value)}]`;
 }
 type VoiceRef = { fileId: string; mimeType: string; size?: number };
 const IMAGE_MIME = /^image\/(jpeg|png|webp|gif)$/;
@@ -436,23 +437,6 @@ const CLEAN_HELP = [
   "/help — help",
   "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort. /compact runs that same compaction now; text after the command is optional focus for this topic. Upsy sign-in: open the link the bot sends (or the one npm run setup prints) and paste the final browser URL back, even if the page does not load.",
 ].join("\n");
-
-/** One reply for /resume: parked work, an uncertain MCP result, both, or neither. */
-function resumeReport(
-  cleared: number,
-  resumed: { id: string; kind: string }[],
-) {
-  const parts: string[] = [];
-  if (cleared)
-    parts.push(
-      `${cleared} uncertain MCP result(s) in this conversation dismissed. History was not changed. The call may already have been executed (for example, an email may have gone out) before the agent continues.`,
-    );
-  if (resumed.length)
-    parts.push(
-      `Resumed ${resumed.map((task) => `${task.kind} #${task.id}`).join(", ")}.`,
-    );
-  return parts.join("\n") || "Nothing is pending in this topic.";
-}
 
 export class Telegram {
   private closing = false;
@@ -1235,60 +1219,16 @@ export class Telegram {
       } else if (text === "/crons") openCronMenu(this.app, owner, id, updateId);
       else if (text === "/status") {
         // The command menu is registered once per deployment; this reloads it.
-        // MCP rediscovery must not delay the reply: print the last snapshot and,
-        // when that snapshot is stale or already failed, refresh behind it.
-        const mcp = this.app.mcpStatusSnapshot();
-        const mcps = formatMcpStatus(mcp.servers);
-        const discoveryUnanswered = mcp.unanswered;
         await this.onReload?.(owner.chat);
-        const settings = await this.app.settings.conversation(id);
-        const active = await this.app.commands.active({
-          source: "telegram",
-          ...owner,
-        });
-        const info = readAppInfo();
-        const calls =
-          this.app.mcpCalls
-            ?.list(id)
-            .filter((c) =>
-              ["paused", "running", "uncertain", "abandoned"].includes(c.state),
-            ) ?? [];
-        const pending =
-          this.app.mcpCalls
-            ?.interactions(id)
-            .filter((i) => i.state === "pending").length ?? 0;
-        const ledger =
-          calls.map((c) => `${c.server} / ${c.tool}: ${c.state}`).join("\n") ||
-          "No pending or uncertain calls.";
-        // A lost write already has one card. /status does not add another line or button.
-        if (discoveryUnanswered)
-          console.warn(`Pi-Agent: ${MCP_DISCOVERY_UNANSWERED}`);
-        const functions = resolveFunctions(
-          process.env,
-          this.app.settings.setup(),
-          this.app.settings.setupKeys(),
-        );
-        const usage = await this.app.usageLine(id);
         reply(
           [
-            "Models:",
-            // Effort belongs to the text model, so it rides on its line.
-            `Text: ${settings.modelId} · Effort: ${settings.effort}`,
-            `Vision: ${this.featureLabel(functions.vision, this.mainSeesImages() ? "same as chat" : "off")}`,
-            `Audio: ${this.featureLabel(functions.audio, "off")}`,
-            "",
-            `Runs in this topic: ${active.length} · Pending approvals: ${pending}`,
-            usage,
-            "",
-            "MCP ledger:",
-            ledger,
-            "",
-            "MCPs:",
-            mcps,
-            "",
-            this.app.pendingJobs.healthLine(),
-            "",
-            `Version: ${info.version ?? "dev"} (${info.commit ?? "no SHA"})`,
+            await commandStatus(this.app, id, {
+              source: "telegram",
+              ...owner,
+            }),
+            // This sentence stays here, not only in the shared status text: the
+            // English-string check closes quotes naively, and this apostrophe
+            // is what keeps the later "usuário" token its own literal.
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
         );
@@ -1393,34 +1333,10 @@ export class Telegram {
     }
     return { conversationId: id, control: text.startsWith("/") };
   }
-  /** One line for `/status`: the model, its host when it is not the chat one, or off. */
-  /**
-   * One line for `/status`. `whenMissing` is what absence means: the chat model can
-   * stand in for vision, but never for audio - pi-ai has no audio content part.
-   */
-  private featureLabel(
-    feature: { modelId: string; language?: string } | undefined,
-    whenMissing: string,
-  ) {
-    if (!feature) return whenMissing;
-    return feature.language
-      ? `${feature.modelId} (${feature.language})`
-      : feature.modelId;
-  }
   /** Id of the chat model serving this turn, for the origin header. */
   private chatModelId() {
     const choice = this.app.settings.defaults();
     return `${choice.provider}/${choice.modelId}`;
-  }
-  /** Whether the chat model reads images; LLM_INPUT=text is how a text-only model says so. */
-  private mainSeesImages() {
-    // The wizard probed the model itself; that beats the declared catalog input, which
-    // defaults to "text,image" for everyone.
-    const probed = this.app.settings.setup()?.chatVision;
-    if (probed !== undefined) return probed;
-    const choice = this.app.settings.defaults();
-    const model = this.app.models.getModel(choice.provider, choice.modelId);
-    return Boolean(model?.input?.includes("image"));
   }
   /**
    * Routes one image: a native part when the chat model reads it, a separate vision
@@ -1436,7 +1352,8 @@ export class Telegram {
       this.app.settings.setupKeys(),
     );
     const native =
-      imageMode === "native" || (imageMode === "auto" && this.mainSeesImages());
+      imageMode === "native" ||
+      (imageMode === "auto" && chatSeesImages(this.app));
     if (native) {
       const loaded = await this.loadImage(image);
       if (Array.isArray(loaded))
@@ -1646,9 +1563,12 @@ export class Telegram {
   }
   private async deliverPending() {
     for (const delivery of this.app.store.all<Delivery>(
-      "SELECT * FROM deliveries WHERE state='pending' ORDER BY rowid",
+      // WhatsApp rows share this table and are flushed by that gateway.
+      // Null channel is Telegram, including every row from before the column.
+      "SELECT * FROM deliveries WHERE state='pending' AND (channel IS NULL OR channel='telegram') ORDER BY rowid",
     )) {
       if (this.closing) break;
+      if (delivery.channel && delivery.channel !== "telegram") continue;
       const control = this.app.store.get<{ value: string }>(
         "SELECT value FROM meta WHERE key=?",
         `telegram:control-route:${delivery.id}`,

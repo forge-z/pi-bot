@@ -9,6 +9,7 @@ import {
   fauxAssistantMessage,
   fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
+import { bindChannelChat } from "../src/channel.js";
 import { Runtime } from "../src/runtime.js";
 import { configureTelegram } from "../src/telegram-polling.js";
 
@@ -110,6 +111,58 @@ test("a tool that asks for a file reaches the delivery row", async () => {
       `uma entrega carrega o anexo: ${JSON.stringify(rows)}`,
     );
     assert.match(String(withMedia[0].media), /platform\.r2\.fish\.audio/);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a WhatsApp conversation queues the attachment on WhatsApp", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbound-whatsapp-"));
+  const chat = "15551234567@s.whatsapp.net";
+  const faux = fauxProvider({
+    models: [{ id: "faux-1", reasoning: true }],
+  });
+  faux.setResponses([
+    fauxAssistantMessage(
+      {
+        type: "toolCall",
+        id: "attach",
+        name: "send_attachment",
+        arguments: {
+          url: "https://platform.r2.fish.audio/x/a.mp3",
+          kind: "audio",
+        },
+      },
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Mandei o áudio."),
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const app = await Runtime.open({
+    dir,
+    models,
+    phoneGateway: "whatsapp",
+    gateway: { catalog: async () => [] },
+  });
+  try {
+    const conversationId = await app.create();
+    bindChannelChat(app.store, "whatsapp", chat, conversationId);
+    await app.admit(conversationId, "wa:1", "manda o audio", {
+      source: "whatsapp",
+      chat,
+      user: chat,
+    });
+    await (await app.conversation(conversationId)).waitForIdle(context);
+    const rows = app.store.all<{
+      channel: string | null;
+      media: string | null;
+    }>("SELECT channel,media FROM deliveries ORDER BY rowid");
+    const withMedia = rows.filter((row) => row.media);
+    assert.equal(withMedia.length, 1);
+    assert.equal(withMedia[0]?.channel, "whatsapp");
+    assert.match(String(withMedia[0]?.media), /platform\.r2\.fish\.audio/);
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });

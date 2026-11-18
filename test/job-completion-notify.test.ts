@@ -263,7 +263,7 @@ test("a scheduled routine with no news stays silent", async () => {
 });
 
 test("a job answer with a bearer token is redacted in chat and in the quiet log", async () => {
-  const token = "sk-teste-1234567890abcdef1234567890abcdef";
+  const token = "sk-example-placeholder-not-a-real-secret";
   const leak = `curl -v https://example.test\n> Authorization: Bearer ${token}`;
   const f = await open();
   const lines: string[] = [];

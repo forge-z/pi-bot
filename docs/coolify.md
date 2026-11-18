@@ -7,7 +7,7 @@ runtime, nunca argumento de build.
 
 - Repositório `https://github.com/forge-z/pi-bot`, branch `main`.
 - Docker Engine + Compose v2.24+ (amd64 ou arm64).
-- Um bot Telegram dedicado, sem webhook ativo e sem segundo consumidor de polling.
+- Um gateway de telefone por instalação. Se for Telegram: um bot dedicado, sem webhook ativo e sem segundo consumidor de polling. WhatsApp é a alternativa no `npm run setup` (QR no terminal do container); os dois não sobem juntos.
 
 ## 0. Checklist antes do primeiro deploy
 

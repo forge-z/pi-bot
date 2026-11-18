@@ -27,6 +27,8 @@ export interface RequestRow {
   source: string;
   chat: string | null;
   status: string;
+  /** Set for a phone-channel message (`telegram` or `whatsapp`). Other sources stay null. */
+  channel: string | null;
 }
 export interface Delivery {
   id: string;
@@ -39,7 +41,21 @@ export interface Delivery {
   messageThreadId: number | null;
   /** Telegram message_id this delivery replies to; only the first chunk is a reply. */
   replyTo: number | null;
+  /**
+   * Phone channel that owns the row. Null is Telegram, including every row
+   * written before WhatsApp existed.
+   */
+  channel: string | null;
 }
+
+/** WhatsApp shows these marks as characters. Only bold, a heading and a link. */
+function whatsAppText(text: string) {
+  return text
+    .replace(/^#{1,6} +(.+)$/gm, "*$1*")
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)")
+    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*");
+}
+
 export class Store {
   readonly db: DatabaseSync;
   credentialMutation = false;
@@ -268,6 +284,30 @@ export class Store {
       )
     )
       this.db.exec("ALTER TABLE deliveries ADD COLUMN replyTo INTEGER");
+    if (
+      !this.all<{ name: string }>("PRAGMA table_info(deliveries)").some(
+        (c) => c.name === "channel",
+      )
+    )
+      this.db.exec("ALTER TABLE deliveries ADD COLUMN channel TEXT");
+    if (
+      !this.all<{ name: string }>("PRAGMA table_info(requests)").some(
+        (c) => c.name === "channel",
+      )
+    )
+      this.db.exec("ALTER TABLE requests ADD COLUMN channel TEXT");
+    // Binds a phone chat, including a LID alias, to one conversation. Replies
+    // read the latest row. `requests.channel` is not written; `source` already
+    // records where the message came from. An old volume may still have an
+    // empty `inbound_channels` table, and that table is left alone.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS channel_chats(
+        channel TEXT NOT NULL,
+        chatId TEXT NOT NULL,
+        conversationId TEXT NOT NULL,
+        PRIMARY KEY(channel, chatId)
+      );
+    `);
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS telegram_seen(chat TEXT NOT NULL, messageId INTEGER NOT NULL, author TEXT NOT NULL, excerpt TEXT NOT NULL, PRIMARY KEY(chat, messageId))",
     );
@@ -349,6 +389,7 @@ export class Store {
     messageThreadId?: number | null,
     media?: OutboundMedia[],
     replyTo?: number | null,
+    channel?: string | null,
   ) {
     conversationId ??= /^([1-9]\d*):/.exec(prefix)?.[1];
     messageThreadId ??= conversationId
@@ -357,20 +398,39 @@ export class Store {
     if (conversationId && this.conversationDeleted(conversationId)) return;
     // A request partially queued by the previous version must retain its old
     // boundaries and plain-text payloads; changing them could repeat content.
+    // WhatsApp stores plain text on purpose (`parseMode` null). That is not an
+    // old Telegram payload, and treating it as one re-cuts 3800-char parts at
+    // 3500, which repeats text already queued under this prefix.
     const prior = this.all<Delivery>(
       "SELECT * FROM deliveries WHERE id>=? AND id<? ORDER BY rowid",
       ...childIds(prefix),
     ).filter((row) => /^\d+$/.test(row.id.slice(prefix.length + 1)));
-    const legacy = prior.some((row) => row.parseMode === null);
+    const legacy =
+      channel !== "whatsapp" && prior.some((row) => row.parseMode === null);
     // A reply can be only a file: one row with empty text carries the media.
     const onlyMedia = !!media?.length && !text.trim();
     const chunks: string[] = [];
+    // WhatsApp shows the HTML formatter's trailing paragraph break as a blank
+    // line. Store that channel as plain text and skip the formatter.
+    const plain = legacy || channel === "whatsapp";
     if (legacy) {
       for (let offset = 0; offset < text.length;) {
         let end = Math.min(offset + legacyLimit, text.length);
         if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
         chunks.push(text.slice(offset, end));
         offset = end;
+      }
+    } else if (channel === "whatsapp") {
+      const body = whatsAppText(text);
+      if (onlyMedia) chunks.push("");
+      else if (body.trim()) {
+        const limit = 3800;
+        for (let offset = 0; offset < body.length;) {
+          let end = Math.min(offset + limit, body.length);
+          if (end < body.length && /[\uD800-\uDBFF]/.test(body[end - 1])) end--;
+          chunks.push(body.slice(offset, end));
+          offset = end;
+        }
       }
     } else chunks.push(...(onlyMedia ? [""] : formatTelegramMessage(text)));
     // Commands already commit their receipt and acknowledgement together.
@@ -379,16 +439,17 @@ export class Store {
     try {
       chunks.forEach((chunk, index) => {
         this.run(
-          "INSERT OR IGNORE INTO deliveries(id,chat,text,parseMode,messageThreadId,media,replyTo) VALUES (?,?,?,?,?,?,?)",
+          "INSERT OR IGNORE INTO deliveries(id,chat,text,parseMode,messageThreadId,media,replyTo,channel) VALUES (?,?,?,?,?,?,?,?)",
           `${prefix}:${index}`,
           chat,
           chunk,
-          legacy ? null : "HTML",
+          plain ? null : "HTML",
           messageThreadId ?? null,
           // Attachments ride the first chunk, so a partial reply never repeats them.
           index === 0 && media?.length ? JSON.stringify(media) : null,
           // A reply points at one message; later chunks stay in the same topic.
           index === 0 ? (replyTo ?? null) : null,
+          channel ?? null,
         );
         if (conversationId)
           this.run(
@@ -531,4 +592,28 @@ export class SqlCredentials implements CredentialStore {
     this.tails.set(providerId, operation);
     return operation;
   }
+}
+
+/**
+ * WhatsApp rows. The undefined slots are the Telegram-only fields.
+ * No legacy limit: this channel chunks at 3800 and ignores that argument.
+ */
+export function queueWhatsApp(
+  store: Store,
+  prefix: string,
+  chat: string,
+  text: string,
+  conversationId?: string,
+) {
+  store.queueTelegram(
+    prefix,
+    chat,
+    text,
+    undefined,
+    conversationId,
+    undefined,
+    undefined,
+    undefined,
+    "whatsapp",
+  );
 }

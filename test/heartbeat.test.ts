@@ -203,6 +203,26 @@ test("long call: scheduled and job runs never get a heartbeat", async () => {
       chat: "42",
       messageThreadId: 7,
     });
+
+    const whatsapp = "1002";
+    store.run("INSERT INTO conversations VALUES (?,?)", whatsapp, "WhatsApp");
+    store.run(
+      "INSERT INTO channel_chats(channel,chatId,conversationId) VALUES (?,?,?)",
+      "whatsapp",
+      "15551234567@s.whatsapp.net",
+      whatsapp,
+    );
+    store.run(
+      "INSERT INTO requests(conversationId,requestId,text,source,chat) VALUES (?,?,?,?,?)",
+      whatsapp,
+      "r5",
+      "oi",
+      "whatsapp",
+      "15551234567@s.whatsapp.net",
+    );
+    assert.deepEqual(longCallRoute(store, whatsapp), {
+      chat: "15551234567@s.whatsapp.net",
+    });
   } finally {
     store.close();
     await rm(dir, { recursive: true, force: true });
