@@ -228,3 +228,23 @@ sandbox_code_task:
   - `ASYNC_JOB_TIMEOUT_MIN`: override opcional de `async_job.timeout_min` (padrão `25`).
   - `ASYNC_JOB_POLL_SECONDS`: override opcional de `async_job.poll_seconds` (padrão `25`).
   - `ASYNC_JOB_READ_TIMEOUT_MS`: Timeout de leitura do poller (padrão `20000` ms).
+
+## After an approval
+
+Approving or declining an MCP card in the chat records the outcome as a system turn. The assistant's final text in that turn is delivered in the same chat, on the same path as a job the user started. A blank reply sends nothing. Any other system turn stays silent. The "Deu certo" / "Não rodou" check is unchanged: the chat gets only "Verificação registrada. Nada foi reenviado.", and that system turn does not deliver the assistant's text.
+
+pt-BR: Aprovar ou recusar o cartão no chat grava o resultado como um turno de sistema. O texto final desse turno é entregue no mesmo chat, no mesmo caminho de um job que a pessoa disparou. Uma resposta vazia não envia nada. Os outros turnos de sistema continuam em silêncio. A conferência "Deu certo" / "Não rodou" não muda: o chat recebe só "Verificação registrada. Nada foi reenviado.", e o texto do assistente nesse turno não é entregue.
+
+## A task id with no manifest
+
+A tool can return only a task id, with no row in `pending_jobs`, when the tool is not in an async job manifest. Nothing is watching that id. The assistant must not say it will come back. It does one of these:
+
+1. Keep reading the id in the same turn, for at most about 50 seconds. `execute` stops at 60.
+2. If the tool is in a manifest, the poller delivers the result in this chat. No second check.
+3. Otherwise, from a user turn, one `tasks_create` with `kind: once` in this chat. The schedule's prompt checks that same id and calls `notify`. `notify` posts in the chat that created the schedule. A scheduled run still speaks only through `notify`; this does not change that silence.
+
+A scheduled or system turn cannot create that check. It polls inside the turn, or it says the result is not in yet. It still does not promise to return.
+
+The tool result carries a short note in these two cases, so the instruction sits next to the id.
+
+pt-BR: Uma ferramenta pode devolver só um id de tarefa, sem linha em `pending_jobs`, quando não há manifesto. Ninguém observa esse id. O assistente não promete voltar. Ou consulta de novo neste turno por até cerca de 50 segundos (`execute` para em 60), ou usa o job registrado, ou, num turno da pessoa, cria uma checagem única com `tasks_create` (`once`) cujo prompt chama `notify` neste chat. Um run agendado continua falando só por `notify`. Um turno de sistema ou agendado não cria essa checagem.

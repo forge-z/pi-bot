@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única.
+
+### Fixed
+
+- An MCP approval the user decides in the chat delivers the assistant's follow-up in that chat. A blank follow-up sends nothing. Other system turns stay silent, including the "Deu certo" / "Não rodou" check.
+
+### Changed
+
+- A tool result that is only a pending task id, with no async job manifest, is not a promise to return. The assistant polls within the turn for about 50 seconds (`execute` stops at 60), uses the registered job when one exists, or, from a user turn, creates one one-shot schedule that calls `notify` in the same chat. Scheduled runs still speak only through `notify`.
+
 ## [0.4.0] - 2026-11-18
 
 Beta. The README calls the project beta: usable day to day, with configuration and commands that may still change between releases.

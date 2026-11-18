@@ -1374,7 +1374,7 @@ export async function decideMcp(
     .list(data.conversationId)
     .find((row) => row.id === result.callId);
   if (call && item.kind === "resume") {
-    await app.recordMcpOutcome(call);
+    await app.recordMcpOutcome(call, { deliverReply: true });
     queueControl(
       app,
       `telegram:mcp-result:${item.id}`,
