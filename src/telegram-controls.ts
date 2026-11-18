@@ -193,7 +193,7 @@ export function observeTopic(
 }
 
 /** Persist the observed canonical name without making another external edit. */
-export function syncTopicTitle(app: Runtime, owner: TelegramOwner) {
+function syncTopicTitle(app: Runtime, owner: TelegramOwner) {
   const name = app.store.get<{ name: string | null }>(
     "SELECT name FROM telegram_known_topics WHERE chat=? AND user=? AND messageThreadId=?",
     owner.chat,

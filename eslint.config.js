@@ -13,11 +13,5 @@ export default tseslint.config(
     // through tsc, so an undefined name must still fail the build.
     rules: { "no-undef": "error" },
   },
-  {
-    files: ["public/*.js"],
-    languageOptions: {
-      globals: { ...globals.browser, ...globals.serviceworker },
-    },
-  },
   { rules: { "@typescript-eslint/no-explicit-any": "error" } },
 );

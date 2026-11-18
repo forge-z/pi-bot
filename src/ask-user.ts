@@ -8,7 +8,7 @@ import type { TelegramReplyMarkup } from "./telegram-controls.js";
 import { sentMessageId } from "./telegram-reply.js";
 
 /** Model-facing name. Always registered; scheduled runs get a refusal from execute. */
-export const ASK_USER_TOOL = "ask_user";
+const ASK_USER_TOOL = "ask_user";
 
 /** Exact refusal a scheduled occurrence receives. Nothing is posted. */
 export const ASK_USER_SCHEDULED_ERROR =

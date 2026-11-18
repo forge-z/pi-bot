@@ -14,10 +14,10 @@ export interface ModelSettings {
   effort: ModelThinkingLevel;
 }
 export class SettingsError extends Error {}
-/** Globals live in app.sqlite, so `npm run setup-model` can write them directly. */
+/** Globals live in app.sqlite, so `npm run setup` can write them directly. */
 export const modelDefaultsKey = (mode = "live") =>
   `model-defaults-selection:${mode}`;
-/** Written only when the default was chosen on purpose (setup-model or /model). */
+/** Written only when the default was chosen on purpose (`npm run setup` or /model). */
 export const modelDefaultsConfirmedKey = (mode = "live") =>
   `model-defaults-confirmed:${mode}`;
 /** One-shot "no default chosen yet" notice, tracked per conversation. */

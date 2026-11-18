@@ -14,7 +14,7 @@ import {
 
 type Env = Record<string, string | undefined>;
 
-export type DiscoveryCall = (
+type DiscoveryCall = (
   server: string,
   tool: string,
   args: Record<string, unknown>,
