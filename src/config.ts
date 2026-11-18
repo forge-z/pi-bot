@@ -87,15 +87,15 @@ function endpoint(value: string) {
 }
 /** Hosted Composio Connect MCP. Project URLs use `x-api-key` instead. */
 export const COMPOSIO_CONNECT_URL = "https://connect.composio.dev/mcp";
-export const COMPOSIO_SERVER_NAME = "composio";
-export const SELF_HOSTED_SERVER_NAME = "self-hosted";
+const COMPOSIO_SERVER_NAME = "composio";
+const SELF_HOSTED_SERVER_NAME = "self-hosted";
 
 /**
  * Header for a self-hosted gateway token.
  * Empty or `Authorization` sends `Authorization: Bearer`. Any other name sends
  * the raw token, the same way Composio's `x-api-key` does.
  */
-export function selfHostedTokenHeader(value: string | undefined) {
+function selfHostedTokenHeader(value: string | undefined) {
   const name = value?.trim();
   if (!name || name.toLowerCase() === "authorization") return undefined;
   if (!validMcpHeaderName(name))
@@ -294,11 +294,35 @@ function parseMcpList(parsed: unknown, env: Env): McpConfig[] {
   });
 }
 
+function readMcpConfig(env: Env, stored?: StoredAggregators): McpConfig[] {
+  const explicitMcp = env.MCP_SERVERS_JSON?.trim();
+  const rawMcp = env.MCP_CONFIG_FILE
+    ? readFileSync(env.MCP_CONFIG_FILE, "utf8")
+    : explicitMcp && explicitMcp !== "[]"
+      ? explicitMcp
+      : undefined;
+  return rawMcp
+    ? parseMcpList(json(rawMcp, "MCP"), env)
+    : mcpServersFromAggregators(env, stored);
+}
+
 export function readConfig(
   env: Env = process.env,
   stored?: StoredAggregators,
   telegram?: StoredTelegram,
+  options?: { gateway?: "telegram" | "whatsapp" },
 ) {
+  // WhatsApp installs have no bot token. Callers that omit `gateway` keep the
+  // Telegram requirements exactly as before.
+  if (options?.gateway === "whatsapp") {
+    return {
+      token: "",
+      users: [] as string[],
+      chats: [] as string[],
+      mcp: readMcpConfig(env, stored),
+      dir: env.DATA_DIR ?? "data",
+    };
+  }
   // A placeholder left in the environment is not an override: the volume token stands.
   const fromEnv = secret(env, "TELEGRAM_BOT_TOKEN");
   const envToken =
@@ -347,15 +371,7 @@ export function readConfig(
   const chats = chatsRaw
     ? allowlist(env.TELEGRAM_ALLOWED_CHATS, "TELEGRAM_ALLOWED_CHATS", true)
     : [...users];
-  const explicitMcp = env.MCP_SERVERS_JSON?.trim();
-  const rawMcp = env.MCP_CONFIG_FILE
-    ? readFileSync(env.MCP_CONFIG_FILE, "utf8")
-    : explicitMcp && explicitMcp !== "[]"
-      ? explicitMcp
-      : undefined;
-  const mcp: McpConfig[] = rawMcp
-    ? parseMcpList(json(rawMcp, "MCP"), env)
-    : mcpServersFromAggregators(env, stored);
+  const mcp = readMcpConfig(env, stored);
   return {
     token,
     users,
@@ -1120,7 +1136,7 @@ function walkSecrets(value: unknown, into: string[]) {
 }
 
 /** Strings stored in `credentials`, including keys refreshed after startup. */
-export function credentialSecretValues(rows: readonly string[]) {
+function credentialSecretValues(rows: readonly string[]) {
   const found: string[] = [];
   for (const row of rows) {
     let parsed: unknown = row;

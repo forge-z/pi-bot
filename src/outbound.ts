@@ -9,6 +9,8 @@ export interface OutboundMedia {
   data?: string;
   filename?: string;
   mimeType?: string;
+  /** Shown with the file on channels that have a caption. */
+  caption?: string;
 }
 
 const AUDIO = /^audio\/(mpeg|mp3|wav|x-wav)$/i;

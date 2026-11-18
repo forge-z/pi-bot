@@ -52,7 +52,7 @@ export interface StoredSetup {
  * ChatGPT/Codex and the compat reserve keep using `llm` (the OAuth token
  * itself lives under `openai` / `openai-codex`, written by pi-ai login).
  */
-export function chatCredentialProvider(record: SetupRecord) {
+function chatCredentialProvider(record: SetupRecord) {
   if (record.authMode === "chatgpt" || record.providerId === "openai-codex")
     return "llm";
   const id = canonicalProviderId(record.providerId);
@@ -293,11 +293,11 @@ export interface StoredAggregators {
   upsy?: McpOauthCredential;
 }
 
-export const aggregatorsKey = (mode = "live") => `aggregators:${mode}`;
+const aggregatorsKey = (mode = "live") => `aggregators:${mode}`;
 /** Volume credential ids. Not env var names. */
-export const EXECUTOR_VOLUME_CREDENTIAL = "mcp-executor";
-export const COMPOSIO_VOLUME_CREDENTIAL = "mcp-composio";
-export const SELF_HOSTED_VOLUME_CREDENTIAL = "mcp-self-hosted";
+const EXECUTOR_VOLUME_CREDENTIAL = "mcp-executor";
+const COMPOSIO_VOLUME_CREDENTIAL = "mcp-composio";
+const SELF_HOSTED_VOLUME_CREDENTIAL = "mcp-self-hosted";
 
 const AGGREGATOR_CHOICES = new Set<AggregatorChoice>([
   "composio",
@@ -548,6 +548,111 @@ export function writeStoredTelegram(
     );
 }
 
+/** Which phone gateway this install starts. Unset means Telegram. */
+const PHONE_GATEWAY_KEY = "phone-gateway";
+type PhoneGateway = "telegram" | "whatsapp";
+const whatsappUsersKey = (mode = "live") => `whatsapp-users:${mode}`;
+
+interface StoredWhatsapp {
+  users?: string[];
+}
+
+/**
+ * Owner numbers, digits only, with country code. Empty or invalid is undefined.
+ * A Brazilian mobile is accepted with or without the extra 9 (13 or 12 digits).
+ */
+export function parseWhatsappNumbers(value: string): string[] | undefined {
+  const rows = value
+    .split(",")
+    .map((item) => item.replace(/\D/g, ""))
+    .filter(Boolean);
+  if (!rows.length || rows.some((item) => item.length < 8 || item.length > 15))
+    return undefined;
+  return [...new Set(rows)];
+}
+
+export function readPhoneGateway(dir: string): PhoneGateway {
+  const file = join(dir, "app.sqlite");
+  if (!existsSync(file)) return "telegram";
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const row = db
+      .prepare("SELECT value FROM meta WHERE key=?")
+      .get(PHONE_GATEWAY_KEY) as { value?: string } | undefined;
+    return row?.value === "whatsapp" ? "whatsapp" : "telegram";
+  } catch {
+    return "telegram";
+  } finally {
+    db?.close();
+  }
+}
+
+export function writePhoneGateway(db: DatabaseSync, gateway: PhoneGateway) {
+  if (gateway !== "telegram" && gateway !== "whatsapp")
+    throw new Error("Phone gateway must be telegram or whatsapp.");
+  db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
+  db.prepare(
+    "INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+  ).run(PHONE_GATEWAY_KEY, gateway);
+}
+
+export function readStoredWhatsapp(dir: string, mode = "live"): StoredWhatsapp {
+  const file = join(dir, "app.sqlite");
+  if (!existsSync(file)) return {};
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const raw = readJson<unknown>(
+      db,
+      "SELECT value FROM meta WHERE key=?",
+      whatsappUsersKey(mode),
+    );
+    const users = Array.isArray(raw)
+      ? parseWhatsappNumbers(
+          raw.filter((item) => typeof item === "string").join(","),
+        )
+      : undefined;
+    return users ? { users } : {};
+  } catch {
+    return {};
+  } finally {
+    db?.close();
+  }
+}
+
+export function writeStoredWhatsapp(
+  db: DatabaseSync,
+  users: string[] | undefined,
+  mode = "live",
+) {
+  const parsed = users ? parseWhatsappNumbers(users.join(",")) : undefined;
+  if (users && !parsed)
+    throw new Error(
+      "WhatsApp owner number is invalid: use digits with the country code.",
+    );
+  db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
+  if (parsed)
+    db.prepare(
+      "INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run(whatsappUsersKey(mode), JSON.stringify(parsed));
+}
+
+/** Env override when set; otherwise the number saved by setup. */
+export function resolveWhatsappUsers(
+  env: Record<string, string | undefined>,
+  stored: StoredWhatsapp,
+) {
+  const fromEnv = env.WHATSAPP_ALLOWED_USERS?.trim();
+  if (!fromEnv) return stored.users;
+  const parsed = parseWhatsappNumbers(fromEnv);
+  if (!parsed)
+    throw new Error(
+      "WHATSAPP_ALLOWED_USERS is invalid: use numbers with a country code, separated by commas.",
+    );
+  return parsed;
+}
+
 type SecretListener = (...args: never[]) => void;
 
 interface SecretInput {
@@ -644,14 +749,14 @@ export function secretPrompt(label: string, saved: boolean): string {
     : `${name} (hidden): `;
 }
 
-export type SetupMenuSection = "gateway" | "text" | "image" | "audio" | "mcp";
+type SetupMenuSection = "gateway" | "text" | "image" | "audio" | "mcp";
 
-export type SetupMenuCommand = SetupMenuSection | "restart" | "exit";
+type SetupMenuCommand = SetupMenuSection | "restart" | "exit";
 
 /** Last line of every section submenu. */
 export const SAVE_AND_BACK = "Save and back";
 /** Last line of the main menu. Restarts the process; it does not redeploy. */
-export const SAVE_AND_RESTART = "Save and restart gateway";
+const SAVE_AND_RESTART = "Save and restart gateway";
 
 const MAIN_MENU: Record<string, SetupMenuCommand> = {
   "1": "gateway",
@@ -683,9 +788,9 @@ export function routeSetupMenu(answer: string): SetupMenuCommand | undefined {
   return MAIN_MENU[answer.trim().toLowerCase()];
 }
 
-export type SectionStatus = "configured" | "not set";
+type SectionStatus = "configured" | "not set";
 
-export interface SetupMenuStatus {
+interface SetupMenuStatus {
   gateway: SectionStatus;
   text: SectionStatus;
   image: SectionStatus;
@@ -760,7 +865,49 @@ export function routeGatewayMenu(answer: string) {
   return routeSection(answer, {
     "1": "telegram",
     telegram: "telegram",
+    "2": "whatsapp",
+    whatsapp: "whatsapp",
   } as const);
+}
+
+export function routeWhatsappMenu(answer: string) {
+  return routeSection(answer, {
+    "1": "number",
+    number: "number",
+    "2": "pair",
+    pair: "pair",
+    qr: "pair",
+    "3": "code",
+    code: "code",
+  } as const);
+}
+
+/**
+ * A yes or no. `s`/`sim`/`y`/`yes` are yes, `n`/`no`/`nao`/`não` are no.
+ * Anything else, including `true`, is not an answer.
+ */
+export function parseYesNo(answer: string): boolean | undefined {
+  const key = answer.trim().toLowerCase();
+  if (key === "s" || key === "sim" || key === "y" || key === "yes") return true;
+  if (key === "n" || key === "no" || key === "nao" || key === "não")
+    return false;
+  return undefined;
+}
+
+/** Asks until the answer is yes, no, or empty (the fallback). */
+export async function askYesNo(
+  ask: (prompt: string) => Promise<string>,
+  label: string,
+  fallback: boolean,
+) {
+  const prompt = `${label} (s/n) [${fallback ? "s" : "n"}]: `;
+  for (;;) {
+    const answer = await ask(prompt);
+    if (!answer.trim()) return fallback;
+    const parsed = parseYesNo(answer);
+    if (parsed !== undefined) return parsed;
+    console.log("Answer s, n, y, yes, sim, no, nao, or não.");
+  }
 }
 
 export function routeTelegramMenu(answer: string) {
@@ -789,7 +936,7 @@ export function routeTextMenu(answer: string) {
   } as const);
 }
 
-export type ImageMenuAction =
+type ImageMenuAction =
   | "use-text"
   | "separate"
   | "provider"
@@ -865,14 +1012,14 @@ export function modelAcceptsImages(
   return Boolean(input?.includes("image"));
 }
 
-export interface ListedModel {
+interface ListedModel {
   id: string;
   input?: readonly string[];
   api?: string;
 }
 
 /** Gemini generateContent accepts inline audio. Other catalogs name transcription models. */
-export function modelAcceptsAudio(model: ListedModel): boolean {
+function modelAcceptsAudio(model: ListedModel): boolean {
   if (model.input?.includes("audio")) return true;
   const id = model.id.replace(/^models\//, "");
   if (/whisper|transcri/i.test(id)) return true;
@@ -1018,7 +1165,7 @@ export function imageModelBelongsToProvider(
   return Boolean(findCatalogModel(choice.id, modelId));
 }
 
-export interface ProviderModelChoice {
+interface ProviderModelChoice {
   id: string;
   acceptsImages?: boolean;
 }
@@ -1071,7 +1218,7 @@ export function imageSectionPlan(input: {
   };
 }
 
-export interface GatewayProcess {
+interface GatewayProcess {
   pid: number;
   command: string;
 }
