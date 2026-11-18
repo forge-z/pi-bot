@@ -1071,7 +1071,7 @@ export class McpGateway implements ToolGateway {
         const url = connectionUrl(config);
         const makeClient = () => {
           const client = new Client(
-            { name: "pi-agent", version: "0.3.0" },
+            { name: "pi-agent", version: "0.4.0" },
             {
               capabilities: { elicitation: { form: {}, url: {} } },
               jsonSchemaValidator: this.schemas,
