@@ -1,0 +1,8 @@
+Setup gateway
+One phone gateway per install. Saving one turns the other off.
+Active: Telegram
+1 - Telegram
+2 - WhatsApp
+b - Back
+s - Save and back
+Choice:

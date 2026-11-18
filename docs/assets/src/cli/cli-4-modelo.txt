@@ -1,0 +1,69 @@
+Text model
+Provider: not set
+Model: not set
+API key: not set
+Effort: not set
+1 - Provider
+2 - Model
+3 - API key
+4 - Effort
+t - Test
+b - Back
+s - Save and back
+Choice: 1
+Official pi-ai providers. The key is stored on the volume under the provider id.
+  [0] ChatGPT (Plus/Pro subscription — OAuth, no API key)
+  [1] Ant Ling — official catalog
+  [2] Anthropic — official catalog
+  [3] Baseten — official catalog
+  [4] Cerebras — official catalog
+  [5] DeepSeek — official catalog
+  [6] Fireworks — official catalog
+  [7] GitHub Copilot — official catalog
+  [8] Google — official catalog
+  [9] Groq — official catalog
+  [10] Hugging Face — official catalog
+  [11] Kimi For Coding — official catalog
+  [12] Meta — official catalog
+  [13] MiniMax — official catalog
+  [14] MiniMax CN — official catalog
+  [15] Mistral — official catalog
+  [16] Moonshot AI — official catalog
+  [17] Moonshot AI CN — official catalog
+  [18] NVIDIA — official catalog
+  [19] OpenAI — official catalog
+  [20] OpenCode Go — official catalog
+  [21] OpenCode Zen — official catalog
+  [22] OpenRouter — official catalog
+  [23] Qwen Token Plan — official catalog
+  [24] Qwen Token Plan CN — official catalog
+  [25] Qwen Token Plan Individual — official catalog
+  [26] Qwen Token Plan Individual CN — official catalog
+  [27] Radius — official catalog
+  [28] Together — official catalog
+  [29] Vercel AI Gateway — official catalog
+  [30] xAI — official catalog
+  [31] Xiaomi — official catalog
+  [32] Xiaomi Token Plan AMS — official catalog
+  [33] Xiaomi Token Plan CN — official catalog
+  [34] Xiaomi Token Plan SGP — official catalog
+  [35] Z.AI — official catalog
+  [36] Z.AI Coding CN — official catalog
+  [37] Other (OpenAI-compatible) — optional reserve: a proxy or a host with no native provider
+
+Provider [1]: 0
+Subscription [1] Sign in with ChatGPT (openai) [2] legacy Codex (openai-codex) [1]: 1
+file:///agent/repos/pi-bot/dist/src/config.js:823
+        throw new SetupRequiredError("login ChatGPT");
+              ^
+
+SetupRequiredError: Configuração inicial ausente (login ChatGPT). Rode `npm run login` no terminal do container.
+    at bootstrapModels (file:///agent/repos/pi-bot/dist/src/config.js:823:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async loadSubscriptionCatalog (file:///agent/repos/pi-bot/scripts/setup-model.mjs:386:16)
+    at async configureTextProvider (file:///agent/repos/pi-bot/scripts/setup-model.mjs:1372:5)
+    at async textMenu (file:///agent/repos/pi-bot/scripts/setup-model.mjs:1575:32)
+    at async interactive (file:///agent/repos/pi-bot/scripts/setup-model.mjs:2418:35)
+    at async file:///agent/repos/pi-bot/scripts/setup-model.mjs:2737:5
+
+Node.js v24.22.3

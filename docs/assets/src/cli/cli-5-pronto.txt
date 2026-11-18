@@ -1,0 +1,15 @@
+Setup
+1 - Setup gateway  configured (WhatsApp)
+2 - Text model     configured (anthropic/claude-sonnet-4-6)
+3 - Image model    configured (text model)
+4 - Audio model    not set
+5 - MCP platform   not set (none)
+
+s - Save and restart gateway
+q - Exit without saving
+Choice: s
+Global default: anthropic/claude-sonnet-4-6 · medium
+Saved on the volume (anthropic). The key is in credentials under that id. LLM_* is not required.
+Database: /tmp/pi-bot-data/app.sqlite
+New conversations use this default. /model in Telegram still overrides one conversation.
+Saved. No gateway is running in this container. Start it to apply the volume. Changing environment variables (TZ, TELEGRAM_*, LLM_*, EXECUTOR_*, COMPOSIO_*, SELF_HOSTED_*, CONFIG_FILE) still needs a new container.

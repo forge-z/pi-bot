@@ -12,6 +12,8 @@ A personal AI assistant that lives in Telegram or WhatsApp: one container, one v
 
 **Status: Beta.** Usable day to day; configuration and commands may still change between releases.
 
+[Landing page](https://forge-z.github.io/pi-bot/)
+
 ## Install
 
 ```sh
