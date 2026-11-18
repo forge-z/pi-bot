@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
@@ -12,8 +12,11 @@
         --text: #1b242e;
         --muted: #667484;
       }
-      * { box-sizing: border-box; }
-      html, body {
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
         margin: 0;
         width: 1200px;
         height: 2133px;
@@ -21,7 +24,10 @@
         color: var(--text);
         font-family: Inter, "Segoe UI", sans-serif;
       }
-      body { display: flex; flex-direction: column; }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
       header {
         display: flex;
         align-items: center;
@@ -42,9 +48,20 @@
         font-size: 46px;
         font-weight: 700;
       }
-      .who { display: flex; flex-direction: column; gap: 4px; }
-      .who strong { font-size: 46px; font-weight: 700; letter-spacing: -0.02em; }
-      .who span { font-size: 28px; opacity: 0.88; }
+      .who {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .who strong {
+        font-size: 46px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .who span {
+        font-size: 28px;
+        opacity: 0.88;
+      }
       .mock {
         margin-left: auto;
         padding: 10px 22px;
@@ -70,8 +87,14 @@
         color: #3e5164;
         font-size: 26px;
       }
-      .row { display: flex; align-items: flex-end; gap: 16px; }
-      .row.out { justify-content: flex-end; }
+      .row {
+        display: flex;
+        align-items: flex-end;
+        gap: 16px;
+      }
+      .row.out {
+        justify-content: flex-end;
+      }
       .pip {
         display: grid;
         place-items: center;
@@ -128,7 +151,9 @@
         border-radius: 46px;
         background: #fff;
         color: #7d8b99;
-        font: 34px/92px Inter, sans-serif;
+        font:
+          34px/92px Inter,
+          sans-serif;
       }
     </style>
   </head>
@@ -153,7 +178,8 @@
       <div class="row in">
         <div class="pip" aria-hidden="true">P</div>
         <div class="bubble">
-          Pronto. Agendei um aviso para amanhã às 9:00 (America/Sao_Paulo): mandar o relatório semanal.
+          Pronto. Agendei um aviso para amanhã às 9:00 (America/Sao_Paulo):
+          mandar o relatório semanal.
           <span class="time">14:12</span>
         </div>
       </div>
@@ -167,7 +193,8 @@
       <div class="row in">
         <div class="pip" aria-hidden="true">P</div>
         <div class="bubble">
-          Leio JPEG, PNG, WebP, GIF e nota de voz. Vídeo e sticker eu aviso e não começo um turno.
+          Leio JPEG, PNG, WebP, GIF e nota de voz. Vídeo e sticker eu aviso e
+          não começo um turno.
           <span class="time">14:13</span>
         </div>
       </div>

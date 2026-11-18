@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
@@ -12,8 +12,11 @@
         --text: #1c1915;
         --muted: #6f675f;
       }
-      * { box-sizing: border-box; }
-      html, body {
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
         margin: 0;
         width: 1200px;
         height: 2133px;
@@ -45,9 +48,20 @@
         font-size: 42px;
         font-weight: 700;
       }
-      .who { display: flex; flex-direction: column; gap: 4px; }
-      .who strong { font-size: 46px; font-weight: 700; letter-spacing: -0.02em; }
-      .who span { font-size: 28px; opacity: 0.88; }
+      .who {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .who strong {
+        font-size: 46px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .who span {
+        font-size: 28px;
+        opacity: 0.88;
+      }
       .mock {
         margin-left: auto;
         padding: 10px 22px;
@@ -73,8 +87,12 @@
         color: #4e473f;
         font-size: 26px;
       }
-      .row { display: flex; }
-      .row.out { justify-content: flex-end; }
+      .row {
+        display: flex;
+      }
+      .row.out {
+        justify-content: flex-end;
+      }
       .bubble {
         max-width: 880px;
         padding: 22px 28px 16px;
@@ -112,7 +130,9 @@
         border-radius: 46px;
         background: #fff;
         color: #8a8178;
-        font: 34px/92px Inter, sans-serif;
+        font:
+          34px/92px Inter,
+          sans-serif;
       }
     </style>
   </head>
@@ -135,7 +155,8 @@
       </div>
       <div class="row in">
         <div class="bubble">
-          Pi: Pronto. Amanhã às 9:00 (America/Sao_Paulo) eu te aviso: mandar o relatório semanal. Para ligar ou desligar, manda /crons.
+          Pi: Pronto. Amanhã às 9:00 (America/Sao_Paulo) eu te aviso: mandar o
+          relatório semanal. Para ligar ou desligar, manda /crons.
           <span class="time">14:12</span>
         </div>
       </div>
@@ -147,7 +168,8 @@
       </div>
       <div class="row in">
         <div class="bubble">
-          Pi: Leio JPEG, PNG, WebP, GIF e nota de voz. Vídeo e sticker eu aviso e não começo um turno.
+          Pi: Leio JPEG, PNG, WebP, GIF e nota de voz. Vídeo e sticker eu aviso
+          e não começo um turno.
           <span class="time">14:13</span>
         </div>
       </div>
