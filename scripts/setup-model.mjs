@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   clampThinkingLevel,
@@ -43,10 +43,13 @@ import {
   UNAVAILABLE_MODEL,
   parseAggregatorChoice,
   parseTelegramUserList,
+  parseWhatsappNumbers,
   readHiddenSecret as hidden,
+  readPhoneGateway,
   readStoredAggregators,
   readStoredSetup,
   readStoredTelegram,
+  readStoredWhatsapp,
   routeAudioMenu,
   routeGatewayMenu,
   routeImageMenu,
@@ -54,6 +57,8 @@ import {
   routeSetupMenu,
   routeTelegramMenu,
   routeTextMenu,
+  routeWhatsappMenu,
+  askYesNo,
   secretPrompt,
   setupKey,
   setupMenuStatus,
@@ -63,8 +68,11 @@ import {
   validTelegramToken,
   writeStoredAggregators,
   writeStoredSetup,
+  writePhoneGateway,
   writeStoredTelegram,
+  writeStoredWhatsapp,
 } from "../dist/src/setup.js";
+import { pairWhatsApp } from "../dist/src/whatsapp.js";
 import {
   modelDefaultsConfirmedKey,
   modelDefaultsKey,
@@ -391,10 +399,11 @@ async function loadSubscriptionCatalog(readline, piProviderId) {
       err.code = "SUBSCRIPTION_LOGIN_REQUIRED";
       throw err;
     }
-    const deviceAnswer = await readline.question(
-      "Device-code login (recommended on a VPS)? [Y/n]: ",
+    const deviceCodeOnly = await askYesNo(
+      (prompt) => readline.question(prompt),
+      "Device-code login (recommended on a VPS)?",
+      true,
     );
-    const deviceCodeOnly = !/^n/i.test(String(deviceAnswer).trim());
     console.log(
       "Follow the OAuth login below (device code, or paste the redirect URL if asked).",
     );
@@ -820,6 +829,7 @@ function readBackendKeys() {
 function loadSession() {
   const stored = readStoredSetup(dir);
   const telegram = readStoredTelegram(dir);
+  const whatsapp = readStoredWhatsapp(dir);
   const aggregators = readStoredAggregators(dir);
   const functions = currentFunctions();
   const keys = readBackendKeys();
@@ -840,6 +850,10 @@ function loadSession() {
   }
   const choice = record ? resolveSetupChoice(record.providerId) : undefined;
   return {
+    phone: readPhoneGateway(dir),
+    whatsapp: {
+      users: whatsapp.users ? [...whatsapp.users] : undefined,
+    },
     telegram: {
       hasToken: Boolean(telegram.token),
       users: telegram.users ? [...telegram.users] : undefined,
@@ -931,10 +945,13 @@ function sessionStatus(session, summary) {
   );
   const mcpOn = Boolean(session.mcp.choice && session.mcp.choice !== "none");
   return setupMenuStatus({
-    gateway: Boolean(
-      (session.telegram.hasToken || session.telegram.newToken) &&
-      session.telegram.users?.length,
-    ),
+    gateway:
+      session.phone === "whatsapp"
+        ? Boolean(session.whatsapp.users?.length)
+        : Boolean(
+            (session.telegram.hasToken || session.telegram.newToken) &&
+            session.telegram.users?.length,
+          ),
     text: textReady,
     image: summary.imageOn && session.image.choice !== "off",
     audio: summary.audioOn && !session.audio.off,
@@ -952,6 +969,7 @@ function printMain(session) {
       image: summary.imageOn ? summary.image : "",
       audio: summary.audioOn ? summary.audio : "",
       mcp: session.mcp.choice || "",
+      gateway: session.phone === "whatsapp" ? "WhatsApp" : "Telegram",
     })}`,
   );
 }
@@ -1138,7 +1156,14 @@ async function testTelegram(draft) {
 async function gatewayMenu(readline, session) {
   for (;;) {
     console.log("\nSetup gateway");
+    console.log(
+      "One phone gateway per install. Saving one turns the other off.",
+    );
+    console.log(
+      `Active: ${session.phone === "whatsapp" ? "WhatsApp" : "Telegram"}`,
+    );
     console.log("1 - Telegram");
+    console.log("2 - WhatsApp");
     printSectionEnd();
     const action = routeGatewayMenu(await readline.question("Choice: "));
     if (!action) {
@@ -1146,7 +1171,95 @@ async function gatewayMenu(readline, session) {
       continue;
     }
     if (action === "back" || action === "save") return;
+    if (action === "whatsapp") {
+      await whatsappMenu(readline, session);
+      continue;
+    }
     await telegramMenu(readline, session);
+  }
+}
+
+function whatsappSessionDir() {
+  return join(dir, "whatsapp-auth");
+}
+
+async function whatsappMenu(readline, session) {
+  const draft = session.whatsapp;
+  for (;;) {
+    const paired = existsSync(join(whatsappSessionDir(), "creds.json"));
+    console.log("\nWhatsApp");
+    console.log(
+      "Unofficial WhatsApp Web. The owner's number is required; extra numbers, comma-separated, are allowed too. Telegram stays off while WhatsApp is the gateway.",
+    );
+    console.log(`Numbers: ${draft.users?.join(", ") || "not set"}`);
+    console.log(`Session: ${paired ? "paired on the volume" : "not paired"}`);
+    console.log("1 - Allowed numbers");
+    console.log("2 - Pair with QR");
+    console.log("3 - Pair with phone code");
+    printSectionEnd();
+    const action = routeWhatsappMenu(await readline.question("Choice: "));
+    if (!action) {
+      console.log("Unknown choice.");
+      continue;
+    }
+    if (action === "back") return;
+    if (action === "save") {
+      if (!draft.users?.length) {
+        console.log("The owner's number is required.");
+        continue;
+      }
+      persistWhatsapp(draft.users);
+      session.phone = "whatsapp";
+      session.whatsapp = draft;
+      return;
+    }
+    if (action === "number") {
+      const current = draft.users?.join(",") || "";
+      const answer = (
+        await readline.question(
+          `Numbers with country code, comma-separated${current ? ` [${current}]` : ""}: `,
+        )
+      ).trim();
+      const users = parseWhatsappNumbers(answer || current);
+      if (!users) {
+        console.log(
+          "Enter digits with the country code. A Brazilian mobile can include or omit the extra 9 after the area code. Separate extra numbers with commas, for example 15551234567,15557654321.",
+        );
+        continue;
+      }
+      draft.users = users;
+      continue;
+    }
+    if (!draft.users?.length) {
+      console.log("Set the owner number before pairing.");
+      continue;
+    }
+    const phone =
+      action === "code"
+        ? (
+            await readline.question(
+              `Number of the phone to link [${draft.users[0]}]: `,
+            )
+          ).trim() || draft.users[0]
+        : undefined;
+    // Raw-mode readline must not stay the only thing keeping the process
+    // up: a closed stdin after this prompt used to exit before the QR.
+    readline.pause();
+    try {
+      console.log(
+        phone
+          ? "WhatsApp: waiting for the pairing code. This stays open until the phone connects."
+          : "WhatsApp: waiting for the QR. This stays open until the phone connects.",
+      );
+      await pairWhatsApp(whatsappSessionDir(), { phone });
+      console.log("WhatsApp paired. The session stays on the data volume.");
+    } catch (error) {
+      console.log(
+        `WhatsApp pairing failed: ${error instanceof Error ? error.message : "no response"}.`,
+      );
+    } finally {
+      readline.resume();
+    }
   }
 }
 
@@ -1178,6 +1291,7 @@ async function telegramMenu(readline, session) {
         continue;
       }
       persistTelegram(draft.users, draft.newToken);
+      session.phone = "telegram";
       session.telegram = draft;
       return;
     }
@@ -2373,10 +2487,23 @@ function persistTelegram(users, token) {
     return;
   }
   writeStoredTelegram(db, users, token, MODE);
+  writePhoneGateway(db, "telegram");
   console.log(
     token
       ? "Telegram saved on the volume. The token is in credentials."
       : "Telegram saved on the volume. The previous token was kept.",
+  );
+}
+
+function persistWhatsapp(users) {
+  if (options.dryRun) {
+    console.log(`(dry-run) whatsapp: ${users.length} number(s).`);
+    return;
+  }
+  writeStoredWhatsapp(db, users, MODE);
+  writePhoneGateway(db, "whatsapp");
+  console.log(
+    "WhatsApp saved on the volume. Telegram will not start until you save it again as the gateway.",
   );
 }
 

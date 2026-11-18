@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { setupKey, usableSetupRecord, type SetupRecord } from "./setup.js";
+import { maskLogText } from "./channel.js";
+import {
+  readStoredWhatsapp,
+  resolveWhatsappUsers,
+  setupKey,
+  usableSetupRecord,
+  type SetupRecord,
+} from "./setup.js";
 import {
   canonicalProviderId,
   compatEnvConfigured,
@@ -10,7 +17,7 @@ import {
 
 type Env = Record<string, string | undefined>;
 
-export interface VolumeProviderFacts {
+interface VolumeProviderFacts {
   source: "env" | "volume" | "none";
   recordPresent: boolean;
   authMode?: "chatgpt" | "api_key";
@@ -104,7 +111,7 @@ export function readVolumeSetupFacts(
   };
 }
 
-export const SETUP_VERSUS_LOGIN =
+const SETUP_VERSUS_LOGIN =
   "npm run setup é o assistente completo (provedor oficial, chave ou ChatGPT, modelo, esforço, visão e áudio). npm run login é só OAuth do ChatGPT/Codex, inclusive o device-code sem TTY. O login OAuth do Upsy fica no menu MCP do npm run setup, não no npm run login. Os dois gravam no volume. Um setup oficial não é trocado por LLM_BASE_URL/LLM_API_KEY; essas variáveis só valem no caminho compatível llm (menu Outro). Não há terceiro comando.";
 
 /** Lines for diagnose. Never includes secrets, endpoints, or credential values. */
@@ -125,6 +132,48 @@ export function describeVolumeProvider(facts: VolumeProviderFacts): string[] {
       `modelo no volume: ${facts.providerId ?? "?"}/${facts.modelId ?? "?"}. /model troca. npm run login grava o primeiro modelo do catálogo só quando o volume ainda não tinha modelo.`,
     );
   lines.push(SETUP_VERSUS_LOGIN);
+  return lines;
+}
+
+/**
+ * WhatsApp facts for diagnose. Numbers are masked to the last four digits.
+ * `WHATSAPP_ALLOWED_USERS` overrides the list saved on the volume. No session secrets.
+ */
+export function describeWhatsAppVolume(
+  dir: string,
+  env: Env = process.env,
+): string[] {
+  let numbers = "nenhum";
+  try {
+    const users = resolveWhatsappUsers(env, readStoredWhatsapp(dir)) ?? [];
+    numbers = users.map((user) => maskLogText(user)).join(", ") || "nenhum";
+  } catch {
+    numbers = "override inválido";
+  }
+  const paired = existsSync(join(dir, "whatsapp-auth", "creds.json"));
+  const lines = [
+    `números: ${numbers}`,
+    `sessão pareada: ${paired ? "sim" : "não"}`,
+  ];
+  const file = join(dir, "app.sqlite");
+  if (!existsSync(file)) {
+    lines.push("entregas pendentes: banco ausente");
+    return lines;
+  }
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM deliveries WHERE state='pending' AND channel='whatsapp'",
+      )
+      .get() as { n: number } | undefined;
+    lines.push(`entregas pendentes: ${row?.n ?? 0}`);
+  } catch {
+    lines.push("entregas pendentes: indisponível");
+  } finally {
+    db?.close();
+  }
   return lines;
 }
 

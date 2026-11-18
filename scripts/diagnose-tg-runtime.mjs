@@ -16,11 +16,13 @@ import {
   telegramAllowlistMisconfiguration,
 } from "../dist/src/config.js";
 import {
+  readPhoneGateway,
   readStoredAggregators,
   readStoredTelegram,
 } from "../dist/src/setup.js";
 import {
   describeVolumeProvider,
+  describeWhatsAppVolume,
   formatWaiting,
   readVolumeSetupFacts,
 } from "../dist/src/diagnose-volume.js";
@@ -30,6 +32,7 @@ import { spawnSync } from "node:child_process";
 const optional = [
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_ALLOWED_USERS",
+  "WHATSAPP_ALLOWED_USERS",
   "LLM_BASE_URL",
   "LLM_API_KEY",
   "EXECUTOR_MCP_URL",
@@ -121,25 +124,31 @@ console.log(
   `SOURCE_COMMIT=${envStatus("SOURCE_COMMIT")} (runtime; o painel de deploy pode preencher)`,
 );
 
-section("Configuração Telegram + MCP (validação local)");
-try {
-  const config = loadConfig();
-  console.log("readConfig: OK");
-  console.log(
-    `allowlist users=${config.users.length} chats=${config.chats.length}`,
-  );
-  console.log(`allowlist user IDs: ${config.users.join(", ")}`);
-  const chatsDefault =
-    !process.env.TELEGRAM_ALLOWED_CHATS?.trim() &&
-    config.chats.join(",") === config.users.join(",");
-  console.log(
-    `allowlist chat IDs: ${config.chats.join(", ")}${chatsDefault ? " (padrão = users)" : ""}`,
-  );
-  console.log(`mcp servers=${config.mcp.length}`);
-  for (const server of config.mcp)
-    console.log(`  - ${server.name}: endpoint configurado (URL omitida)`);
-} catch (error) {
-  console.log(`readConfig: FALHOU — ${startupErrorMessage(error)}`);
+const phoneGateway = readPhoneGateway(volumeDir());
+if (phoneGateway === "whatsapp") {
+  section("WhatsApp");
+  for (const line of describeWhatsAppVolume(volumeDir())) console.log(line);
+} else {
+  section("Configuração Telegram + MCP (validação local)");
+  try {
+    const config = loadConfig();
+    console.log("readConfig: OK");
+    console.log(
+      `allowlist users=${config.users.length} chats=${config.chats.length}`,
+    );
+    console.log(`allowlist user IDs: ${config.users.join(", ")}`);
+    const chatsDefault =
+      !process.env.TELEGRAM_ALLOWED_CHATS?.trim() &&
+      config.chats.join(",") === config.users.join(",");
+    console.log(
+      `allowlist chat IDs: ${config.chats.join(", ")}${chatsDefault ? " (padrão = users)" : ""}`,
+    );
+    console.log(`mcp servers=${config.mcp.length}`);
+    for (const server of config.mcp)
+      console.log(`  - ${server.name}: endpoint configurado (URL omitida)`);
+  } catch (error) {
+    console.log(`readConfig: FALHOU — ${startupErrorMessage(error)}`);
+  }
 }
 
 const dataDir = process.env.DATA_DIR?.trim() || "/app/data";
@@ -245,51 +254,53 @@ if (!existsSync(healthPath)) {
   }
 }
 
-section("Telegram API (token ok, sem segredos)");
-try {
-  const { token } = loadConfig();
-  const call = async (method, body = {}) => {
-    const response = await fetch(
-      `https://api.telegram.org/bot${token}/${method}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
-      },
+if (phoneGateway !== "whatsapp") {
+  section("Telegram API (token ok, sem segredos)");
+  try {
+    const { token } = loadConfig();
+    const call = async (method, body = {}) => {
+      const response = await fetch(
+        `https://api.telegram.org/bot${token}/${method}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15000),
+        },
+      );
+      const data = await response.json();
+      if (!data.ok)
+        throw new Error(`${method}: ${data.description ?? response.status}`);
+      return data.result;
+    };
+    const config = loadConfig();
+    const me = await call("getMe");
+    console.log(
+      `getMe: @${me.username ?? "?"} id=${me.id} (use /status@${me.username ?? "Bot"} em grupos)`,
     );
-    const data = await response.json();
-    if (!data.ok)
-      throw new Error(`${method}: ${data.description ?? response.status}`);
-    return data.result;
-  };
-  const config = loadConfig();
-  const me = await call("getMe");
-  console.log(
-    `getMe: @${me.username ?? "?"} id=${me.id} (use /status@${me.username ?? "Bot"} em grupos)`,
-  );
-  const misconfig = telegramAllowlistMisconfiguration(me.id, config);
-  if (misconfig) console.log(`ERRO CONFIG: ${misconfig}`);
-  const hook = await call("getWebhookInfo");
-  console.log(
-    hook.url
-      ? `getWebhookInfo: WEBHOOK ATIVO (${hook.url}) — polling não recebe updates; deleteWebhook`
-      : "getWebhookInfo: sem webhook (ok para polling)",
-  );
-  for (const chatId of config.chats) {
-    try {
-      const chat = await call("getChat", { chat_id: Number(chatId) });
-      console.log(
-        `getChat ${chatId}: type=${chat.type} title=${chat.title ?? chat.username ?? "?"}`,
-      );
-    } catch (error) {
-      console.log(
-        `getChat ${chatId}: FALHOU — ${error.message}. ID errado ou bot não está neste chat.`,
-      );
+    const misconfig = telegramAllowlistMisconfiguration(me.id, config);
+    if (misconfig) console.log(`ERRO CONFIG: ${misconfig}`);
+    const hook = await call("getWebhookInfo");
+    console.log(
+      hook.url
+        ? `getWebhookInfo: WEBHOOK ATIVO (${hook.url}) — polling não recebe updates; deleteWebhook`
+        : "getWebhookInfo: sem webhook (ok para polling)",
+    );
+    for (const chatId of config.chats) {
+      try {
+        const chat = await call("getChat", { chat_id: Number(chatId) });
+        console.log(
+          `getChat ${chatId}: type=${chat.type} title=${chat.title ?? chat.username ?? "?"}`,
+        );
+      } catch (error) {
+        console.log(
+          `getChat ${chatId}: FALHOU — ${error.message}. ID errado ou bot não está neste chat.`,
+        );
+      }
     }
+  } catch (error) {
+    console.log(`Telegram API: FALHOU — ${startupErrorMessage(error)}`);
   }
-} catch (error) {
-  console.log(`Telegram API: FALHOU — ${startupErrorMessage(error)}`);
 }
 
 section("Banco SQLite (app.sqlite, sem CLI sqlite3)");
