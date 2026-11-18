@@ -33,7 +33,7 @@ docker exec -it <container> npm run setup
 
 The menu edits one section at a time. **Save and back** writes that section. **Save and restart gateway** reloads the running bot from the volume.
 
-1. **Setup gateway** — Telegram or WhatsApp, one per install. Saving one turns the other off. An install with no choice stays on Telegram. Yes/no questions prompt `(s/n)` and also accept sim, não, y, yes, and no. Telegram asks for the bot token (hidden; Enter keeps the saved value) and allowed numeric user ids. WhatsApp asks for the owner's number with country code (a Brazilian mobile matches with or without the extra 9 after the area code; extra numbers are comma-separated) and then a QR or a pairing code. The session stays on the volume. Setup does not open a second session while the gateway is running.
+1. **Setup gateway** — Telegram or WhatsApp, one per install. Saving one turns the other off. An install with no choice stays on Telegram. Yes/no questions prompt `(s/n)` and also accept sim, não, y, yes, and no. Telegram asks for the bot token (hidden; Enter keeps the saved value) and allowed numeric user ids. WhatsApp asks for the owner's number with country code and then a QR or a pairing code. The full path is in [WhatsApp](#whatsapp).
 2. **Text model** — an official pi-ai provider, or `[0]` ChatGPT (Plus/Pro OAuth, no API key). `npm run login` is ChatGPT/Codex OAuth only.
 3. **Image model**
 4. **Audio model**
@@ -132,13 +132,83 @@ Executor and Composio use those same fields. The Executor v2 cloud URL in [docs/
 
 ## WhatsApp
 
-One phone gateway per install. WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks unofficial WhatsApp Web. That can lead to account restrictions. The owner, extra numbers saved with that number, and the linked account's own chat can send text, images, and voice notes. The bot replies in that chat. The linked account's own chat is prefixed with `Pi: `; other chats are not. Groups, broadcasts, and everyone else are ignored.
+One phone gateway per install. Choose it in `npm run setup`. Saving WhatsApp turns Telegram off, and saving Telegram turns WhatsApp off. An install that never chooses stays on Telegram. WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys) and [qrcode-terminal](https://github.com/gtanner/qrcode-terminal). Baileys speaks unofficial WhatsApp Web, which can lead to account restrictions. No new environment variable is required to boot.
 
-Replies are plain text. There are no inline buttons. Approvals, `/model`, `/thinking`, and `/crons` are numbered lists. `ask_user` is not offered on WhatsApp. A message that starts with `//` is sent as text, not as a command (`//status` reaches the model as `/status`). `/stop` cancels this chat and is also sent to the model. A schedule created in this chat stays in this chat: `notify` is delivered here, and the run stays silent unless it calls `notify`. Starting a gateway cancels the other channel's pending sends. The scheduler starts with the gateway. On a WhatsApp install, `npm run diagnose` prints numbers masked to the last four digits and skips the Telegram checks.
+### Setup
+
+```sh
+docker exec -it <container> npm run setup
+```
+
+Open **Setup gateway**, then **2 - WhatsApp**.
+
+Yes/no questions prompt `(s/n) [s]` or `(s/n) [n]`. `s`, `sim`, `y`, and `yes` are yes. `n`, `no`, `nao`, and `não` are no. Enter keeps the suggestion in brackets. Any other text is asked again.
+
+**1 - Allowed numbers** asks for digits and a country code. The first number is the owner. Extra numbers are optional and comma-separated, for example `15550001111,5500900000001`. Each number must be 8 to 15 digits. **Save and back** writes that list and selects WhatsApp. The owner number is required before the save, and before pairing.
+
+A Brazilian mobile is country code `55`, a two-digit area code, and 8 digits. The number people dial often adds a `9` immediately after the area code, while the WhatsApp JID for an older account is the same number without that `9`: `5500900000001` and `550000000001` (area code `00`). Setup stores the digits you type, in the allow list and in `WHATSAPP_ALLOWED_USERS`. It does not rewrite either form into the other. When a message arrives, the allow list and the linked account treat those two shapes as the same number, so the message is not dropped as `not-allowed` only because one side has the `9`. The chat stays bound to the JID WhatsApp sent, which may be the shorter form, and replies go to that chat. The extra digit counts only when it is a `9` right after the area code. `5500911111111` is a different number. A number that is not exactly one of those two shapes, including a 13-digit number whose digit after the area code is not `9`, is compared as written. A LID is not a phone number and is not rewritten. `npm run diagnose` and the `dropped inbound` line show only the last four digits, so they do not show whether the `9` is present.
+
+`WHATSAPP_ALLOWED_USERS` is optional. It is read only when WhatsApp is the gateway. When it is set, it replaces the saved list. Leave it unset to use the numbers from setup. A value that is not a comma-separated list of those numbers stops startup. It is not required to boot.
+
+While setup is waiting for an answer, and while it is waiting for the phone to connect, the Baileys logger stays silent. Dropped-inbound lines are not printed during pairing, so they do not cover the prompt. The QR or the pairing code is what the terminal shows until the phone connects.
+
+### Pairing and where the session is stored
+
+**2 - Pair with QR** prints a QR in that terminal. Scan it in WhatsApp under Linked devices. **3 - Pair with phone code** asks which number to link (Enter keeps the owner) and then prints `WhatsApp pairing code: …`. Pairing stays open until the phone connects. The menu prompt is paused for that wait, so a closed prompt cannot exit the process before the QR appears.
+
+The session directory is `$DATA_DIR/whatsapp-auth/`. `creds.json` in that directory means the phone is paired. In the container, `$DATA_DIR` is `/app/data` on the Compose volume `pi_bot_data`. Next to the session, the volume also holds `whatsapp-lid-map.json` (a LID tied to a phone) and `whatsapp-sent.json` (the last 200 sent ids, kept for seven days, so an echo of the bot's own send is still dropped after a restart). A new empty volume has none of these files.
+
+If the running gateway already holds `$DATA_DIR/owner.lock`, setup refuses a second session and prints `o gateway já mostra o QR nos logs`. Read that QR from the container logs, or stop the gateway before pairing from setup.
+
+### Who can send, and the `Pi: ` prefix
+
+The owner, the extra numbers saved with that number, and the linked account's own chat can send text, images, and voice notes. The linked account is always accepted, saved list or not: its phone (a device suffix such as `:31` included), its LID, and "message yourself". The bot replies in the same chat. Only that own chat prefixes text and captions with `Pi: `. A reply that already starts with `Pi:` is not prefixed again. A chat with any other allowed number is unchanged.
+
+Groups, status broadcasts, newsletters, and every other number are ignored. A video, a sticker, or a document that is not a JPEG, PNG, WebP, or GIF gets `Attachment received, but for now I only read images (photo or JPEG/PNG/WebP/GIF) and voice notes.` and does not start a turn.
+
+Replies are plain text, cut at 3800 characters. A Markdown heading becomes `*title*`, `**bold**` becomes `*bold*`, and `[label](https://example.test)` becomes `label (https://example.test)`. There are no buttons. `ask_user` is not registered on WhatsApp. Approvals are a numbered list; reply with the number. That number is taken before a model, effort, or schedule number.
+
+### Commands
+
+There is no BotFather menu. Type the command in the chat. `/help` and `/start` send this list. The names stay in English:
+
+| Command     | What WhatsApp does                                                                                                                                                     |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/status`   | Status, tokens, and cost for this chat                                                                                                                                 |
+| `/stop`     | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
+| `/new`      | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
+| `/resume`   | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
+| `/compact`  | Compact this chat. Text after the command is optional focus                                                                                                            |
+| `/model`    | Numbered model list. Reply with the number. Words after `/model` do not select a model; they still open the list                                                       |
+| `/thinking` | Numbered effort list. Reply with the number                                                                                                                            |
+| `/crons`    | Schedules in this chat. Reply with the number to turn one on or off. This command does not create a schedule                                                           |
+| `/help`     | The list above                                                                                                                                                         |
+
+A message that starts with `//` is text, not a command. One slash is removed before the model sees it, so `//status` arrives as `/status`. An unknown command gets the help list and does not start a turn. A photo or a voice note is not a command, except when the caption is `/stop`.
+
+Ask in the chat to create a schedule. `/crons` only toggles one that already exists in this chat.
+
+### Schedules and notifications
+
+A schedule created in a WhatsApp chat stays in that chat. `notify` is delivered to the WhatsApp chat bound to the conversation. The run stays silent unless it calls `notify`. The scheduler starts with the WhatsApp gateway. Telegram still starts its own scheduler from the polling loop. Starting either gateway cancels the other channel's pending sends, logs `Inactive gateway: cancelled N pending deliveries.`, and stores the reason `gateway inativo`. A row that has no channel is treated as Telegram.
+
+### Upsy
+
+Setup prints the Upsy sign-in link. Paste the final browser URL into the bound WhatsApp chat, the same paste Telegram accepts, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. That paste is not sent to the model. The reply goes back to the same chat. There is no `/login` command. `npm run login` is ChatGPT/Codex OAuth only, and `--aggregators upsy` does not start a login.
+
+### Docker
+
+`docker compose up` mounts `pi_bot_data` at `/app/data`. The Baileys session is only on that volume. A new or renamed volume is empty and needs pairing again. To keep a session, stop the container and copy the old volume onto the new one before you start it. While the process is waiting for a QR, or reconnecting after a drop that is not a logout, the health file stays current so Docker does not restart it. The QR printed by the running gateway is in `docker compose logs`, not in a second setup session.
+
+### Troubleshooting
+
+- **Pair again.** In setup, choose **2** or **3**. If the gateway is already running, use the QR in its logs. After the phone connects, setup prints `WhatsApp paired. The session stays on the data volume.`
+- **Logged out.** If the phone removes the linked device, the process stays up and logs `WhatsApp: session logged out. Pair again with npm run setup, or scan the QR in these logs.` The directory `whatsapp-auth` is renamed to `whatsapp-auth.loggedout-<timestamp>`, and a new empty `whatsapp-auth` is created. The next QR is in those logs. A disconnect that is not a logout reconnects without exiting. If the socket cannot be opened, the number in the error is masked, the process stays up, and another reconnect is scheduled.
+- **`dropped inbound`.** A message that is not admitted is one line: `WhatsApp: dropped inbound (<reason>) ***<last four digits> remote=pn|lid|other alt=yes|no fromMe=true|false`. The reason is `group`, `broadcast`, `echo` (the bot's own send), `not-allowed` (not an allowed number and not the linked account), `not-self` (sent by the linked account to someone else), `empty`, or `history` (an old sync, not a new message). An empty event from the linked account itself is not logged. Setup pairing does not print these lines. A failed send is `WhatsApp: send failed (...)`, with long numbers masked. On a WhatsApp install, `npm run diagnose` prints numbers masked to the last four digits and skips the Telegram checks.
 
 ## Commands
 
-On Telegram the app registers this menu on start. There is nothing to set in BotFather. On WhatsApp the same commands are text in the conversation.
+On Telegram the app registers this menu on start. There is nothing to set in BotFather. On WhatsApp the names are text in the chat. [WhatsApp](#whatsapp) is the list `/help` sends there: `/crons` only turns a schedule in that chat on or off.
 
 | Command     | What it does                                                                                      |
 | ----------- | ------------------------------------------------------------------------------------------------- |
