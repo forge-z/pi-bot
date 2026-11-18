@@ -195,7 +195,7 @@ costuma ser só isso.
   `npm run login` é só OAuth. Os dois gravam no volume. Um setup oficial não é trocado por
   `LLM_BASE_URL`/`LLM_API_KEY` (isso só vale no caminho compatível). Sem modelo escolhido, o
   primeiro item do catálogo é usado e o bot avisa uma vez por conversa. `/model` troca.
-- No host, via SSH: `bash scripts/diagnose-tg-deploy.sh .`.
+- No host, via SSH, a partir do checkout: `bash scripts/diagnose-tg-deploy.sh .`. Esse script não entra na imagem.
 - No Telegram: envie `/status` dentro de um tópico existente.
 
 O diagnóstico imprime apenas a presença das variáveis (`definido`, `VAZIO`,

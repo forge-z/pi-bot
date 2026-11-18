@@ -19,7 +19,6 @@
     "format:check": "prettier --check .",
     "test": "node --import tsx --test --test-concurrency=2 test/*.test.ts",
     "diagnose": "node scripts/diagnose-tg-runtime.mjs",
-    "setup-model": "node scripts/setup-model.mjs",
     "compose:up": "bash scripts/compose-up.sh"
   },
   "dependencies": {
