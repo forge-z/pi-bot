@@ -72,17 +72,17 @@ export interface McpConfig {
   resolveToken?: () => Promise<string>;
 }
 /** Omitted mode is direct, including the default Executor server. */
-export function mcpServerMode(mode: McpConfig["mode"]): McpServerMode {
+function mcpServerMode(mode: McpConfig["mode"]): McpServerMode {
   return mode === "deferred" ? "deferred" : "direct";
 }
-export function supportedMcpMode(mode: McpConfig["mode"]): boolean {
+function supportedMcpMode(mode: McpConfig["mode"]): boolean {
   return mode === undefined || mode === "direct" || mode === "deferred";
 }
 /**
  * A deferred server hides this tool until `tool_search` loads it.
  * Names in `alwaysLoad` stay direct. Any other mode, including omitted, stays direct.
  */
-export function mcpToolDeferred(
+function mcpToolDeferred(
   config: Pick<McpConfig, "mode" | "alwaysLoad"> | undefined,
   toolName: string,
 ): boolean {
@@ -290,7 +290,7 @@ export function mcpDiscoveryTimedOut(error: unknown, depth = 0): boolean {
     return true;
   return mcpDiscoveryTimedOut(record.cause, depth + 1);
 }
-export function mcpCatalogTimedOut(server: {
+function mcpCatalogTimedOut(server: {
   timedOut?: boolean;
   error?: string;
 }): boolean {

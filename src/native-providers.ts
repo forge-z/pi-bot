@@ -103,7 +103,7 @@ function singleSecretApiKey(provider: Provider) {
   return models.some((model) => Boolean(model.baseUrl));
 }
 
-export interface SetupChoice {
+interface SetupChoice {
   id: string;
   name: string;
   kind: "native" | "compat";

@@ -179,7 +179,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
   };
 }
 
-export function defaultsPath() {
+function defaultsPath() {
   const candidates = [
     join(import.meta.dirname, "../config.default.yaml"),
     join(import.meta.dirname, "../../config.default.yaml"),
@@ -188,7 +188,7 @@ export function defaultsPath() {
   return candidates.find((path) => existsSync(path)) ?? candidates[0];
 }
 
-export function userConfigPath(env: Env = process.env) {
+function userConfigPath(env: Env = process.env) {
   const override = env.CONFIG_FILE?.trim();
   if (override) return override;
   return join(env.DATA_DIR?.trim() || "data", "config.yaml");

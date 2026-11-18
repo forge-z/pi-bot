@@ -17,7 +17,7 @@ type Env = Record<string, string | undefined>;
 /** Model-facing name. Registered only when at least one skill loaded. */
 export const READ_SKILL_TOOL_NAME = "read_skill";
 
-export interface OperatorSkill {
+interface OperatorSkill {
   name: string;
   /** Frontmatter `description`: when the skill applies. */
   description: string;
@@ -144,7 +144,7 @@ export function operatorSkillCatalog(skills: readonly OperatorSkill[]): string {
   ].join("\n");
 }
 
-export function unknownSkillMessage(name: string) {
+function unknownSkillMessage(name: string) {
   const label = name
     .replace(/[\u0000-\u001f]/g, " ")
     .trim()

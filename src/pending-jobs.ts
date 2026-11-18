@@ -48,7 +48,7 @@ export function formatTickClock(
 }
 
 /** One line of `pending_jobs`: a run registered when the tool was dispatched. */
-export interface PendingJob {
+interface PendingJob {
   id: number;
   integration: string;
   tool: string;
@@ -2647,7 +2647,7 @@ export function deterministicFailure(result: unknown): boolean {
 }
 
 /** What a synchronous dispatch says about the run, in whichever shape it came. */
-export interface DispatchOutcome {
+interface DispatchOutcome {
   runId?: string;
   /** True when the dispatch already returned the result, so no turn is needed later. */
   completed: boolean;

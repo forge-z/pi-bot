@@ -110,7 +110,7 @@ function redirectUrl(body: Record<string, unknown>) {
   return "";
 }
 
-export interface AuthRedirect {
+interface AuthRedirect {
   url: string;
   message: string;
   elicitationId: string;
