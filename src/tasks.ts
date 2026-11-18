@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
 import { ConversationBusyError, type Runtime } from "./runtime.js";
+import { channelChat } from "./channel.js";
 import {
   queueTaskTelegram,
   taskTelegramAvailable,
@@ -33,7 +34,7 @@ export class TaskError extends Error {
 }
 
 export interface TaskOrigin {
-  source: "web" | "telegram";
+  source: "web" | "telegram" | "whatsapp";
   conversationId: string;
   requestId: string;
 }
@@ -43,7 +44,7 @@ interface TaskDestination {
   destinationBotId: string | null;
   destinationMessageThreadId: number | null;
   destinationReason: string | null;
-  originSource: "web" | "telegram" | null;
+  originSource: "web" | "telegram" | "whatsapp" | null;
   originConversationId: string | null;
   originRequestId: string | null;
 }
@@ -342,7 +343,9 @@ export class Tasks {
       const schedule = text(data.schedule, "Schedule", 200).trim();
       if (
         origin &&
-        ((origin.source !== "web" && origin.source !== "telegram") ||
+        ((origin.source !== "web" &&
+          origin.source !== "telegram" &&
+          origin.source !== "whatsapp") ||
           !REQUEST_ID.test(origin.requestId) ||
           !origin.conversationId ||
           data.conversationId !== origin.conversationId)
@@ -578,6 +581,7 @@ export class Tasks {
     if (
       data.delivery !== undefined &&
       delivery === "web_telegram" &&
+      task.originSource !== "whatsapp" &&
       !taskTelegramAvailable(this.runtime.store, task.conversationId)
     )
       throw new TaskError(
@@ -586,7 +590,17 @@ export class Tasks {
     const destination =
       data.delivery === undefined
         ? task
-        : this.destination(delivery, task.conversationId);
+        : this.destination(
+            delivery,
+            task.conversationId,
+            task.originSource === "whatsapp"
+              ? {
+                  source: "whatsapp",
+                  conversationId: task.conversationId,
+                  requestId: task.originRequestId ?? "origin",
+                }
+              : undefined,
+          );
     if (task.enabled === enabled && data.delivery === undefined) return task;
     let nextRun = task.nextRun;
     if (enabled !== task.enabled) {
@@ -622,14 +636,15 @@ export class Tasks {
     requested: TaskDelivery | undefined,
     origin?: TaskOrigin,
   ): TaskDelivery {
-    // A captured human request always freezes the originating Telegram topic.
+    // A captured human request keeps the originating chat. Telegram freezes
+    // the topic; WhatsApp uses the chat bound to the conversation.
     // Delivery "web" is only a stored value for rows that already exist.
     if (requested === "web" || origin?.source === "web")
       throw new TaskError(
         "The destination is fixed to the original chat/topic.",
       );
     if (origin) {
-      if (origin.source !== "telegram")
+      if (origin.source !== "telegram" && origin.source !== "whatsapp")
         throw new TaskError("Schedules require a human request in this topic.");
       if (requested && requested !== "web_telegram")
         throw new TaskError(
@@ -653,6 +668,24 @@ export class Tasks {
   ) {
     let route: TelegramRoute | undefined;
     if (delivery === "web_telegram") {
+      if (origin?.source === "whatsapp") {
+        const bound = channelChat(
+          this.runtime.store,
+          "whatsapp",
+          conversationId,
+        );
+        if (!bound)
+          throw new TaskError(
+            "This conversation is not linked to a WhatsApp chat.",
+          );
+        return {
+          destinationChat: bound.chatId,
+          destinationUser: null,
+          destinationBotId: null,
+          destinationMessageThreadId: null,
+          destinationReason: null,
+        };
+      }
       const captured =
         origin &&
         this.runtime.store.get<

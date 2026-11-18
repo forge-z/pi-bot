@@ -10,6 +10,8 @@ import {
   fauxAssistantMessage,
   fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
+import { bindChannelChat } from "../src/channel.js";
+import { queueNotify } from "../src/task-telegram.js";
 import { Runtime } from "../src/runtime.js";
 import { Tasks } from "../src/tasks.js";
 import { createServer } from "node:http";
@@ -581,6 +583,83 @@ test("a run in progress refuses tasks_run_now: no recursion", async () => {
       app.tasks.runs(taskId).filter((run) => run.trigger === "manual").length,
       0,
     );
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tasks_create in a WhatsApp conversation notifies that chat", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-chat-wa-tasks-"));
+  const jid = "15551234567@s.whatsapp.net";
+  const faux = fauxProvider();
+  faux.setResponses([
+    fauxAssistantMessage(
+      {
+        type: "toolCall",
+        id: "create",
+        name: "tasks_create",
+        arguments: daily,
+      },
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Agenda criada neste chat."),
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const app = await Runtime.open({ dir, gateway, models });
+  try {
+    const id = await app.create();
+    bindChannelChat(app.store, "whatsapp", jid, id);
+    await app.submit(
+      id,
+      "daily",
+      "Crie um resumo diário às 8h neste chat",
+      "whatsapp",
+      jid,
+    );
+    await (await app.conversation(id)).waitForIdle(context);
+    const tasks = new Tasks(app);
+    const task = tasks.list()[0]!;
+    assert.equal(tasks.list().length, 1);
+    assert.equal(task.originSource, "whatsapp");
+    assert.equal(task.delivery, "web_telegram");
+    assert.equal(task.destinationChat, jid);
+    assert.equal(task.destinationUser, null);
+    assert.equal(task.destinationBotId, null);
+    await assert.rejects(
+      tasks.create({ ...daily, conversationId: id }, "telegram-origin", {
+        source: "telegram",
+        conversationId: id,
+        requestId: "human-tg",
+      }),
+      /origin Telegram route is missing or revoked/,
+    );
+    app.store.run(
+      "INSERT INTO task_runs(id,taskId,scheduledAt,requestId,scheduled,conversationId,delivery,destinationChat,originSource) VALUES (?,?,?,?,1,?,?,?,?)",
+      "run-wa",
+      task.id,
+      Date.now(),
+      "run-req",
+      id,
+      task.delivery,
+      task.destinationChat,
+      "whatsapp",
+    );
+    assert.equal(
+      queueNotify(app.store, id, "run-req", "call", "Resumo do dia"),
+      undefined,
+    );
+    const rows = app.store.all<{
+      channel: string | null;
+      chat: string;
+      text: string;
+    }>("SELECT channel,chat,text FROM deliveries WHERE id LIKE '%:notify:%'");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.channel, "whatsapp");
+    assert.equal(rows[0]!.chat, jid);
+    assert.match(rows[0]!.text, /Resumo do dia/);
+    await tasks.close();
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });

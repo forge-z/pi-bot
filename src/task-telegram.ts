@@ -1,6 +1,7 @@
+import { channelChat } from "./channel.js";
 import { telegramIdentity } from "./telegram-identity.js";
 import { acceptedReplyTo } from "./telegram-reply.js";
-import { childIds, type Store } from "./store.js";
+import { childIds, queueWhatsApp, type Store } from "./store.js";
 
 export interface TelegramRoute {
   chat: string;
@@ -183,11 +184,12 @@ type TaskDelivery = {
   destinationBotId: string | null;
   destinationMessageThreadId: number | null;
   destinationReason: string | null;
+  originSource: string | null;
 };
 
 function taskDelivery(store: Store, conversationId: string, requestId: string) {
   return store.get<TaskDelivery>(
-    `SELECT r.delivery,r.destinationChat,r.destinationUser,r.destinationBotId,r.destinationMessageThreadId,r.destinationReason
+    `SELECT r.delivery,r.destinationChat,r.destinationUser,r.destinationBotId,r.destinationMessageThreadId,r.destinationReason,t.originSource
      FROM task_runs r JOIN tasks t ON t.id=r.taskId
      WHERE r.requestId=? AND COALESCE(r.conversationId,t.conversationId)=?`,
     requestId,
@@ -274,8 +276,20 @@ export function queueNotify(
     resolved?.route ??
     (!task ? telegramConversationRoute(store, conversationId) : undefined);
   if (!route) {
+    const bound = channelChat(store, "whatsapp", conversationId);
+    if (bound) {
+      const safeCall = callId.replace(/[^\w.-]/g, "_").slice(0, 80) || "call";
+      const prefix = `${conversationId}:${requestId}:notify:${safeCall}`;
+      queueWhatsApp(store, prefix, bound.chatId, text, conversationId);
+      if (!runNotified(store, conversationId, requestId))
+        return "notify did not send: the text produced no message. Nothing was sent.";
+      return;
+    }
     const reason =
-      resolved?.reason ?? "This conversation is not linked to a Telegram chat.";
+      task?.originSource === "whatsapp"
+        ? "This conversation is not linked to a WhatsApp chat."
+        : (resolved?.reason ??
+          "This conversation is not linked to a Telegram chat.");
     if (task) rememberRouteError(store, requestId, reason);
     return `${reason} Nada foi enviado.`;
   }

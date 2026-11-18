@@ -1,8 +1,9 @@
+import { channelChat } from "./channel.js";
 import type { Store } from "./store.js";
 import { telegramConversationRoute } from "./task-telegram.js";
 
 /** Chat and topic a heartbeat posts to. */
-export interface LongCallRoute {
+interface LongCallRoute {
   chat: string;
   messageThreadId?: number;
 }
@@ -13,7 +14,7 @@ export interface LongCallState {
   /** Last progress notification the server sent, if any. */
   progress?: string;
 }
-export interface LongCallTransport {
+interface LongCallTransport {
   /** Returns the sent message so the next tick can edit it. */
   send(
     chat: string,
@@ -33,13 +34,13 @@ function interval(
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 /** First status message after this long without an answer. */
-export function longCallFirstMs(
+function longCallFirstMs(
   env: Record<string, string | undefined> = process.env,
 ) {
   return interval(env, "LONG_CALL_FIRST_MS", 60_000);
 }
 /** Edit interval of that same message. */
-export function longCallEveryMs(
+function longCallEveryMs(
   env: Record<string, string | undefined> = process.env,
 ) {
   return interval(env, "LONG_CALL_EVERY_MS", 180_000);
@@ -61,7 +62,13 @@ export function longCallRoute(
     "SELECT source FROM requests WHERE conversationId=? AND status='pending' ORDER BY rowid DESC LIMIT 1",
     conversationId,
   )?.source;
-  if (source !== "telegram" && source !== "web") return undefined;
+  if (source !== "telegram" && source !== "web" && source !== "whatsapp")
+    return undefined;
+  if (source === "whatsapp") {
+    const bound = channelChat(store, "whatsapp", conversationId);
+    if (!bound) return undefined;
+    return { chat: bound.chatId };
+  }
   const route = telegramConversationRoute(store, conversationId);
   if (!route) return undefined;
   return {
