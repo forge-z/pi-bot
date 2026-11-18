@@ -1,8 +1,11 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { readAppInfo } from "./app-info.js";
+import { resolveFunctions } from "./functions.js";
+import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
 import type { Runtime } from "./runtime.js";
 
 export type CommandAccess = {
-  source: "telegram";
+  source: "telegram" | "whatsapp";
   user: string;
   chat: string;
   messageThreadId?: number;
@@ -11,9 +14,22 @@ export class CommandError extends Error {}
 export class Commands {
   constructor(private app: Runtime) {}
   key(requestId: string, access: CommandAccess) {
-    return `telegram:${access.chat}:${access.user}:${access.messageThreadId === undefined ? "" : `topic:${access.messageThreadId}:`}${requestId}`;
+    const topic =
+      access.messageThreadId === undefined
+        ? ""
+        : `topic:${access.messageThreadId}:`;
+    return `${access.source}:${access.chat}:${access.user}:${topic}${requestId}`;
   }
   allowed(access: CommandAccess) {
+    if (access.source === "whatsapp")
+      return this.app.store.all<{ id: string; title: string }>(
+        `SELECT c.id,c.title FROM conversations c
+         JOIN channel_chats ch ON ch.conversationId=c.id
+         WHERE ch.channel='whatsapp' AND ch.chatId=?
+         AND c.id NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL)
+         ORDER BY c.rowid DESC`,
+        access.chat,
+      );
     const rows = this.app.store.all<{ id: string; title: string }>(
       "SELECT c.id,c.title FROM conversations c JOIN telegram_grants g ON g.conversationId=c.id WHERE g.chat=? AND g.user=? AND c.id NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL) ORDER BY c.rowid DESC",
       access.chat,
@@ -32,6 +48,12 @@ export class Commands {
     });
   }
   authorize(id: string, access: CommandAccess) {
+    if (access.source === "whatsapp") {
+      if (!this.allowed(access).some((item) => item.id === id))
+        throw new CommandError("Conversation not authorized in this chat.");
+      this.app.assertConversationAvailable(id);
+      return;
+    }
     if (
       this.app.telegramChats.dedicated(id) &&
       this.app.telegramChats.owns(id, access)
@@ -58,4 +80,100 @@ export class Commands {
         phase: state.kind,
       }));
   }
+}
+
+function featureLabel(
+  feature: { modelId: string; language?: string } | undefined,
+  whenMissing: string,
+) {
+  if (!feature) return whenMissing;
+  return feature.language
+    ? `${feature.modelId} (${feature.language})`
+    : feature.modelId;
+}
+
+/** Whether the chat model reads images. A setup probe beats the catalog default. */
+export function chatSeesImages(app: Runtime) {
+  const probed = app.settings.setup()?.chatVision;
+  if (probed !== undefined) return probed;
+  const choice = app.settings.defaults();
+  const model = app.models.getModel(choice.provider, choice.modelId);
+  return Boolean(model?.input?.includes("image"));
+}
+
+/**
+ * The `/status` body. Telegram says "topic"; WhatsApp says "chat".
+ * The command menu reload stays with the caller: only Telegram has one.
+ */
+export async function commandStatus(
+  app: Runtime,
+  id: string,
+  access: CommandAccess,
+  where: "topic" | "chat" = "topic",
+) {
+  const mcp = app.mcpStatusSnapshot();
+  const settings = await app.settings.conversation(id);
+  const active = await app.commands.active(access);
+  const info = readAppInfo();
+  const calls =
+    app.mcpCalls
+      ?.list(id)
+      .filter((call) =>
+        ["paused", "running", "uncertain", "abandoned"].includes(call.state),
+      ) ?? [];
+  const pending =
+    app.mcpCalls?.interactions(id).filter((item) => item.state === "pending")
+      .length ?? 0;
+  const ledger =
+    calls
+      .map((call) => `${call.server} / ${call.tool}: ${call.state}`)
+      .join("\n") || "No pending or uncertain calls.";
+  if (mcp.unanswered) console.warn(`Pi-Agent: ${MCP_DISCOVERY_UNANSWERED}`);
+  const functions = resolveFunctions(
+    process.env,
+    app.settings.setup(),
+    app.settings.setupKeys(),
+  );
+  const usage = await app.usageLine(id);
+  return [
+    "Models:",
+    `Text: ${settings.modelId} · Effort: ${settings.effort}`,
+    `Vision: ${featureLabel(functions.vision, chatSeesImages(app) ? "same as chat" : "off")}`,
+    `Audio: ${featureLabel(functions.audio, "off")}`,
+    "",
+    `Runs in this ${where}: ${active.length} · Pending approvals: ${pending}`,
+    usage,
+    "",
+    "MCP ledger:",
+    ledger,
+    "",
+    "MCPs:",
+    formatMcpStatus(mcp.servers),
+    "",
+    app.pendingJobs.healthLine(),
+    "",
+    `Version: ${info.version ?? "dev"} (${info.commit ?? "no SHA"})`,
+  ].join("\n");
+}
+
+/** Kept as its own line so both channels append the same sentence. */
+export const COMPACTION_STATUS =
+  "Automatic compaction: this conversation's active model and effort.";
+
+/** One reply for /resume: parked work, an uncertain MCP result, both, or neither. */
+export function resumeReport(
+  cleared: number,
+  resumed: { id: string; kind: string }[],
+  where: "topic" | "chat" = "topic",
+) {
+  const parts: string[] = [];
+  if (cleared)
+    parts.push(
+      `${cleared} uncertain MCP result(s) in this conversation dismissed. History was not changed. The call may already have been executed (for example, an email may have gone out) before the agent continues.`,
+    );
+  if (resumed.length)
+    parts.push(
+      `Resumed ${resumed.map((task) => `${task.kind} #${task.id}`).join(", ")}.`,
+    );
+  return parts.join("\n") || `Nothing is pending in this ${where}.`;
 }
