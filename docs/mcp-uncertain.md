@@ -15,3 +15,9 @@ A lista mora nos globs de `config.default.yaml` (`mcp_servers.*.tools.read` e `t
 `McpNotSentError` e `PolicyError` aconteceram antes do envio e ficam `failed`. Uma rejeição do Executor `InputInvalid` / `UnknownTool` (inclusive HTTP 422) sem `toolCalls` bem-sucedidos também fica `failed`, com um aviso de que nada foi despachado. Um erro de ferramenta que voltou (`isError`) e um resultado que não bate com o schema ficam `failed`. Incerto fica a escrita que saiu e não trouxe resultado: timeout, queda no meio, ou sessão perdida depois do envio. Uma leitura que cai no transporte é tentada de novo; uma escrita nunca é.
 
 Linhas antigas `mcp-stage:*` são apagadas na subida. Um `running` de leitura vira `failed`; um `running` de escrita vira `uncertain`.
+
+## Depois da aprovação
+
+Aprovar ou recusar o cartão no chat abre um turno de sistema. O texto final desse turno é entregue no mesmo chat. Se não houver nada útil, a resposta vazia não é enviada. A conferência "Deu certo" / "Não rodou" não muda: o chat recebe só "Verificação registrada. Nada foi reenviado.", e o turno de sistema dessa conferência continua mudo.
+
+English: Approving or declining the card in the chat starts a system turn whose final text is delivered in that chat. An empty reply is not sent. The "Deu certo" / "Não rodou" check is unchanged and stays silent apart from its own confirmation.
