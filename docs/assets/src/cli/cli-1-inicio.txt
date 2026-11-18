@@ -1,0 +1,16 @@
+
+> pi-agent@0.3.0 setup
+> node scripts/setup-model.mjs
+
+Enter keeps a saved value. Secrets stay hidden. Save and back writes that section. Save and restart gateway reloads the running bot from the volume.
+
+Setup
+1 - Setup gateway  not set (Telegram)
+2 - Text model     not set
+3 - Image model    not set
+4 - Audio model    not set
+5 - MCP platform   not set
+
+s - Save and restart gateway
+q - Exit without saving
+Choice:

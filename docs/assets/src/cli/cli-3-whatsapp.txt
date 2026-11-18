@@ -1,0 +1,13 @@
+WhatsApp
+Unofficial WhatsApp Web. The owner's number is required; extra numbers, comma-separated, are allowed too. Telegram stays off while WhatsApp is the gateway.
+Numbers: 5511900000000
+Session: not paired
+1 - Allowed numbers
+2 - Pair with QR
+3 - Pair with phone code
+b - Back
+s - Save and back
+Choice: 2
+WhatsApp: waiting for the QR. This stays open until the phone connects.
+WhatsApp: scan this QR in Linked devices, or run npm run setup.
+@@QR@@

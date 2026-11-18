@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pi Bot — a personal AI assistant in Telegram or WhatsApp</title>
+    <meta
+      name="description"
+      content="Pi Bot is a self-hosted personal AI assistant that lives in Telegram or WhatsApp: one container, one volume, no web panel. Bring your own model and connect tools over MCP."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0e16" media="(prefers-color-scheme: dark)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Pi Bot — a personal AI assistant in Telegram or WhatsApp" />
+    <meta
+      property="og:description"
+      content="One container, one volume, no web panel. Your model, your tools over MCP, your schedules."
+    />
+    <link rel="alternate" hreflang="en" href="./" />
+    <link rel="alternate" hreflang="pt-BR" href="pt-br/" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b4bdb'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' text-anchor='middle' fill='white'%3E%CF%80%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="#top" aria-label="Pi Bot, back to top">
+          <span class="brand-mark" aria-hidden="true">π</span>
+          <span>Pi Bot</span>
+        </a>
+        <nav class="site-nav" aria-label="Main">
+          <ul>
+            <li><a href="#how-it-works">How it works</a></li>
+            <li><a href="#setup">Setup</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#quick-start">Quick start</a></li>
+            <li><a href="#faq">FAQ</a></li>
+          </ul>
+        </nav>
+        <a class="lang-switch" href="pt-br/" hreflang="pt-BR" lang="pt-BR">
+          <span aria-hidden="true">PT-BR</span>
+          <span class="visually-hidden">Ler em português do Brasil</span>
+        </a>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- 1. Hero -->
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="container hero-grid">
+          <div>
+            <ul class="eyebrow" aria-label="Project status">
+              <li class="pill">Beta</li>
+              <li class="pill">Open source · MIT</li>
+              <li class="pill">Self-hosted</li>
+            </ul>
+            <h1 id="hero-title">
+              Your personal AI assistant, <span class="accent">right in Telegram or WhatsApp.</span>
+            </h1>
+            <p class="lead">
+              One container, one volume, no web panel. Pick your model, connect your tools over
+              MCP, and talk to it from the chat app you already use.
+            </p>
+            <div class="cta-row">
+              <a class="btn btn-primary" href="https://github.com/forge-z/pi-bot">
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+                View on GitHub
+              </a>
+              <a class="btn btn-secondary" href="https://github.com/forge-z/pi-bot#install">
+                Installation guide
+                <span aria-hidden="true">→</span>
+              </a>
+            </div>
+            <p class="hero-note">
+              Runs on the <a href="https://pi.dev">pi.dev</a> harness. Tools come from
+              Composio, Executor, Upsy or your own MCP gateway.
+            </p>
+          </div>
+
+          <div class="terminal" role="group" aria-labelledby="hero-term-title">
+            <div class="terminal-bar">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="dot" aria-hidden="true"></span>
+              <span class="dot" aria-hidden="true"></span>
+              <span class="title" id="hero-term-title">Install in four lines, then run setup</span>
+            </div>
+            <pre><code><span class="p" aria-hidden="true">$ </span>git clone https://github.com/forge-z/pi-bot.git
+<span class="p" aria-hidden="true">$ </span>cd pi-bot
+<span class="p" aria-hidden="true">$ </span>cp .env.example .env
+<span class="p" aria-hidden="true">$ </span>docker compose up -d --build
+<span class="p" aria-hidden="true">$ </span>docker compose exec pi-bot npm run setup</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. How it works -->
+      <section class="section section-alt" id="how-it-works" aria-labelledby="how-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">How it works</span>
+            <h2 id="how-title">A chat on one side, your tools on the other</h2>
+            <p>
+              Pi Bot is a small gateway between your chat app, a language model and the tools you
+              choose to connect. Nothing to open in a browser: setup happens in a terminal, and
+              everything else happens in the chat.
+            </p>
+          </div>
+
+          <ol class="flow">
+            <li>
+              <h3>You send a message</h3>
+              <p>
+                Text, a photo or a voice note, on Telegram or on WhatsApp. One gateway per
+                install, chosen during setup.
+              </p>
+            </li>
+            <li>
+              <h3>Only allowed senders get in</h3>
+              <p>
+                Telegram accepts the numeric user ids you list. WhatsApp accepts the owner's number,
+                any extra numbers you add and your own “message yourself” chat. Everyone else is
+                ignored.
+              </p>
+            </li>
+            <li>
+              <h3>Your model answers</h3>
+              <p>
+                The text model you picked runs the turn on the pi.dev harness. An optional image
+                model reads photos and an audio model transcribes voice notes.
+              </p>
+            </li>
+            <li>
+              <h3>Tools do the work</h3>
+              <p>
+                Mail, calendar, search and more come from MCP servers you connect. Calls that need
+                approval wait for your OK in the chat.
+              </p>
+            </li>
+          </ol>
+
+          <div class="callout">
+            <p>
+              <strong>One container, one volume.</strong> Settings, credentials and conversations
+              live in SQLite files on the Docker volume mounted at <code>/app/data</code>; the image
+              itself is read-only. The assistant has no shell, file system or browser of its own:
+              anything it does outside the chat goes through the tools you connect.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Setup in 5 steps -->
+      <section class="section" id="setup" aria-labelledby="setup-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">Setup</span>
+            <h2 id="setup-title">Ready in five steps, all in the terminal</h2>
+            <p>
+              <code>npm run setup</code> is an interactive menu that edits one section at a time.
+              <strong>Enter</strong> keeps a saved value, secrets stay hidden, and each section is
+              written to the volume when you choose <strong>Save and back</strong>.
+            </p>
+          </div>
+
+          <ol class="steps">
+            <li class="step">
+              <div class="step-text">
+                <h3>Open the setup menu</h3>
+                <p>
+                  With the container up, run <code>npm run setup</code> inside it. A fresh container
+                  stays up and healthy while it waits, and no environment variable is required to
+                  boot.
+                </p>
+                <p>
+                  The main menu lists every section: gateway, text model, image model, audio model
+                  and MCP platform.
+                </p>
+              </div>
+              <figure class="shot">
+                <div class="frame frame-cli">
+                  <img
+                    src="assets/cli-1-inicio.png"
+                    alt="Terminal showing the npm run setup main menu, with sections for the gateway, text model, image model, audio model and MCP platform."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Screenshot: setup main menu</span>
+                </div>
+                <figcaption>The setup main menu, inside the container.</figcaption>
+              </figure>
+            </li>
+
+            <li class="step">
+              <div class="step-text">
+                <h3>Choose a gateway</h3>
+                <p>
+                  Under <strong>Setup gateway</strong>, pick <strong>Telegram</strong> or
+                  <strong>WhatsApp</strong>. There is one gateway per install: saving one turns the
+                  other off.
+                </p>
+                <ul>
+                  <li>
+                    <strong>Telegram</strong> asks for the bot token (hidden as you type) and the
+                    numeric user ids allowed to talk to the bot.
+                  </li>
+                  <li><strong>WhatsApp</strong> continues in the next step.</li>
+                </ul>
+              </div>
+              <figure class="shot">
+                <div class="frame frame-cli">
+                  <img
+                    src="assets/cli-2-gateway.png"
+                    alt="Terminal showing the Setup gateway menu with two options: 1 Telegram and 2 WhatsApp."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Screenshot: Setup gateway</span>
+                </div>
+                <figcaption>Telegram or WhatsApp — one per install.</figcaption>
+              </figure>
+            </li>
+
+            <li class="step">
+              <div class="step-text">
+                <h3>Link WhatsApp (if you chose it)</h3>
+                <p>
+                  Enter the owner's number with country code; extra allowed numbers are optional.
+                  Then pair the phone in one of two ways:
+                </p>
+                <ul>
+                  <li>
+                    <strong>Pair with QR</strong> — scan it in WhatsApp under
+                    <em>Linked devices</em>.
+                  </li>
+                  <li>
+                    <strong>Pair with phone code</strong> — type the code the terminal prints.
+                  </li>
+                </ul>
+                <p>The session is stored on the volume, so it survives restarts.</p>
+              </div>
+              <figure class="shot">
+                <div class="frame frame-cli">
+                  <img
+                    src="assets/cli-3-whatsapp.png"
+                    alt="Terminal showing the WhatsApp menu with options for allowed numbers, pairing with a QR code and pairing with a phone code."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Screenshot: WhatsApp pairing</span>
+                </div>
+                <figcaption>Allowed numbers, then a QR or a pairing code.</figcaption>
+              </figure>
+            </li>
+
+            <li class="step">
+              <div class="step-text">
+                <h3>Pick your models</h3>
+                <p>
+                  <strong>Text model</strong> takes any official pi-ai provider (Anthropic, OpenAI,
+                  Google, Groq, OpenRouter, xAI, DeepSeek and others) with an API key, or ChatGPT
+                  Plus/Pro sign-in with no API key at all.
+                </p>
+                <p>
+                  <strong>Image model</strong> and <strong>Audio model</strong> are optional: they
+                  let the bot read photos and transcribe voice notes.
+                </p>
+              </div>
+              <figure class="shot">
+                <div class="frame frame-cli">
+                  <img
+                    src="assets/cli-4-modelo.png"
+                    alt="Terminal showing the Text model section of setup, where a provider and a model are chosen."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Screenshot: Text model</span>
+                </div>
+                <figcaption>Choose a provider and a model; setup can test it for you.</figcaption>
+              </figure>
+            </li>
+
+            <li class="step">
+              <div class="step-text">
+                <h3>Connect tools and go live</h3>
+                <p>
+                  Under <strong>MCP platform</strong>, choose Composio, Executor, Upsy, a
+                  self-hosted gateway, Executor plus Composio, or none.
+                </p>
+                <p>
+                  Then pick <strong>Save and restart gateway</strong>: the running bot reloads from
+                  the volume — no image rebuild needed. Say hi in the chat and send
+                  <code>/status</code> to check the model, MCPs and version.
+                </p>
+              </div>
+              <figure class="shot">
+                <div class="frame frame-cli">
+                  <img
+                    src="assets/cli-5-pronto.png"
+                    alt="Terminal showing setup finished: the configuration is saved on the volume and the gateway restarts."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Screenshot: setup done</span>
+                </div>
+                <figcaption>Saved on the volume; the gateway restarts with the new settings.</figcaption>
+              </figure>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- 4. Chat examples -->
+      <section class="section section-alt" id="examples" aria-labelledby="examples-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">In the chat</span>
+            <h2 id="examples-title">What a conversation looks like</h2>
+            <p>
+              The images below are <strong>illustrative mockups</strong>, not screenshots of a real
+              account. Names and numbers in them are fictitious.
+            </p>
+          </div>
+
+          <div class="chats">
+            <article class="chat-card" aria-labelledby="chat-wa-title">
+              <h3 id="chat-wa-title">WhatsApp <span class="badge-mockup">Mockup</span></h3>
+              <figure class="shot">
+                <div class="frame frame-chat">
+                  <span class="badge-mockup" aria-hidden="true">Mockup</span>
+                  <img
+                    src="assets/chat-whatsapp.png"
+                    alt="Mockup of a WhatsApp conversation with Pi Bot: a user with a fictitious name sends a request and the assistant replies in plain text in the same chat."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Mockup: WhatsApp chat</span>
+                </div>
+                <figcaption>Mockup of a WhatsApp chat with Pi Bot.</figcaption>
+              </figure>
+              <ul>
+                <li>Replies are plain text; Markdown headings and bold become WhatsApp <code>*bold*</code>.</li>
+                <li>Commands are typed as text — <code>/help</code> lists them.</li>
+                <li>Approvals arrive as a numbered list: reply with the number.</li>
+                <li>In your own “message yourself” chat, replies start with <code>Pi: </code>.</li>
+              </ul>
+            </article>
+
+            <article class="chat-card" aria-labelledby="chat-tg-title">
+              <h3 id="chat-tg-title">Telegram <span class="badge-mockup">Mockup</span></h3>
+              <figure class="shot">
+                <div class="frame frame-chat">
+                  <span class="badge-mockup" aria-hidden="true">Mockup</span>
+                  <img
+                    src="assets/chat-telegram.png"
+                    alt="Mockup of a Telegram conversation with Pi Bot: a user with a fictitious name asks a question and the assistant replies with formatted text."
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="placeholder" aria-hidden="true">Mockup: Telegram chat</span>
+                </div>
+                <figcaption>Mockup of a Telegram chat with Pi Bot.</figcaption>
+              </figure>
+              <ul>
+                <li>The command menu is registered on start — nothing to set in BotFather.</li>
+                <li>Approvals and questions from the assistant come with tap-to-answer buttons.</li>
+                <li>Each forum topic keeps its own history, model and effort.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Features -->
+      <section class="section" id="features" aria-labelledby="features-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">Features</span>
+            <h2 id="features-title">What Pi Bot does today</h2>
+            <p>Everything here is described in the README and implemented in the code.</p>
+          </div>
+
+          <ul class="features">
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+              <h3>Telegram or WhatsApp</h3>
+              <p>
+                Telegram via the Bot API, or WhatsApp linked as a device with a QR or pairing code.
+                One gateway per install, with an allow list of who may talk to it.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg></span>
+              <h3>Your model, your choice</h3>
+              <p>
+                Any official pi-ai provider with an API key, or ChatGPT Plus/Pro sign-in without
+                one. Switch model and reasoning effort from the chat with <code>/model</code> and
+                <code>/thinking</code>.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></span>
+              <h3>Photos and voice notes</h3>
+              <p>
+                Send a picture or speak instead of typing. A vision-capable model reads photos and
+                an audio model transcribes voice notes. Replies are always text.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+              <h3>Scheduled tasks</h3>
+              <p>
+                Ask in the chat for a one-off reminder or a recurring job (five-field cron), each
+                with its own timezone. A run stays silent unless it has something to tell you.
+                Manage them with <code>/crons</code>.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M7 8h10v4a5 5 0 0 1-10 0z"/><path d="M12 17v5"/></svg></span>
+              <h3>Tools over MCP</h3>
+              <p>
+                Plug in Composio, Executor, Upsy (OAuth, no API key) or any self-hosted MCP gateway.
+                Add more servers — search, mail, GitHub — with a small JSON list.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
+              <h3>Approvals before actions</h3>
+              <p>
+                When Executor pauses a call for approval, the bot relays it to you as a card.
+                A write whose result is unknown is never resent; you decide with
+                <code>/resume</code>.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+              <h3>Separate conversations</h3>
+              <p>
+                <code>/new</code> starts fresh while the old conversation stays on the volume. On
+                Telegram, each forum topic has its own history, model and effort.
+                <code>/compact</code> condenses a long one.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5V21h16"/></svg></span>
+              <h3>Operator skills</h3>
+              <p>
+                Drop <code>SKILL.md</code> folders on the volume and list them in
+                <code>config.yaml</code>. The model can read them on every reply, scheduled runs
+                included.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M13 6l-2 12"/></svg></span>
+              <h3>Optional code tasks</h3>
+              <p>
+                <code>sandbox_code_task</code> runs long coding jobs on an Instabox machine. It is
+                off until you configure it, the repository allow list starts empty, and pushes or
+                pull requests wait for your approval.
+              </p>
+            </li>
+            <li class="feature">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+              <h3>Self-hosted and locked down</h3>
+              <p>
+                Docker Compose with a read-only image, all capabilities dropped and a health check.
+                Configured secrets and bearer tokens are redacted from logs.
+              </p>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 6. Quick start -->
+      <section class="section section-alt" id="quick-start" aria-labelledby="quick-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">Quick start</span>
+            <h2 id="quick-title">From zero to a working bot</h2>
+            <p>
+              You need Docker with Compose and either a Telegram bot token or a WhatsApp account to
+              link. An API key for your model is optional if you sign in with ChatGPT.
+            </p>
+          </div>
+
+          <div class="quick-grid">
+            <div>
+              <div class="terminal" role="group" aria-labelledby="qs-term-title">
+                <div class="terminal-bar">
+                  <span class="dot" aria-hidden="true"></span>
+                  <span class="dot" aria-hidden="true"></span>
+                  <span class="dot" aria-hidden="true"></span>
+                  <span class="title" id="qs-term-title">Shell</span>
+                  <button class="copy-btn" type="button" data-copy="qs-commands" data-done="Copied!" hidden>
+                    Copy
+                  </button>
+                </div>
+                <pre id="qs-commands"><code><span class="c"># 1. Get the code and start the container</span>
+<span class="p" aria-hidden="true">$ </span>git clone https://github.com/forge-z/pi-bot.git
+<span class="p" aria-hidden="true">$ </span>cd pi-bot
+<span class="p" aria-hidden="true">$ </span>cp .env.example .env
+<span class="p" aria-hidden="true">$ </span>docker compose up -d --build
+
+<span class="c"># 2. Configure gateway, models and MCP (interactive)</span>
+<span class="p" aria-hidden="true">$ </span>docker compose exec pi-bot npm run setup
+
+<span class="c"># 3. Check the saved state at any time</span>
+<span class="p" aria-hidden="true">$ </span>docker compose exec pi-bot npm run setup -- --list</code></pre>
+              </div>
+              <p class="small mt">
+                The README uses the equivalent <code>docker exec -it &lt;container&gt; npm run setup</code>.
+                Every variable in <code>.env</code> is an optional override; leave it empty and setup
+                stores everything on the volume. If the gateway is already running when you pair
+                WhatsApp, read the QR from <code>docker compose logs</code> instead.
+              </p>
+            </div>
+
+            <div>
+              <table class="cmd-table">
+                <caption>Commands in the chat</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Command</th>
+                    <th scope="col">What it does</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>/status</code></td><td>Model, tokens and cost, MCPs and version</td></tr>
+                  <tr><td><code>/model</code></td><td>Pick the provider and model</td></tr>
+                  <tr><td><code>/thinking</code></td><td>Pick the reasoning effort</td></tr>
+                  <tr><td><code>/crons</code></td><td>Manage schedules (on WhatsApp: turn one on or off)</td></tr>
+                  <tr><td><code>/new</code></td><td>Start a new conversation; the old one is kept</td></tr>
+                  <tr><td><code>/compact</code></td><td>Compact the conversation, with optional focus</td></tr>
+                  <tr><td><code>/resume</code></td><td>Resume a stuck task or dismiss an uncertain result</td></tr>
+                  <tr><td><code>/stop</code></td><td>Stop the current work</td></tr>
+                  <tr><td><code>/help</code></td><td>Show this list</td></tr>
+                </tbody>
+              </table>
+              <p class="small mt">
+                On Telegram these appear in the bot menu; on WhatsApp, type them as text.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. FAQ -->
+      <section class="section" id="faq" aria-labelledby="faq-title">
+        <div class="container">
+          <div class="section-head">
+            <span class="kicker">FAQ</span>
+            <h2 id="faq-title">Frequently asked questions</h2>
+          </div>
+
+          <div class="faq">
+            <details>
+              <summary>Can one install use Telegram and WhatsApp at the same time?</summary>
+              <div>
+                <p>
+                  No. Each install has one gateway. Saving WhatsApp in setup turns Telegram off, and
+                  the other way around. An install that never chooses stays on Telegram.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Is the WhatsApp connection official?</summary>
+              <div>
+                <p>
+                  No. The WhatsApp gateway uses <a href="https://github.com/WhiskeySockets/Baileys">Baileys</a>,
+                  which speaks the unofficial WhatsApp Web protocol and can lead to account
+                  restrictions. Keep that in mind when choosing which number to link.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Do I need an API key for the model?</summary>
+              <div>
+                <p>
+                  Not necessarily. Setup offers ChatGPT Plus/Pro sign-in (OAuth) with no API key.
+                  For any other official pi-ai provider — Anthropic, OpenAI, Google, OpenRouter and
+                  more — you enter that provider's key in setup.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Where is my data stored?</summary>
+              <div>
+                <p>
+                  On the Docker volume <code>pi_bot_data</code>, mounted at <code>/app/data</code>:
+                  settings, credentials, conversations and the WhatsApp session. The image is
+                  read-only. Your history is only as private as that volume and the host it runs on.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Can it talk back with voice?</summary>
+              <div>
+                <p>
+                  No. It understands voice notes when an audio model is configured, but it always
+                  replies in text. A tool can produce an audio file, but a voice bubble is not
+                  implemented.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Does it work in groups?</summary>
+              <div>
+                <p>
+                  On WhatsApp, groups, broadcasts and newsletters are ignored. On Telegram, group and
+                  topic ids can be allowed with the <code>TELEGRAM_ALLOWED_CHATS</code> environment
+                  variable, and each forum topic keeps its own history, model and effort.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>How do I give it new abilities?</summary>
+              <div>
+                <p>
+                  Connect an MCP server instead of changing the bot. Choose a platform in setup, or
+                  list extra servers in a JSON file named by <code>MCP_CONFIG_FILE</code>. Keys stay
+                  in environment variables, never in the file. The README suggests services for
+                  mail, search, scraping, calendar and more.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>How do scheduled tasks reach me?</summary>
+              <div>
+                <p>
+                  Just ask in the chat — for example, “remind me every Monday at 9:00 to review
+                  my open tasks”. The schedule stays in that chat, with its own timezone. When it runs, it
+                  only sends you a message if it decides there is something to report.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Is it production-ready?</summary>
+              <div>
+                <p>
+                  Pi Bot is in <strong>beta</strong>: usable day to day, but configuration and
+                  commands may still change between releases. Back up the volume before upgrading.
+                </p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 8. Footer -->
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <p>
+          <strong>Pi Bot</strong> is open source under the
+          <a href="https://github.com/forge-z/pi-bot/blob/main/LICENSE">MIT License</a>.
+        </p>
+        <ul class="footer-links">
+          <li><a href="https://github.com/forge-z/pi-bot">GitHub</a></li>
+          <li><a href="https://github.com/forge-z/pi-bot#readme">README</a></li>
+          <li><a href="https://github.com/forge-z/pi-bot/issues">Issues</a></li>
+          <li><a href="pt-br/" hreflang="pt-BR" lang="pt-BR">Português (Brasil)</a></li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>

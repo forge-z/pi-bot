@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>mockup — conversa</title>
+    <style>
+      :root {
+        --bg: #efe7da;
+        --header: #1b6b45;
+        --out: #d7f5c6;
+        --in: #ffffff;
+        --text: #1c1915;
+        --muted: #6f675f;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        width: 1200px;
+        height: 2133px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, "Segoe UI", sans-serif;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        height: 176px;
+        padding: 0 44px;
+        background: var(--header);
+        color: #fff;
+      }
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 100px;
+        height: 100px;
+        border-radius: 50%;
+        background: #e7f6ee;
+        color: var(--header);
+        font-size: 42px;
+        font-weight: 700;
+      }
+      .who { display: flex; flex-direction: column; gap: 4px; }
+      .who strong { font-size: 46px; font-weight: 700; letter-spacing: -0.02em; }
+      .who span { font-size: 28px; opacity: 0.88; }
+      .mock {
+        margin-left: auto;
+        padding: 10px 22px;
+        border: 2px dashed rgba(255, 255, 255, 0.75);
+        border-radius: 999px;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+        padding: 36px 40px 28px;
+      }
+      .day {
+        align-self: center;
+        padding: 8px 22px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.08);
+        color: #4e473f;
+        font-size: 26px;
+      }
+      .row { display: flex; }
+      .row.out { justify-content: flex-end; }
+      .bubble {
+        max-width: 880px;
+        padding: 22px 28px 16px;
+        border-radius: 28px;
+        font-size: 40px;
+        line-height: 1.35;
+        box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
+      }
+      .row.in .bubble {
+        background: var(--in);
+        border-bottom-left-radius: 8px;
+      }
+      .row.out .bubble {
+        background: var(--out);
+        border-bottom-right-radius: 8px;
+      }
+      .time {
+        display: block;
+        margin-top: 8px;
+        text-align: right;
+        color: var(--muted);
+        font-size: 24px;
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        height: 148px;
+        padding: 0 36px 28px;
+      }
+      .composer {
+        flex: 1;
+        height: 92px;
+        padding: 0 32px;
+        border: 0;
+        border-radius: 46px;
+        background: #fff;
+        color: #8a8178;
+        font: 34px/92px Inter, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="avatar" aria-hidden="true">V</div>
+      <div class="who">
+        <strong>Você</strong>
+        <span>+55 11 90000-0000</span>
+      </div>
+      <div class="mock">mockup</div>
+    </header>
+    <main>
+      <div class="day">18 de novembro</div>
+      <div class="row out">
+        <div class="bubble">
+          Me lembra amanhã às 9 de mandar o relatório semanal
+          <span class="time">14:12</span>
+        </div>
+      </div>
+      <div class="row in">
+        <div class="bubble">
+          Pi: Pronto. Amanhã às 9:00 (America/Sao_Paulo) eu te aviso: mandar o relatório semanal. Para ligar ou desligar, manda /crons.
+          <span class="time">14:12</span>
+        </div>
+      </div>
+      <div class="row out">
+        <div class="bubble">
+          Se eu te mandar uma foto, você lê?
+          <span class="time">14:13</span>
+        </div>
+      </div>
+      <div class="row in">
+        <div class="bubble">
+          Pi: Leio JPEG, PNG, WebP, GIF e nota de voz. Vídeo e sticker eu aviso e não começo um turno.
+          <span class="time">14:13</span>
+        </div>
+      </div>
+      <div class="day">19 de novembro · 09:00</div>
+      <div class="row in">
+        <div class="bubble">
+          Pi: Lembrete: mandar o relatório semanal.
+          <span class="time">09:00</span>
+        </div>
+      </div>
+    </main>
+    <footer>
+      <div class="composer">Mensagem</div>
+    </footer>
+  </body>
+</html>
