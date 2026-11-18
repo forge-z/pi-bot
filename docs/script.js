@@ -2,25 +2,22 @@
 (function () {
   "use strict";
 
-  // 1. Screenshot frames: if an image file is not there yet, show a labelled placeholder
-  //    instead of the browser's broken-image icon. The frame keeps its aspect ratio.
   function markMissing(img) {
-    var frame = img.closest(".frame");
-    if (frame) frame.classList.add("is-missing");
+    var shot = img.closest(".shot");
+    if (shot) shot.classList.add("is-missing");
   }
 
-  document.querySelectorAll(".frame img").forEach(function (img) {
+  document.querySelectorAll(".shot img").forEach(function (img) {
     if (img.complete && img.naturalWidth === 0) markMissing(img);
     img.addEventListener("error", function () {
       markMissing(img);
     });
     img.addEventListener("load", function () {
-      var frame = img.closest(".frame");
-      if (frame) frame.classList.remove("is-missing");
+      var shot = img.closest(".shot");
+      if (shot) shot.classList.remove("is-missing");
     });
   });
 
-  // 2. Copy buttons for command blocks. Prompt markers ($) are not copied.
   if (!navigator.clipboard || !window.isSecureContext) return;
 
   document.querySelectorAll("[data-copy]").forEach(function (button) {
