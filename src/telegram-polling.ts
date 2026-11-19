@@ -101,6 +101,7 @@ export class TelegramPolling {
     private api: TelegramApi,
     private config: { users: string[]; chats: string[] },
     private bot: { id: number; username?: string },
+    reactionDelayMs?: number,
   ) {
     const signal = this.controller.signal;
     this.engine = new Telegram(
@@ -198,6 +199,7 @@ export class TelegramPolling {
       bot.username,
       false,
       bot.id,
+      reactionDelayMs,
     );
   }
   start(onFailure: () => void = () => {}) {

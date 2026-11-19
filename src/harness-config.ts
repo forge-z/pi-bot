@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { DEFAULT_REACTION_DELAY_MS, reactionDelayMs } from "./reaction-ack.js";
 
 /**
  * Product defaults in `config.default.yaml`, with an optional user file on top.
@@ -27,6 +28,11 @@ export interface HarnessConfig {
   sandboxTask?: unknown;
   /** Folder names under `$DATA_DIR/skills`, in prompt order. */
   skillsAlways: string[];
+  /**
+   * Milliseconds before the eyes reaction. `0` reacts immediately.
+   * From `reaction_delay_ms`; missing or invalid stays at the default.
+   */
+  reactionDelayMs: number;
 }
 
 const EMPTY: HarnessConfig = {
@@ -34,6 +40,7 @@ const EMPTY: HarnessConfig = {
   asyncJobs: [],
   asyncJob: {},
   skillsAlways: [],
+  reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
 };
 const globCache = new Map<string, RegExp | null>();
 let cache: { key: string; config: HarnessConfig } | undefined;
@@ -176,6 +183,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
     skillsAlways: stringList(
       isRecord(raw.skills) ? raw.skills.always : undefined,
     ),
+    reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
   };
 }
 

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única.
+pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes.
 
 ### Fixed
 
@@ -16,6 +16,7 @@ pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse c
 ### Changed
 
 - A tool result that is only a pending task id, with no async job manifest, is not a promise to return. The assistant polls within the turn for about 50 seconds (`execute` stops at 60), uses the registered job when one exists, or, from a user turn, creates one one-shot schedule that calls `notify` in the same chat. Scheduled runs still speak only through `notify`.
+- The eyes reaction waits 4 seconds (`reaction_delay_ms` in `config.yaml`) and is cancelled when that turn's first reply is sent. `0` reacts immediately, as before. No new environment variable.
 
 ## [0.4.0] - 2026-11-18
 
