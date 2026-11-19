@@ -130,6 +130,11 @@ import {
   loadHarnessConfig,
 } from "./harness-config.js";
 import { LoopGuard, scheduledApprovalRefusal } from "./guards.js";
+import {
+  admitProgress,
+  PROGRESS_RULE,
+  type ProgressBudget,
+} from "./progress-note.js";
 
 interface RequestTelegramRoute extends TelegramRoute {
   requestId: string;
@@ -414,6 +419,8 @@ export class Runtime {
   private registry!: Registry;
   private release!: () => Promise<void>;
   private monitors = new Map<string, Promise<void>>();
+  /** Notes already posted for one user turn. Cleared when that turn settles. */
+  private progressBudgets = new Map<string, ProgressBudget>();
   private admissions = new Map<
     string,
     {
@@ -613,6 +620,7 @@ export class Runtime {
                 ),
               { tag: false },
             ),
+            section("progress", () => PROGRESS_RULE, { tag: false }),
             // Only while the long-task tool is registered, so the model is not
             // told to call a tool that is absent from this turn's list.
             section(
@@ -803,6 +811,31 @@ export class Runtime {
                       text: `${describeMedia(media)} Enviado a este chat.`,
                     },
                   ],
+                };
+              },
+            }),
+            defineTool({
+              name: "progress",
+              description:
+                "Post one short note to this user chat before the turn ends. Call it once at the start of a long task, naming the first step, and again only for a result, a blocker, or a changed plan. Do not call it for a quick reply, a greeting, or step-by-step narration. The final answer is delivered on its own when the turn ends; do not put it here. Refused on a scheduled or system run. At most one note every 30 seconds and three per task; a refused call sends nothing.",
+              parameters: Type.Object({
+                text: Type.String({
+                  description:
+                    "One short sentence for the user, in the chat's language",
+                  minLength: 1,
+                  maxLength: 400,
+                }),
+              }),
+              replay: "safe",
+              execute: async (args, api) => {
+                const result = app!.postProgress(
+                  String(api.conversationId),
+                  String(api.callId),
+                  args.text,
+                );
+                return {
+                  ...(result.ok ? {} : { isError: true as const }),
+                  output: [{ type: "text" as const, text: result.text }],
                 };
               },
             }),
@@ -2465,6 +2498,68 @@ export class Runtime {
     return { submissionId: submission.id, conversationId, requestId };
   }
   /**
+   * One short note in the originating chat, before the turn ends. The same
+   * delivery list as the final reply, under a prefix that is not that reply,
+   * so the eyes reaction still waits for the answer. A scheduled or system
+   * turn is refused and nothing is queued.
+   */
+  private postProgress(conversationId: string, callId: string, text: string) {
+    const note = text.replace(/\s+/g, " ").trim();
+    const refuse = (message: string) => ({ ok: false as const, text: message });
+    if (isBlankMessage(note)) return refuse("Not sent. The note was empty.");
+    const request = this.store.get<{
+      requestId: string;
+      source: string;
+      chat: string | null;
+    }>(
+      "SELECT requestId,source,chat FROM requests WHERE conversationId=? AND status='pending' ORDER BY rowid ASC LIMIT 1",
+      conversationId,
+    );
+    if (
+      !request ||
+      (request.source !== "telegram" && request.source !== "whatsapp")
+    )
+      return refuse(
+        "Not sent. progress is only for a user chat. A scheduled or system run stays silent unless it calls notify.",
+      );
+    // Same call on replay hits the row already queued and does not spend another note.
+    const prefix = `${conversationId}:note:${hash(callId).slice(0, 16)}`;
+    if (this.store.get("SELECT 1 FROM deliveries WHERE id=?", `${prefix}:0`))
+      return { ok: true as const, text: "Already sent to this chat." };
+    const slot = `${conversationId}:${request.requestId}`;
+    const decision = admitProgress(this.progressBudgets.get(slot), this.now());
+    if (!decision.ok)
+      return refuse(
+        decision.reason === "cap"
+          ? "Not sent. This task already has its notes."
+          : "Not sent. Wait before the next note.",
+      );
+    let chat = request.chat;
+    if (request.source === "whatsapp") {
+      chat ||=
+        channelChat(this.store, "whatsapp", conversationId)?.chatId ?? null;
+      if (!chat)
+        return refuse("Not sent. This conversation is not linked to a chat.");
+      queueWhatsApp(this.store, prefix, chat, note, conversationId);
+    } else {
+      const route = telegramConversationRoute(this.store, conversationId);
+      chat = route?.chat ?? chat;
+      if (!chat)
+        return refuse("Not sent. This conversation is not linked to a chat.");
+      this.store.queueTelegram(
+        prefix,
+        chat,
+        note,
+        3500,
+        conversationId,
+        route?.messageThreadId,
+      );
+    }
+    this.progressBudgets.set(slot, decision.budget);
+    this.flushTelegramPending?.();
+    return { ok: true as const, text: "Sent to this chat." };
+  }
+  /**
    * Queues a file straight into the durable delivery list. Nothing is kept in memory, so
    * a restart, a replay or an early settlement cannot swallow it.
    */
@@ -2842,6 +2937,7 @@ export class Runtime {
         })
         .finally(() => {
           this.monitors.delete(key);
+          this.progressBudgets.delete(`${conversationId}:${requestId}`);
           const stillMonitoring = [...this.monitors.keys()].some(
             (k) => k !== key && k.startsWith(`${conversationId}:`),
           );

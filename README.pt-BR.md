@@ -60,6 +60,8 @@ As entregas no Telegram saem em HTML. Negrito em volta de código inline não de
 
 Uma mensagem que abre um turno só ganha a reação 👀 se a resposta ainda não tiver saído depois de 4 segundos. `reaction_delay_ms` em `config.default.yaml` define essa espera; `$DATA_DIR/config.yaml` substitui. Uma resposta que sai antes cancela a reação, e o timer é limpo. `0` reage assim que a mensagem é aceita. Não há variável de ambiente para isso. O WhatsApp não envia essa reação.
 
+Uma tarefa longa manda uma nota curta nesse mesmo chat antes do trabalho, nomeando o primeiro passo, e a resposta final vai sozinha. As notas seguintes são só para um resultado, um bloqueio ou uma mudança de plano: no máximo uma a cada 30 segundos e três nessa tarefa. Uma resposta rápida não manda essa nota. A nota é a ferramenta `progress`. Ela usa o mesmo caminho de entrega da resposta e não encerra o turno. Um run agendado não chama `progress` e continua em silêncio, a menos que chame `notify`. A reação 👀 continua esperando a resposta do turno.
+
 ### Skills do operador
 
 Instruções opcionais no volume valem para toda resposta, inclusive os runs agendados. Cada skill é uma pasta, por exemplo `$DATA_DIR/skills/weekly-review/SKILL.md`:
