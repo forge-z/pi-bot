@@ -58,6 +58,8 @@ A tarefa longa de código é `sandbox_code_task` (Instabox por padrão). Ela fic
 
 As entregas no Telegram saem em HTML. Negrito em volta de código inline não deixa tag vazia. Se o Telegram responde HTTP 400 porque não conseguiu ler as entidades, a mesma entrega é enviada uma vez em texto puro, no mesmo chat, tópico e reply. Um 400 que não é de parse não é reenviado. O `description` do Telegram passa pelo redator antes do log e da linha que falhou. Tokens `Bearer` e `sk-` entram no mesmo redator que já cobre os segredos configurados, inclusive na linha de log do run agendado. Uma lista MCP gravada que ainda tenha `cuaViewer` falha a validação.
 
+Uma mensagem que abre um turno só ganha a reação 👀 se a resposta ainda não tiver saído depois de 4 segundos. `reaction_delay_ms` em `config.default.yaml` define essa espera; `$DATA_DIR/config.yaml` substitui. Uma resposta que sai antes cancela a reação, e o timer é limpo. `0` reage assim que a mensagem é aceita. Não há variável de ambiente para isso. O WhatsApp não envia essa reação.
+
 ### Skills do operador
 
 Instruções opcionais no volume valem para toda resposta, inclusive os runs agendados. Cada skill é uma pasta, por exemplo `$DATA_DIR/skills/weekly-review/SKILL.md`:

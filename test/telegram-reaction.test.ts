@@ -68,6 +68,8 @@ test("an accepted message gets one eyes reaction, and a failed reaction still ha
     api as unknown as TelegramApi,
     config,
     { id: 123 },
+    // This test checks the payload and a failed reaction, not the wait.
+    0,
   );
   const textOf = (requestId: string) =>
     app.store.get<{ conversationId: string; text: string }>(

@@ -253,6 +253,12 @@ sandbox_code_task:
         type: boolean
         description: "true somente para push, pull request ou comentário. O padrão é false (somente leitura, sem cartão). true pede aprovação no Telegram antes de disparar."
 
+# Eyes on an inbound message that starts a turn. The reaction waits this many
+# milliseconds. A reply that is sent first cancels it, so a fast chat stays
+# quiet. 0 reacts immediately (the previous behavior). Override in
+# $DATA_DIR/config.yaml. There is no environment variable for this.
+reaction_delay_ms: 4000
+
 # Operator skills (prompt text on the volume). Not the MCP `skills` tool.
 # Each entry is a folder name under $DATA_DIR/skills/<name>/SKILL.md.
 # The file starts with YAML frontmatter (`name` equal to the folder, and

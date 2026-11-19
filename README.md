@@ -62,6 +62,8 @@ The long-running code task is `sandbox_code_task` (Instabox by default). It is o
 
 Telegram deliveries are HTML. Bold wrapped around inline code does not leave an empty tag. If Telegram answers HTTP 400 because it cannot parse entities, that same delivery is sent once as plain text to the same chat, topic and reply. A 400 that is not a parse error is not resent. Telegram's `description` is redacted before it is logged or stored. `Bearer` and `sk-` tokens are masked by the same redactor that already covers configured secrets, including in the scheduled-run log line. A stored MCP list that still has `cuaViewer` fails validation.
 
+A message that starts a turn gets an eyes reaction only when the reply is still unsent after 4 seconds. `reaction_delay_ms` in `config.default.yaml` sets that wait; `$DATA_DIR/config.yaml` overrides it. A reply that goes out first cancels the reaction, and the timer is cleared. `0` reacts as soon as the message is accepted. There is no environment variable for this. WhatsApp does not send this reaction.
+
 [Freestyle](https://freestyle.sh) is another hosted Linux VM sandbox ([docs](https://www.freestyle.sh/docs), [quickstart](https://www.freestyle.sh/docs/quickstart)). This feature does not use it. The shipped `sandbox_code_task` block, the `INSTABOX_*` variables, discovery, and `scripts/instabox/` target Instabox. Freestyle's current docs describe an API and a CLI for those VMs. They do not publish an MCP that runs the VMs, so an entry in the MCP list does not switch the code task to Freestyle.
 
 ### Operator skills

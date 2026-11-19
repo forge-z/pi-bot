@@ -25,6 +25,8 @@ import {
   type TelegramTypingOptions,
 } from "./telegram-typing.js";
 import { logDebug, logFailure } from "./log.js";
+import { ReactionAck } from "./reaction-ack.js";
+import { loadHarnessConfig } from "./harness-config.js";
 import { MAX_TEXT } from "./limits.js";
 import {
   ConversationBusyError,
@@ -243,8 +245,8 @@ export interface TelegramTransport {
   ): Promise<unknown>;
   typing?(chat: string, options?: TelegramTypingOptions): Promise<unknown>;
   /**
-   * Eyes on a message just taken for a turn. Optional so test fakes stay small.
-   * Best-effort: the caller does not await it and never clears the reaction.
+   * Eyes on a message taken for a turn. Optional so test fakes stay small.
+   * Best-effort: the caller does not await it. A reaction that lands stays.
    */
   react?(chat: string, messageId: number): Promise<unknown>;
   send(
@@ -448,6 +450,7 @@ export class Telegram {
   /** Set by the polling layer: re-registers this chat's command menu. */
   onReload?: (chat: string) => Promise<void>;
   private credentialBinding: string;
+  private reactions: ReactionAck;
   constructor(
     private app: Runtime,
     private transport: TelegramTransport,
@@ -456,8 +459,14 @@ export class Telegram {
     readonly botUsername?: string,
     private privateDm = false,
     private botId?: number,
+    reactionDelayMs?: number,
   ) {
     this.typing = new TelegramTyping(transport.typing?.bind(transport));
+    this.reactions = new ReactionAck(
+      (chat, messageId) => this.transport.react?.(chat, messageId),
+      reactionDelayMs ?? loadHarnessConfig().reactionDelayMs,
+      (error) => logDebug("setMessageReaction", error),
+    );
     const credential = this.app.store.get<{ value: string }>(
       "SELECT value FROM credentials WHERE provider='telegram:bot'",
     );
@@ -1129,18 +1138,25 @@ export class Telegram {
     return result;
   }
   /**
-   * Eyes the moment a message is taken for a turn. Not awaited: a refusal
-   * (old message, a chat that cannot react) is debug noise and must not stall
-   * or fail the turn. The reaction is left in place afterwards.
+   * Arms eyes for a turn. The reaction waits `reaction_delay_ms` (default 4s)
+   * and is cancelled when this update's first reply is sent. `0` reacts on
+   * the next microtask. Not awaited: a refusal (old message, a chat that
+   * cannot react) is debug noise and must not stall or fail the turn. A
+   * reaction that does land stays afterwards.
    */
-  private noteReceived(chat: string, message?: TelegramUpdate["message"]) {
-    const react = this.transport.react;
+  private noteReceived(
+    chat: string,
+    updateId: number,
+    message?: TelegramUpdate["message"],
+  ) {
     const messageId = message?.message_id;
-    if (!react || messageId === undefined || !Number.isSafeInteger(messageId))
+    if (
+      !this.transport.react ||
+      messageId === undefined ||
+      !Number.isSafeInteger(messageId)
+    )
       return;
-    void Promise.resolve()
-      .then(() => react(chat, messageId))
-      .catch((error: unknown) => logDebug("setMessageReaction", error));
+    this.reactions.arm(chat, messageId, updateId);
   }
   private async acceptClean(
     owner: TelegramOwner,
@@ -1255,7 +1271,7 @@ export class Telegram {
         reply("Unknown command. Use /help.");
       else {
         // A turn, not an instant command reply.
-        this.noteReceived(owner.chat, incoming);
+        this.noteReceived(owner.chat, updateId, incoming);
         if (command === "stop") this.app.mcpCalls?.cancelConversation(id);
         const notice = this.app.settings.pendingModelNotice(id);
         if (notice) {
@@ -1530,6 +1546,7 @@ export class Telegram {
   }
   async drain() {
     this.closing = true;
+    this.reactions.close();
     this.typing.close();
     await Promise.allSettled([...this.receives.values(), ...this.approvalWork]);
     await this.flushWork;
@@ -1757,8 +1774,12 @@ export class Telegram {
             } else throw error;
           }
         }
+        // Text has left. Cancel pending eyes before any later await, so a timer
+        // due in this same turn cannot react after the reply.
+        if (delivery.text) this.reactions.delivered(delivery.id);
         // The text is already delivered: a failed upload is recorded, never fatal.
         const media = await this.sendMedia(delivery);
+        if (!delivery.text && media) this.reactions.delivered(delivery.id);
         const stored = media ? { sent: result, media } : result;
         const messageId = sentMessageId(stored);
         if (messageId)
