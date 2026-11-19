@@ -75,6 +75,7 @@ test("the system prompt has no per-turn clock section", async () => {
     assert.deepEqual(keys, [
       "scheduling",
       "policy",
+      "progress",
       "long-task",
       "operator-skills",
     ]);

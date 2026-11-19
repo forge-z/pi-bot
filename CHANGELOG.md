@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes.
+pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio.
+
+### Added
+
+- A long user task can post a short `progress` note in the originating Telegram or WhatsApp chat before the turn ends. The first note names the first step. Later notes are only a result, a blocker, or a changed plan, at most one every 30 seconds and three per task. A quick reply sends none. Scheduled runs stay silent unless they call `notify`.
 
 ### Fixed
 
