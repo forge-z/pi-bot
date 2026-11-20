@@ -331,3 +331,59 @@ test("a freestyle manifest polls its own server and tool", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+const SUBAGENT_DEFAULTS = {
+  enabled: false,
+  maxParallel: 3,
+  maxTurns: 8,
+  thinking: "low",
+};
+
+test("subagents are off by default, with the documented limits", async () => {
+  const root = await dir();
+  try {
+    const config = loadHarnessConfig({
+      CONFIG_FILE: join(root, "missing.yaml"),
+    });
+    assert.deepEqual(config.subagents, SUBAGENT_DEFAULTS);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("subagent values apply, and an invalid one is logged and keeps its default", async () => {
+  const root = await dir();
+  const good = join(root, "good.yaml");
+  const bad = join(root, "bad.yaml");
+  await writeFile(
+    good,
+    "subagents:\n  enabled: true\n  max_parallel: 2\n  max_turns: 20\n  thinking: minimal\n",
+  );
+  await writeFile(
+    bad,
+    "subagents:\n  enabled: yes please\n  max_parallel: 4\n  max_turns: 0\n  thinking: max\n",
+  );
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    assert.deepEqual(loadHarnessConfig({ CONFIG_FILE: good }).subagents, {
+      enabled: true,
+      maxParallel: 2,
+      maxTurns: 20,
+      thinking: "minimal",
+    });
+    assert.equal(lines.length, 0);
+    assert.deepEqual(
+      loadHarnessConfig({ CONFIG_FILE: bad }).subagents,
+      SUBAGENT_DEFAULTS,
+    );
+    for (const field of ["enabled", "max_parallel", "max_turns", "thinking"])
+      assert.match(lines.join("\n"), new RegExp(`subagents\\.${field}`));
+  } finally {
+    console.error = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio.
+pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio. Com `subagents.enabled: true`, o modelo pode delegar trabalho somente leitura a um subagente e recebe só a resposta final; desligado por padrão.
 
 ### Added
 
+- Optional `subagent` tool, off by default (`subagents.enabled` in `config.yaml`, restart to apply). It runs one task, or up to three in parallel, in child conversations that use the same model, see only MCP tools, and refuse every MCP call that is not a read before it is sent. The parent receives only each child's final text. `/stop` also stops running subagents, and `/status` and `conversation_usage` show their usage in a separate `subagents` block. With it off, the prompt and tool list are unchanged. See [docs/subagents.md](docs/subagents.md).
 - A long user task can post a short `progress` note in the originating Telegram or WhatsApp chat before the turn ends. The first note names the first step. Later notes are only a result, a blocker, or a changed plan, at most one every 30 seconds and three per task. A quick reply sends none. Scheduled runs stay silent unless they call `notify`.
 
 ### Fixed

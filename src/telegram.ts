@@ -1272,7 +1272,10 @@ export class Telegram {
       else {
         // A turn, not an instant command reply.
         this.noteReceived(owner.chat, updateId, incoming);
-        if (command === "stop") this.app.mcpCalls?.cancelConversation(id);
+        if (command === "stop") {
+          this.app.mcpCalls?.cancelConversation(id);
+          void this.app.stopSubagents(id);
+        }
         const notice = this.app.settings.pendingModelNotice(id);
         if (notice) {
           this.app.settings.markModelNoticeShown(id);

@@ -194,6 +194,7 @@ export async function takeWhatsAppCommand(
   // A caption on a photo or voice note counts. /cancel is not a command.
   if (name === "stop") {
     app.mcpCalls?.cancelConversation(conversationId);
+    void app.stopSubagents(conversationId);
     return false;
   }
   if (message.image || message.audio) return false;

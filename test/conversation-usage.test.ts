@@ -22,6 +22,7 @@ import {
   CONVERSATION_USAGE_TOOL_NAME,
   conversationUsageTool,
   formatConversationUsageLine,
+  summarizeConversationTreeUsage,
   summarizeConversationUsage,
   type ConversationUsageReport,
 } from "../src/conversation-usage.js";
@@ -112,6 +113,10 @@ async function readUsage(
       seen.push({ token, conversationId });
       return app.harness.snapshot(token, conversationId, ctx);
     },
+    commit: (
+      change: Parameters<Runtime["harness"]["commit"]>[0],
+      ctx: typeof context,
+    ) => app.harness.commit(change, ctx),
   };
   const result = await installedUsageTool(app).execute(
     {},
@@ -538,4 +543,42 @@ test("status line shows tokens and USD, or tokens only when the price is unknown
     summarizeConversationUsage(undefined),
   );
   assert.equal(empty, "Usage: 0 tokens · $0.00");
+});
+
+test("subagent fields appear only when the conversation has children", () => {
+  const own = {
+    models: {
+      "openai/priced": usage({ input: 100, output: 20, cost: { total: 0.01 } }),
+    },
+    tools: {},
+  };
+  const alone = summarizeConversationTreeUsage(own, []);
+  assert.deepEqual(alone, summarizeConversationUsage(own));
+  assert.equal("subagents" in alone, false);
+  assert.equal("withSubagents" in alone, false);
+  assert.equal(formatConversationUsageLine(alone), "Usage: 120 tokens · $0.01");
+  const child = {
+    models: {
+      "openai/priced": usage({
+        input: 30,
+        cacheRead: 10,
+        output: 5,
+        cost: { total: 0.002 },
+      }),
+    },
+    tools: {},
+  };
+  const tree = summarizeConversationTreeUsage(own, [child, child]);
+  assert.deepEqual(tree.tokens, alone.tokens);
+  assert.equal(tree.subagents?.conversations, 2);
+  assert.equal(tree.subagents?.tokens.totalTokens, 90);
+  assert.equal(tree.subagents?.cacheHitRate, 0.25);
+  assert.equal(tree.withSubagents?.tokens.totalTokens, 210);
+  const usd = tree.withSubagents?.usd;
+  assert.ok(usd?.available && Math.abs(usd.total - 0.014) < 1e-9);
+  assert.match(tree.note, /subagents/);
+  assert.equal(
+    formatConversationUsageLine(tree),
+    "Usage: 120 tokens · $0.01 · subagentes: 90 tokens · $0.0040",
+  );
 });
