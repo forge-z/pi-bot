@@ -206,11 +206,11 @@ docker run --rm -v old:/from -v new:/to alpine cp -a /from/. /to/
 
 Faça backup do volume antes de atualizar. O primeiro boot desta release migra `pending_jobs` acrescentando colunas. O `ALTER TABLE` do SQLite não tem migração de volta. Na subida, linhas antigas de `mcp_calls` cujo id começa com `mcp-stage:` são apagadas, e uma chamada que ficou `running` é reclassificada (`failed` se era leitura, `uncertain` se era escrita). O poller de jobs apaga em seguida as linhas de jobs já terminados com mais de 30 dias. Linhas abertas permanecem. Não há rollback desses dados: restaure o backup se precisar do volume anterior. A migração anterior do `durable.sqlite` para o schema 2, da release passada, também continua sem rollback.
 
-Voltar a imagem sem restaurar o backup deixa o ledger numa forma que a release anterior pode não ler.
+Voltar a imagem sem restaurar o backup deixa o ledger numa forma que a release anterior pode não ler. O Pi 1.6.0 mantém o schema SQLite 2 e grava `pi.tool` na versão 4 e `pi.generation` na versão 3; a imagem anterior bloqueia essas tarefas.
 
 ## Notas
 
-- O harness é o Pi 1.5.2 (`pi-ai`, `pi-durable` e `chord`). As conversas ficam no `durable.sqlite`. O processo roda sem terminal, então um turno segue sem pedir Continue, Fork ou Cancel. A busca de MCP adiado encontra uma ferramenta cujo schema só nomeia um modelo por um `$ref` local.
+- O harness é o Pi 1.6.0 (`pi-ai`, `pi-durable` e `chord`). As conversas ficam no `durable.sqlite`. O processo roda sem terminal, então um turno segue sem pedir Continue, Fork ou Cancel. A busca de MCP adiado encontra uma ferramenta cujo schema só nomeia um modelo por um `$ref` local. Os catálogos da OpenAI, da Azure e do Codex incluem GPT-6.2 Astra e GPT-6.2 Sol. O `/thinking` não oferece `off` nesses modelos. Uma conversa mantém o modelo que já estava salvo.
 - Histórico, credenciais e o ledger são tão privados quanto o volume e o host.
 - O assistente não tem shell, arquivo, patch nem browser próprios. O que volta do MCP é dado não confiável.
 - `ask_user` posta uma pergunta no mesmo chat e tópico e encerra o turno. Até seis opções viram botões (`ask:<32 hex>:<índice>`). Um toque vira a mensagem seguinte (`Answer to: … -> …`). Digitar também vale como mensagem normal e os botões saem. Toque repetido ou velho não faz nada. Rotina agendada não pode perguntar. Esses botões não são cartões de aprovação.
