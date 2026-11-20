@@ -91,6 +91,17 @@ skills:
 
 The system prompt lists each name and description, in that order, after the base instructions and before the MCP sections. The model loads a body with the read-only `read_skill` tool. The list is the same on every reply, including scheduled runs. An empty list, or a skills folder that is not there, leaves the prompt unchanged and does not register the tool. A missing name, invalid frontmatter, or an unreadable file is logged and skipped. An unknown `read_skill` name returns an error and no body. The bot still starts.
 
+### Subagents
+
+Off by default. When on, the model can hand self-contained read-only work (broad research, long reads) to a `subagent` and keep only its final answer in the conversation. A subagent uses the same model, sees only MCP tools, and every MCP call that is not a read is refused before it is sent. `/stop` stops running subagents too. Turn it on in `$DATA_DIR/config.yaml` and restart:
+
+```yaml
+subagents:
+  enabled: true
+```
+
+Limits, rules and how to measure the cost: [docs/subagents.md](docs/subagents.md).
+
 ## There's an API or MCP for that
 
 Steve Jobs closed the 2010 iPad event with "there's an app for that" ([CBS](https://www.cbsnews.com/news/steve-jobs-at-the-heavenly-gates-theres-an-app-for-that/)). Before adding a capability to the bot, connect an API or an MCP server that already does the job.

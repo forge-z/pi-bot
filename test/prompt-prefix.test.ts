@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -320,6 +320,120 @@ test("consecutive deepseek turns keep the previous request as a prefix", async (
         ),
       ),
     );
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("with subagents on, the parent stays append-only and every child repeats one prefix", async () => {
+  const parent: Message[][] = [];
+  const children: Message[][] = [];
+  const isChild = (messages: readonly Message[]) => {
+    const system = messages.find((message) => message.role === "system") as
+      { sections?: Record<string, unknown> } | undefined;
+    return typeof system?.sections?.instructions === "string";
+  };
+  const faux = fauxProvider({
+    provider: "deepseek",
+    api: "openai-completions",
+    models: [
+      {
+        id: "deepseek-flash",
+        name: "DeepSeek V4.1 Flash",
+        reasoning: true,
+        contextWindow: 1_000_000,
+        maxTokens: 384_000,
+      },
+    ],
+  });
+  const script = [
+    answer("delegate", [
+      fauxToolCall(
+        "subagent",
+        { task: "List three public RSS readers" },
+        { id: "call_sub_1" },
+      ),
+    ]),
+    answer("first"),
+    answer("delegate again", [
+      fauxToolCall(
+        "subagent",
+        { task: "Compare two public RSS readers" },
+        { id: "call_sub_2" },
+      ),
+    ]),
+    answer("second"),
+  ];
+  const route = async (ctx: { messages: readonly Message[] }) => {
+    const messages = structuredClone(ctx.messages) as Message[];
+    if (isChild(messages)) {
+      children.push(messages);
+      return answer(`child ${children.length}`);
+    }
+    parent.push(messages);
+    return script.shift()!;
+  };
+  faux.setResponses(Array.from({ length: 8 }, () => route));
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const official = createModels();
+  official.setProvider(deepseekProvider());
+  const deepseek = official.getModel("deepseek", "deepseek-flash");
+  assert.ok(deepseek);
+  const dir = await mkdtemp(join(tmpdir(), "pi-prefix-sub-"));
+  const configFile = join(dir, "config.yaml");
+  await writeFile(configFile, "subagents:\n  enabled: true\n");
+  const app = await Runtime.open({
+    dir,
+    gateway: { catalog: async () => [] },
+    models,
+    provider: "deepseek",
+    modelId: "deepseek-flash",
+    effort: "high",
+    env: { TZ: "UTC", CONFIG_FILE: configFile },
+  });
+  const idle = async (id: string) => {
+    await (await app.conversation(id)).waitForIdle(context);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  try {
+    const id = await app.create();
+    await app.submit(id, "turn-1", "find RSS readers");
+    await idle(id);
+    await app.submit(id, "turn-2", "compare two of them");
+    await idle(id);
+    assert.equal(parent.length, 4);
+    assert.equal(children.length, 2);
+    const model = deepseek as Model<"openai-completions">;
+    const parents: Wire[] = [];
+    for (const messages of parent) parents.push(await wire(model, messages));
+    const kids: Wire[] = [];
+    for (const messages of children) kids.push(await wire(model, messages));
+    for (let index = 1; index < parents.length; index++) {
+      const previous = joined(parents[index - 1]!.messages);
+      const next = joined(parents[index]!.messages);
+      assert.equal(next.startsWith(previous), true, `parent ${index}`);
+      assert.equal(
+        JSON.stringify(parents[index]!.tools),
+        JSON.stringify(parents[0]!.tools),
+      );
+    }
+    assert.equal(
+      parents[0]!.tools?.some((tool) => tool.function?.name === "subagent"),
+      true,
+    );
+    assert.match(textOf(parents[0]!.messages[0]!), /Use subagent to delegate/);
+    assert.equal(
+      JSON.stringify(kids[0]!.messages[0]),
+      JSON.stringify(kids[1]!.messages[0]),
+    );
+    assert.equal(
+      JSON.stringify(kids[0]!.tools),
+      JSON.stringify(kids[1]!.tools),
+    );
+    assert.match(textOf(kids[0]!.messages[0]!), /You are a subagent/);
+    assert.doesNotMatch(textOf(kids[0]!.messages[0]!), /Use subagent/);
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });

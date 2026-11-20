@@ -85,6 +85,17 @@ skills:
 
 O prompt de sistema lista cada nome e descrição, nessa ordem, depois das instruções base e antes das seções de MCP. O modelo carrega o corpo com a ferramenta somente leitura `read_skill`. A lista é a mesma em toda resposta, inclusive nos runs agendados. Uma lista vazia, ou uma pasta de skills que não existe, deixa o prompt igual e não registra a ferramenta. Um nome ausente, frontmatter inválido ou arquivo ilegível é registrado no log e ignorado. Um nome desconhecido em `read_skill` devolve erro e nenhum corpo. O bot sobe mesmo assim.
 
+### Subagentes
+
+Desligado por padrão. Ligado, o modelo pode passar um trabalho somente leitura e autocontido (pesquisa ampla, leitura longa) para um `subagent` e guardar na conversa só a resposta final. O subagente usa o mesmo modelo, vê só as ferramentas MCP, e toda chamada MCP que não é leitura é recusada antes de ser enviada. O `/stop` também para os subagentes em execução. Ligue em `$DATA_DIR/config.yaml` e reinicie:
+
+```yaml
+subagents:
+  enabled: true
+```
+
+Limites, regras e como medir o custo: [docs/subagents.md](docs/subagents.md).
+
 ## WhatsApp
 
 Um gateway de telefone por instalação. A escolha é no `npm run setup`. Gravar WhatsApp desliga o Telegram, e gravar Telegram desliga o WhatsApp. Uma instalação que nunca escolheu continua no Telegram. O WhatsApp usa o [Baileys](https://github.com/WhiskeySockets/Baileys) e o [qrcode-terminal](https://github.com/gtanner/qrcode-terminal). O Baileys fala o WhatsApp Web não oficial, o que pode levar a restrição da conta. Nenhuma variável de ambiente nova é obrigatória para o container subir.

@@ -272,3 +272,21 @@ reaction_delay_ms: 4000
 # returns an error and no body.
 skills:
   always: []
+
+# Subagents (docs/subagents.md). When enabled, the model may call the
+# `subagent` tool to hand self-contained read-only work to a child
+# conversation and get only its final answer back. The child uses the same
+# model, sees only MCP tools (plus tool_search when some tool is deferred), and
+# every MCP call that is not a read is refused before it is sent. No approval
+# card, schedule, notify, file or job comes from a child. /stop also stops
+# running subagents. Read at startup: a change needs a restart. Off, the prompt
+# and tool list are exactly the same as without this block. An invalid value
+# is logged and keeps its default.
+subagents:
+  enabled: false
+  # Tasks one call may run at once, 1 to 3.
+  max_parallel: 3
+  # Tool rounds a child may take, 1 to 20. It then ends without an answer.
+  max_turns: 8
+  # off, minimal, low, medium or high.
+  thinking: low

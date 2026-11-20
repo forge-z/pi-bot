@@ -5,6 +5,7 @@ import {
   UsageDoc,
   type UsageState,
 } from "@earendil-works/pi-durable";
+import { ownedConversations } from "./subagents.js";
 
 /** Model-facing name. Always registered, like the task tools. */
 export const CONVERSATION_USAGE_TOOL_NAME = "conversation_usage";
@@ -52,7 +53,14 @@ export interface ConversationUsageReport {
   models: ({ id: string } & UsageBucketReport)[];
   tools: ({ name: string } & UsageBucketReport)[];
   note: string;
+  /** Only when this conversation ran subagents: their own usage, summed. */
+  subagents?: { conversations: number } & UsageBucketReport;
+  /** Only with `subagents`: this conversation plus its subagents. */
+  withSubagents?: { tokens: TokenReport; usd: UsageCostReport };
 }
+
+const SUBAGENTS_NOTE =
+  "tokens, models e tools são só desta conversa. subagents soma as conversas dos subagentes que ela criou; withSubagents é a soma das duas. Não some subagents ao total de novo.";
 
 const SCOPE_NOTE =
   "Somente esta conversa. prompt = input + cacheRead + cacheWrite. reasoning já está em output; cacheWrite1h já está em cacheWrite; não some esses subconjuntos de novo.";
@@ -233,9 +241,44 @@ function formatUsd(total: number) {
 export function formatConversationUsageLine(
   report: ConversationUsageReport,
 ): string {
-  const tokens = report.tokens.totalTokens.toLocaleString("en-US");
-  if (!report.usd.available) return `Usage: ${tokens} tokens`;
-  return `Usage: ${tokens} tokens · ${formatUsd(report.usd.total)}`;
+  const part = (bucket: { tokens: TokenReport; usd: UsageCostReport }) => {
+    const tokens = bucket.tokens.totalTokens.toLocaleString("en-US");
+    if (!bucket.usd.available) return `${tokens} tokens`;
+    return `${tokens} tokens · ${formatUsd(bucket.usd.total)}`;
+  };
+  const line = `Usage: ${part(report)}`;
+  return report.subagents
+    ? `${line} · subagentes: ${part(report.subagents)}`
+    : line;
+}
+
+/**
+ * This conversation's report, plus a separate `subagents` block when it owns
+ * child conversations. The own figures never include the children.
+ */
+export function summarizeConversationTreeUsage(
+  own: UsageState | undefined,
+  children: (UsageState | undefined)[],
+): ConversationUsageReport {
+  const report = summarizeConversationUsage(own);
+  if (children.length === 0) return report;
+  const reports = children.map(summarizeConversationUsage);
+  const tokens = sumTokens(reports.map((child) => child.tokens));
+  const usd = combineCosts(reports.map((child) => child.usd));
+  return {
+    ...report,
+    note: `${report.note} ${SUBAGENTS_NOTE}`,
+    subagents: {
+      conversations: children.length,
+      tokens,
+      cacheHitRate: cacheHitRate(tokens),
+      usd,
+    },
+    withSubagents: {
+      tokens: sumTokens([report.tokens, tokens]),
+      usd: combineCosts([report.usd, usd]),
+    },
+  };
 }
 
 /** Structured summary of one conversation's UsageDoc. Never reads another conversation. */
@@ -277,11 +320,20 @@ export const conversationUsageTool = defineTool({
   execute: async (_args, api, ctx) => {
     try {
       const state = await api.snapshot(UsageDoc, api.conversationId, ctx);
+      const children = await ownedConversations(
+        (change) => api.commit(change, ctx),
+        api.conversationId,
+      );
+      const childStates = await Promise.all(
+        children.map((id) => api.snapshot(UsageDoc, id, ctx)),
+      );
       return {
         output: [
           {
             type: "text",
-            text: JSON.stringify(summarizeConversationUsage(state)),
+            text: JSON.stringify(
+              summarizeConversationTreeUsage(state, childStates),
+            ),
           },
         ],
       };

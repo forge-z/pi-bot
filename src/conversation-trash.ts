@@ -305,6 +305,34 @@ export async function assertDurablePurgeSafe(tx: SqliteExecutor, id: number) {
       );
 }
 
+/**
+ * A parent's subagent conversations would block its purge forever. Remove
+ * each idle child in the same transaction, then run the parent's own checks.
+ */
+export async function removeOwnedConversations(tx: SqliteExecutor, id: number) {
+  for (const child of await tx.all<{ id: number }>(
+    "SELECT id FROM conversations WHERE owner_conversation_id=? AND id!=?",
+    id,
+    id,
+  )) {
+    if (
+      (await tx.get(
+        "SELECT 1 FROM tasks WHERE conversation_id=? AND status!='terminal'",
+        child.id,
+      )) ||
+      (await tx.get(
+        "SELECT 1 FROM submissions WHERE conversation_id=? AND status IN ('queued','placed')",
+        child.id,
+      ))
+    )
+      throw new TrashBlockedError(
+        "Há subagente em execução. Aguarde sua conclusão antes de excluir.",
+      );
+    await removeDurableHistory(tx, child.id);
+  }
+  await assertDurablePurgeSafe(tx, id);
+}
+
 export async function removeDurableHistory(tx: SqliteExecutor, id: number) {
   const docs =
     "SELECT id FROM documents WHERE (scope_kind='conversation' AND owner_id=?) OR (scope_kind='task' AND owner_id IN (SELECT id FROM tasks WHERE conversation_id=?))";

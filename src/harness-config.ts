@@ -19,6 +19,26 @@ export interface ServerTools {
   ownTools: boolean;
 }
 
+/** Thinking levels a subagent may use. `xhigh` and `max` are left out on purpose. */
+const SUBAGENT_THINKING = ["off", "minimal", "low", "medium", "high"] as const;
+
+export interface SubagentsConfig {
+  /** Registers the `subagent` tool. Read at startup; a change needs a restart. */
+  enabled: boolean;
+  /** Tasks one call may run at once, 1..3. */
+  maxParallel: number;
+  /** The child's `maxTurns`, 1..20. */
+  maxTurns: number;
+  thinking: (typeof SUBAGENT_THINKING)[number];
+}
+
+const SUBAGENT_DEFAULTS: SubagentsConfig = {
+  enabled: false,
+  maxParallel: 3,
+  maxTurns: 8,
+  thinking: "low",
+};
+
 export interface HarnessConfig {
   mcpServers: Record<string, ServerTools>;
   asyncJobs: unknown[];
@@ -33,6 +53,8 @@ export interface HarnessConfig {
    * From `reaction_delay_ms`; missing or invalid stays at the default.
    */
   reactionDelayMs: number;
+  /** `subagents` block. Off unless the file turns it on. */
+  subagents: SubagentsConfig;
 }
 
 const EMPTY: HarnessConfig = {
@@ -41,6 +63,7 @@ const EMPTY: HarnessConfig = {
   asyncJob: {},
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
+  subagents: SUBAGENT_DEFAULTS,
 };
 const globCache = new Map<string, RegExp | null>();
 let cache: { key: string; config: HarnessConfig } | undefined;
@@ -159,6 +182,38 @@ function serverFrom(value: Record<string, unknown>): ServerTools {
   };
 }
 
+/** One invalid field is logged and keeps its default; the other fields still apply. */
+function subagentsFrom(value: unknown): SubagentsConfig {
+  if (value === undefined || value === null) return SUBAGENT_DEFAULTS;
+  const invalid = (field: string) =>
+    console.error(`Pi-Agent: subagents.${field} inválido. Usando o padrão.`);
+  if (!isRecord(value)) {
+    invalid("(bloco)");
+    return SUBAGENT_DEFAULTS;
+  }
+  const out = { ...SUBAGENT_DEFAULTS };
+  if (value.enabled !== undefined) {
+    if (typeof value.enabled === "boolean") out.enabled = value.enabled;
+    else invalid("enabled");
+  }
+  const bounded = (field: string, max: number) => {
+    const n = value[field];
+    if (n === undefined) return undefined;
+    if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= max)
+      return n;
+    invalid(field);
+    return undefined;
+  };
+  out.maxParallel = bounded("max_parallel", 3) ?? out.maxParallel;
+  out.maxTurns = bounded("max_turns", 20) ?? out.maxTurns;
+  if (value.thinking !== undefined) {
+    const level = SUBAGENT_THINKING.find((item) => item === value.thinking);
+    if (level) out.thinking = level;
+    else invalid("thinking");
+  }
+  return out;
+}
+
 function configFrom(raw: Record<string, unknown>): HarnessConfig {
   const servers = isRecord(raw.mcp_servers) ? raw.mcp_servers : {};
   const mcpServers: Record<string, ServerTools> = {};
@@ -184,6 +239,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
       isRecord(raw.skills) ? raw.skills.always : undefined,
     ),
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
+    subagents: subagentsFrom(raw.subagents),
   };
 }
 

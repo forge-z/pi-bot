@@ -69,9 +69,9 @@ import {
   CONVERSATION_RETENTION_MS,
   TrashBlockedError,
   assertAppPurgeSafe,
-  assertDurablePurgeSafe,
   removeDurableHistory,
   removeAppHistory,
+  removeOwnedConversations,
 } from "./conversation-trash.js";
 import { logFailure } from "./log.js";
 import lockfile from "proper-lockfile";
@@ -122,8 +122,14 @@ import { MAX_TEXT, REQUEST_ID } from "./limits.js";
 import {
   conversationUsageTool,
   formatConversationUsageLine,
-  summarizeConversationUsage,
+  summarizeConversationTreeUsage,
 } from "./conversation-usage.js";
+import {
+  createSubagentExtension,
+  ownedConversations,
+  SUBAGENT_MEDIA_OMITTED,
+  SUBAGENT_WRITE_REFUSAL,
+} from "./subagents.js";
 import { createAskUserTool } from "./ask-user.js";
 import {
   executorDecidesApproval,
@@ -438,6 +444,8 @@ export class Runtime {
   private trashSweep?: Promise<void>;
   private purges = new Set<Promise<unknown>>();
   private guardedTools = new WeakSet<object>();
+  /** Conversation → parent conversation, or null. The owner edge never changes. */
+  private subagentParents = new Map<string, string | null>();
   private loopGuards = new Map<
     string,
     { turn: number | undefined; guard: LoopGuard }
@@ -1053,6 +1061,10 @@ export class Runtime {
           ],
         }),
       );
+      // Off by default. Installed before MCP so guardToolExecutors wraps it too.
+      const subagents = loadHarnessConfig(options.env ?? process.env).subagents;
+      if (subagents.enabled)
+        registry.install(createSubagentExtension(app, subagents));
       await app.refreshMcpTools();
       app.durableDatabase = await openNodeSqliteDatabase(
         `${options.dir}/durable.sqlite`,
@@ -1086,6 +1098,8 @@ export class Runtime {
           context,
         );
         for (const row of recovered.items) {
+          // A subagent's conversation belongs to its parent's tool call.
+          if (row.owner) continue;
           if (
             app.store.get(
               "SELECT 1 FROM conversation_purges WHERE conversationId=?",
@@ -1348,6 +1362,22 @@ export class Runtime {
                 outputLimits: { maxBytes: 65536, maxLines: 2000 },
                 execute: async (args, api, callContext) => {
                   const conversationId = String(api.conversationId);
+                  // A subagent only reads, on every server, Executor included. It
+                  // runs like a scheduled turn: no card, no job, no chat.
+                  const child = !!(await this.subagentParent(conversationId));
+                  if (
+                    child &&
+                    !mcpCallIsReadOnly(tool.name, args, {
+                      server: server.server,
+                    })
+                  )
+                    return {
+                      output: [
+                        { type: "text" as const, text: SUBAGENT_WRITE_REFUSAL },
+                      ],
+                      isError: true,
+                    };
+                  const scheduled = child || this.scheduledTurn(conversationId);
                   // Executor, and any server that inherits its tool list, decides
                   // approval. A server with its own list still refuses a non-read
                   // before send when a scheduled run cannot wait.
@@ -1383,12 +1413,14 @@ export class Runtime {
                   // a run id is still reconciled by the poller.
                   // A delegated call (the Executor's `execute` running the integration)
                   // never passes through the direct hook; the arguments name the tool.
-                  const job = this.pendingJobs.beginDispatch(
-                    conversationId,
-                    server.server,
-                    tool.name,
-                    args,
-                  );
+                  const job = child
+                    ? false
+                    : this.pendingJobs.beginDispatch(
+                        conversationId,
+                        server.server,
+                        tool.name,
+                        args,
+                      );
                   let result: Awaited<ReturnType<McpCalls["execute"]>>;
                   try {
                     result = await this.mcpCalls.execute(
@@ -1398,7 +1430,7 @@ export class Runtime {
                       tool.name,
                       args,
                       callContext.abortSignal,
-                      this.scheduledTurn(conversationId),
+                      scheduled,
                     );
                   } catch (error) {
                     // A deadline or a failed resume already released the lock and
@@ -1418,13 +1450,14 @@ export class Runtime {
                   };
                   let registeredOk = true;
                   try {
-                    followed = this.pendingJobs.finishDispatch(
-                      conversationId,
-                      server.server,
-                      tool.name,
-                      args,
-                      result,
-                    );
+                    if (!child)
+                      followed = this.pendingJobs.finishDispatch(
+                        conversationId,
+                        server.server,
+                        tool.name,
+                        args,
+                        result,
+                      );
                   } catch (error) {
                     registeredOk = false;
                     // The provider already answered. A bookkeeping failure must
@@ -1461,6 +1494,11 @@ export class Runtime {
                       (item.type === "text"
                         ? mediaFromText(item.text)
                         : undefined);
+                    if (media && child)
+                      return {
+                        type: "text" as const,
+                        text: SUBAGENT_MEDIA_OMITTED,
+                      };
                     if (media) {
                       this.queueOutbound(
                         String(api.conversationId),
@@ -2197,48 +2235,55 @@ export class Runtime {
       // The Durable checks parse every history record; reject app-level
       // blocks first so a blocked sweep does not rescan history each minute.
       assertAppPurgeSafe(this.store, id);
+      // Subagent children go first, in the same transaction. A purge that is
+      // not due yet throws this so their removal rolls back.
+      const notDue = new Error("purge not due");
       await this.harness.commit(
         () =>
-          this.durableDatabase.transaction(async (tx) => {
-            await assertDurablePurgeSafe(tx, Number(id));
-            assertAppPurgeSafe(this.store, id);
-            const claim = this.store.get<{
-              deletedAt: number;
-              completedAt: number | null;
-            }>(
-              "SELECT deletedAt,completedAt FROM conversation_purges WHERE conversationId=?",
-              id,
-            );
-            if (claim) {
-              if (!automatic || claim.deletedAt !== expectedDeletedAt)
-                throw new ConversationError(
-                  "Exclusão permanente iniciada. A conversa não pode ser recuperada.",
-                  409,
-                );
-            } else {
-              const archived = this.store.get<{
+          this.durableDatabase
+            .transaction(async (tx) => {
+              await removeOwnedConversations(tx, Number(id));
+              assertAppPurgeSafe(this.store, id);
+              const claim = this.store.get<{
                 deletedAt: number;
-                purgeAt: number;
+                completedAt: number | null;
               }>(
-                "SELECT l.deletedAt,r.purgeAt FROM conversation_lifecycle l JOIN conversation_retention r ON r.conversationId=l.conversationId WHERE l.conversationId=? AND l.deletedAt IS NOT NULL",
+                "SELECT deletedAt,completedAt FROM conversation_purges WHERE conversationId=?",
                 id,
               );
-              if (!archived || archived.deletedAt !== expectedDeletedAt)
-                throw new ConversationError(
-                  "A conversa mudou. Atualize a lista antes de excluir permanentemente.",
-                  409,
+              if (claim) {
+                if (!automatic || claim.deletedAt !== expectedDeletedAt)
+                  throw new ConversationError(
+                    "Exclusão permanente iniciada. A conversa não pode ser recuperada.",
+                    409,
+                  );
+              } else {
+                const archived = this.store.get<{
+                  deletedAt: number;
+                  purgeAt: number;
+                }>(
+                  "SELECT l.deletedAt,r.purgeAt FROM conversation_lifecycle l JOIN conversation_retention r ON r.conversationId=l.conversationId WHERE l.conversationId=? AND l.deletedAt IS NOT NULL",
+                  id,
                 );
-              if (automatic && archived.purgeAt > this.now()) return;
-              // Separate durable claim commits first. A crash cannot re-enable restoration.
-              this.store.run(
-                "INSERT INTO conversation_purges VALUES (?,?,?,NULL)",
-                id,
-                expectedDeletedAt,
-                this.now(),
-              );
-            }
-            await removeDurableHistory(tx, Number(id));
-          }),
+                if (!archived || archived.deletedAt !== expectedDeletedAt)
+                  throw new ConversationError(
+                    "A conversa mudou. Atualize a lista antes de excluir permanentemente.",
+                    409,
+                  );
+                if (automatic && archived.purgeAt > this.now()) throw notDue;
+                // Separate durable claim commits first. A crash cannot re-enable restoration.
+                this.store.run(
+                  "INSERT INTO conversation_purges VALUES (?,?,?,NULL)",
+                  id,
+                  expectedDeletedAt,
+                  this.now(),
+                );
+              }
+              await removeDurableHistory(tx, Number(id));
+            })
+            .catch((error: unknown) => {
+              if (error !== notDue) throw error;
+            }),
         context,
       );
       // Pinned SDK 1.0.4 implementation caches documents by address. The checked
@@ -3003,6 +3048,47 @@ export class Runtime {
       `Pi-Agent: run agendado id=${taskId ?? requestId} notify=${notified ? "sim" : "não"} texto=${text}`,
     );
   }
+  /** The parent's id when this conversation is a subagent, otherwise null. */
+  async subagentParent(conversationId: string) {
+    const cached = this.subagentParents.get(conversationId);
+    if (cached !== undefined) return cached;
+    const record = await this.harness.commit(
+      (tx) => tx.conversation(Number(conversationId) as ConversationId),
+      context,
+    );
+    if (!record) return null;
+    const parent = record.owner ? String(record.owner.conversationId) : null;
+    this.subagentParents.set(conversationId, parent);
+    return parent;
+  }
+  /** What a new subagent selects: MCP, and tool_search while it is installed. */
+  childExtensions() {
+    const snapshot = this.registry.snapshot();
+    return ["mcp-direct", toolSearchExtension.name].flatMap((name) => {
+      const extension = snapshot.extension(name);
+      return extension ? [extension] : [];
+    });
+  }
+  /**
+   * `/stop` cancels this conversation's MCP and then becomes a turn, so it
+   * would never reach a running subagent. Abort the children here.
+   */
+  async stopSubagents(conversationId: string) {
+    try {
+      const children = await ownedConversations(
+        (change) => this.harness.commit(change, context),
+        Number(conversationId) as ConversationId,
+      );
+      await Promise.all(
+        children.map(async (id) => {
+          this.mcpCalls?.cancelConversation(String(id));
+          await (await this.harness.conversation(id, context))?.abort(context);
+        }),
+      );
+    } catch (error) {
+      logFailure("Pi-Agent: falha ao parar subagentes", error);
+    }
+  }
   /** True while the conversation is running an admitted scheduled occurrence. */
   scheduledTurn(conversationId: string) {
     return (
@@ -3263,15 +3349,30 @@ export class Runtime {
       this.monitorSubmission(conversation, submission, row);
     }
   }
-  /** One `/status` line: this conversation's tokens, and USD when the price is known. */
+  /**
+   * One `/status` line: this conversation's tokens, and USD when the price is
+   * known. Subagents it ran are shown apart, never added to its own figure.
+   */
   async usageLine(id: string): Promise<string> {
     try {
+      const conversationId = Number(id) as ConversationId;
       const state = await this.harness.snapshot(
         UsageDoc,
-        Number(id) as ConversationId,
+        conversationId,
         context,
       );
-      return formatConversationUsageLine(summarizeConversationUsage(state));
+      const children = await ownedConversations(
+        (change) => this.harness.commit(change, context),
+        conversationId,
+      );
+      const childStates = await Promise.all(
+        children.map((child) =>
+          this.harness.snapshot(UsageDoc, child, context),
+        ),
+      );
+      return formatConversationUsageLine(
+        summarizeConversationTreeUsage(state, childStates),
+      );
     } catch {
       return "Usage: unavailable";
     }
