@@ -1349,6 +1349,110 @@ test("mcpCallIsReadOnly accepts exact read contracts and literal call templates"
   assert.equal(mcpCallIsReadOnly("execute", undefined), false);
 });
 
+test("simple aliases and camelCase read verbs are reads; write verbs stay writes", () => {
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'const gh = tools.github.repos; gh.getContent({ owner: "acme", repo: "demo", path: "README.md" })',
+    }),
+    true,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'let gh = tools.github; await gh.repos.getContent({ owner: "acme", repo: "demo", path: "README.md" })',
+    }),
+    true,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'const { getContent } = tools.github.repos; await getContent({ owner: "acme", repo: "demo", path: "README.md" })',
+    }),
+    true,
+  );
+  assert.equal(mcpCallIsReadOnly("tools.parallel.extract.v1ExtractPost"), true);
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "await tools.parallel.extract.v1ExtractPost({}); await tools.tinyfish.fetch.root.fetchUrls({})",
+    }),
+    true,
+  );
+  assert.equal(mcpCallIsReadOnly("tools.agentmail.inboxesMessagesList"), true);
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "await tools.agentmail.inboxesMessagesList({})",
+    }),
+    true,
+  );
+  assert.equal(mcpCallIsReadOnly("tools.billing.tokenUsage"), true);
+  assert.equal(mcpCallIsReadOnly("tools.billing.queueMetrics"), true);
+  assert.equal(mcpCallIsReadOnly("tools.tinyfish.agent.runs.getRunById"), true);
+  assert.equal(
+    mcpCallIsReadOnly("tools.github.repos.createOrUpdateFileContents"),
+    false,
+  );
+  assert.equal(mcpCallIsReadOnly("tools.instabox.machines.exec"), false);
+  assert.equal(mcpCallIsReadOnly("tools.agent.automation.run"), false);
+  assert.equal(
+    mcpCallIsReadOnly("tools.tinyfish.agent.automation.runAsync"),
+    false,
+  );
+  assert.equal(mcpCallIsReadOnly("tools.chat.messages.send"), false);
+  assert.equal(mcpCallIsReadOnly("tools.chat.postMessage"), false);
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const repos = tools.github.repos; await repos.createOrUpdateFileContents({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const machines = tools.instabox.machines; await machines.exec({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'const automation = tools.agent.automation; await automation.run({ goal: "demo" })',
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const messages = tools.chat.messages; await messages.send({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const gh = tools.github.repos; await gh.getContent({}); await gh.createOrUpdateFileContents({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "await tools.parallel.extract.v1ExtractPost({}); await tools.instabox.machines.exec({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: 'const gh = tools.github.repos; await gh["getContent"]({})',
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const gh = tools.github.repos; await gh.contents.files.getContent({})",
+    }),
+    false,
+  );
+  assert.equal(
+    mcpCallIsReadOnly("execute", {
+      code: "const { getContent, createOrUpdateFileContents } = tools.github.repos; await getContent({}); await createOrUpdateFileContents({})",
+    }),
+    false,
+  );
+});
+
 test("elicitation cancels when two calls on the same server could own it", () => {
   const first = { onElicitation: async () => ({ action: "accept" as const }) };
   const second = {
@@ -1389,10 +1493,20 @@ test("an uncertain result blocks actions but never reads", async () => {
       );
     assert.doesNotMatch(text(sandboxRead), /resultado MCP incerto/i);
     assert.equal(calls.list("conversation")[0].state, "uncertain");
-    // An alias hides the call from the recognizer, so the execute is a write.
-    await assert.rejects(
-      calls.execute("conversation", 33, "mock", "execute", {
+    // A resolved read alias is still a read, so the uncertain write does not block it.
+    const aliasedRead = await calls
+      .execute("conversation", 33, "mock", "execute", {
         code: "const g = tools.gmail; await g.listLabels({})",
+      })
+      .then(
+        (result) => text(result),
+        (error: Error) => error.message,
+      );
+    assert.doesNotMatch(text(aliasedRead), /resultado MCP incerto/i);
+    // A resolved write alias stays a write and stays blocked.
+    await assert.rejects(
+      calls.execute("conversation", 34, "mock", "execute", {
+        code: "const g = tools.gmail; await g.sendMessage({})",
       }),
       /resultado MCP incerto/i,
     );

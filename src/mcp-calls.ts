@@ -67,6 +67,67 @@ const NOT_A_READ = new Set([
   "tools.call",
   "tools.execute",
 ]);
+/** Read verbs that count anywhere as their own camelCase word in the leaf. */
+const READ_WORDS = new Set([
+  "get",
+  "list",
+  "fetch",
+  "search",
+  "read",
+  "describe",
+  "extract",
+  "query",
+  "find",
+  "status",
+  "usage",
+  "metrics",
+]);
+/** A leaf that contains one of these words stays a write, ahead of READ_WORDS. */
+const WRITE_WORDS = new Set([
+  "create",
+  "update",
+  "delete",
+  "send",
+  "post",
+  "publish",
+  "remove",
+  "exec",
+  "run",
+  "start",
+  "stop",
+  "upload",
+  "write",
+  "set",
+  "put",
+  "patch",
+  "merge",
+  "purge",
+  "revoke",
+]);
+
+function camelWords(leaf: string) {
+  return leaf
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase());
+}
+
+/** When globs miss: a read word in the leaf is a read, unless a write word is there too.
+ * A trailing `Post` is the HTTP method (`v1ExtractPost`), not a write, when a read word is present. */
+function leafWordRead(leaf: string) {
+  const words = camelWords(leaf);
+  const read = words.some((word) => READ_WORDS.has(word));
+  const write = words.some((word, index) => {
+    if (!WRITE_WORDS.has(word)) return false;
+    if (word === "post" && index === words.length - 1 && read) return false;
+    return true;
+  });
+  if (write) return false;
+  if (read) return true;
+  return undefined;
+}
 
 function pathIsRead(
   path: string,
@@ -91,6 +152,8 @@ function pathIsRead(
     return false;
   if (policy.read.some((pattern) => globMatch(pattern, normalized)))
     return true;
+  const byWord = leafWordRead(leaf);
+  if (byWord !== undefined) return byWord;
   return allowHint && policy.trusted && context?.readOnlyHint === true;
 }
 
@@ -114,31 +177,209 @@ function matchBrace(code: string, start: number) {
   return -1;
 }
 
-/** `tools.a.b({...})` and `pick("path")` inside an execute program. */
-function pushCodeCalls(code: string, into: InnerCall[]) {
-  const calls = /\b(tools(?:\.[A-Za-z_$][\w$]*)+)\s*\(/g;
-  for (const match of code.matchAll(calls)) {
-    const target = match[1];
-    if (!target) continue;
-    let index = match.index + match[0].length;
-    while (code[index] === " " || code[index] === "\n" || code[index] === "\t")
-      index += 1;
-    let args: unknown;
-    if (code[index] === "{") {
-      const end = matchBrace(code, index);
-      if (end > index) {
-        const raw = code.slice(index, end);
-        try {
-          args = JSON.parse(raw);
-        } catch {
-          args = raw;
-        }
-      }
-    }
-    into.push({ target, args });
+const CODE_IDENT = "[A-Za-z_$][\\w$]*";
+const TOOLS_PATH = `tools(?:\\.${CODE_IDENT})+`;
+
+function argsAfterParen(code: string, paren: number) {
+  let index = paren + 1;
+  while (code[index] === " " || code[index] === "\n" || code[index] === "\t")
+    index += 1;
+  if (code[index] !== "{") return undefined;
+  const end = matchBrace(code, index);
+  if (end <= index) return undefined;
+  const raw = code.slice(index, end);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
   }
-  for (const match of code.matchAll(/pick\(\s*(["'`])([^"'`]+)\1\s*\)/g))
-    into.push({ target: match[2] ?? "", args: undefined });
+}
+
+function blankRanges(code: string, ranges: Array<[number, number]>) {
+  if (!ranges.length) return code;
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let cursor = 0;
+  for (const [start, end] of sorted) {
+    if (end <= cursor) continue;
+    const from = Math.max(start, cursor);
+    out += code.slice(cursor, from) + " ".repeat(end - from);
+    cursor = end;
+  }
+  return out + code.slice(cursor);
+}
+
+function escapeIdent(name: string) {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface AliasBinding {
+  name: string;
+  path: string;
+  start: number;
+  end: number;
+}
+interface DestructBinding {
+  names: string[];
+  path: string;
+  start: number;
+  end: number;
+}
+
+/** `const|let|var X = tools.a.b` and `const { method } = tools.a.b`. A call on the right stays a direct call. */
+function collectBindings(code: string) {
+  const aliases: AliasBinding[] = [];
+  const destructures: DestructBinding[] = [];
+  const claimed = new Set<string>();
+  let ok = true;
+  const claim = (name: string) => {
+    if (claimed.has(name)) ok = false;
+    claimed.add(name);
+  };
+  const aliasRe = new RegExp(
+    `(?:const|let|var)\\s+(${CODE_IDENT})\\s*=\\s*(${TOOLS_PATH})\\b(?!\\s*[.(,])`,
+    "g",
+  );
+  for (const match of code.matchAll(aliasRe)) {
+    const name = match[1];
+    const path = match[2];
+    if (!name || !path || match.index === undefined) continue;
+    claim(name);
+    aliases.push({
+      name,
+      path,
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  const destructRe = new RegExp(
+    `(?:const|let|var)\\s*\\{\\s*(${CODE_IDENT}(?:\\s*,\\s*${CODE_IDENT})*)\\s*,?\\s*\\}\\s*=\\s*(${TOOLS_PATH})\\b(?!\\s*[.(,])`,
+    "g",
+  );
+  for (const match of code.matchAll(destructRe)) {
+    const list = match[1];
+    const path = match[2];
+    if (!list || !path || match.index === undefined) continue;
+    const names = list
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    for (const name of names) claim(name);
+    destructures.push({
+      names,
+      path,
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return { ok, aliases, destructures };
+}
+
+function takeCalls(
+  original: string,
+  masked: string,
+  pattern: RegExp,
+  targetFor: (match: RegExpMatchArray) => string,
+  into: InnerCall[],
+) {
+  const spans: Array<[number, number]> = [];
+  for (const match of masked.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    into.push({
+      target: targetFor(match),
+      args: argsAfterParen(original, start + match[0].lastIndexOf("(")),
+    });
+    spans.push([start, start + match[0].length]);
+  }
+  return blankRanges(masked, spans);
+}
+
+/** `X.method(` and `X.c.method(`. A deeper chain or any other use of X does not resolve. */
+function applyAlias(
+  original: string,
+  masked: string,
+  binding: AliasBinding,
+  into: InnerCall[],
+) {
+  const ident = escapeIdent(binding.name);
+  let next = takeCalls(
+    original,
+    masked,
+    new RegExp(`\\b${ident}\\.(${CODE_IDENT})\\.(${CODE_IDENT})\\s*\\(`, "g"),
+    (match) => `${binding.path}.${match[1]}.${match[2]}`,
+    into,
+  );
+  next = takeCalls(
+    original,
+    next,
+    new RegExp(`\\b${ident}\\.(${CODE_IDENT})\\s*\\(`, "g"),
+    (match) => `${binding.path}.${match[1]}`,
+    into,
+  );
+  return { masked: next, ok: !new RegExp(`\\b${ident}\\b`).test(next) };
+}
+
+function applyDestructure(
+  original: string,
+  masked: string,
+  binding: DestructBinding,
+  into: InnerCall[],
+) {
+  let next = masked;
+  let ok = true;
+  for (const name of binding.names) {
+    const ident = escapeIdent(name);
+    next = takeCalls(
+      original,
+      next,
+      new RegExp(`\\b${ident}\\s*\\(`, "g"),
+      () => `${binding.path}.${name}`,
+      into,
+    );
+    if (new RegExp(`\\b${ident}\\b`).test(next)) ok = false;
+  }
+  return { masked: next, ok };
+}
+
+/** Direct `tools.a.b(`, `pick("path")`, and simple aliases. Unresolved `tools` stays unaccounted. */
+function scanCode(code: string): { calls: InnerCall[]; accounted: boolean } {
+  const calls: InnerCall[] = [];
+  const covered: Array<[number, number]> = [];
+  for (const match of code.matchAll(
+    new RegExp(`\\b(${TOOLS_PATH})\\s*\\(`, "g"),
+  )) {
+    const target = match[1];
+    if (!target || match.index === undefined) continue;
+    calls.push({
+      target,
+      args: argsAfterParen(code, match.index + match[0].length - 1),
+    });
+    covered.push([match.index, match.index + match[0].length]);
+  }
+  for (const match of code.matchAll(/pick\(\s*(["'`])([^"'`]+)\1\s*\)/g)) {
+    calls.push({ target: match[2] ?? "", args: undefined });
+    // The path inside pick("tools…") is that call, not a second unresolved word.
+    if (match.index !== undefined)
+      covered.push([match.index, match.index + match[0].length]);
+  }
+  const bindings = collectBindings(code);
+  if (!bindings.ok) return { calls, accounted: false };
+  for (const binding of [...bindings.aliases, ...bindings.destructures])
+    covered.push([binding.start, binding.end]);
+  let masked = blankRanges(code, covered);
+  let ok = true;
+  for (const binding of bindings.aliases) {
+    const used = applyAlias(code, masked, binding, calls);
+    if (!used.ok) ok = false;
+    masked = used.masked;
+  }
+  for (const binding of bindings.destructures) {
+    const used = applyDestructure(code, masked, binding, calls);
+    if (!used.ok) ok = false;
+    masked = used.masked;
+  }
+  if (/\btools\b/.test(masked)) ok = false;
+  return { calls, accounted: ok };
 }
 
 /** Targets of a delegated `call`/`execute`. A parameter named `path` is not a tool. */
@@ -146,7 +387,7 @@ function collectInner(value: unknown, into: InnerCall[], depth = 0) {
   if (depth > 8 || value == null) return;
   if (typeof value === "string") {
     if (/\bawait\b|\bpick\s*\(|\btools\./.test(value))
-      pushCodeCalls(value, into);
+      into.push(...scanCode(value).calls);
     return;
   }
   if (Array.isArray(value)) {
@@ -223,14 +464,12 @@ function readTimeoutText(label: string, read: boolean) {
   return `A chamada ${label} estourou o prazo de ${seconds}s e foi encerrada. ${timeoutTail(read)}${longJobHint()}`;
 }
 
-/** `tools` words in code must each be a recognized call. An alias or `tools["a"]` is a write. */
+/** Every `tools` word is a direct call or a simple alias that fully resolved. Brackets stay a write. */
 function codeIsAccounted(value: unknown, depth = 0): boolean {
   if (depth > 8 || value == null) return true;
   if (typeof value === "string") {
     if (!/\btools\b|\bpick\s*\(/.test(value)) return true;
-    const found: InnerCall[] = [];
-    pushCodeCalls(value, found);
-    return (value.match(/\btools\b/g)?.length ?? 0) === found.length;
+    return scanCode(value).accounted;
   }
   if (Array.isArray(value))
     return value.every((item) => codeIsAccounted(item, depth + 1));
@@ -301,7 +540,7 @@ export function mcpCallIsReadOnly(
   const safeArgs = object(args) ? args : {};
   if (DELEGATED.has(tool)) {
     const inner = innerCalls(safeArgs);
-    // A `tools` word that is not a call (alias, brackets) is a write.
+    // Brackets and an alias use that did not resolve stay a write.
     if (!codeIsAccounted(safeArgs)) return false;
     // Inner targets use config globs. The outer tool's readOnlyHint is not theirs.
     return (
@@ -1721,17 +1960,38 @@ export class McpCalls {
       throw new PolicyError(
         "Conclua, recuse ou cancele as solicitações MCP pendentes antes de registrar o resultado verificado",
       );
-    this.store.run(
-      "UPDATE mcp_calls SET state='reconciled',result=?,updatedAt=? WHERE id=? AND conversationId=? AND state='uncertain'",
-      JSON.stringify({ note }),
-      Date.now(),
+    const current = this.store.get<McpCall>(
+      "SELECT * FROM mcp_calls WHERE id=? AND conversationId=?",
       id,
       conversationId,
     );
+    // The click note sits beside the original error. It does not replace it.
+    if (current?.state === "uncertain")
+      this.store.run(
+        "UPDATE mcp_calls SET state='reconciled',result=?,updatedAt=? WHERE id=? AND conversationId=? AND state='uncertain'",
+        verificationResult(current.result, note),
+        Date.now(),
+        id,
+        conversationId,
+      );
     return this.store.get<McpCall>(
       "SELECT * FROM mcp_calls WHERE id=? AND conversationId=?",
       id,
       conversationId,
     );
   }
+}
+
+/** Keep the stored payload and attach the verification note next to it. */
+function verificationResult(prior: string | null, note: string) {
+  let parsed: unknown = null;
+  if (prior) {
+    try {
+      parsed = JSON.parse(prior);
+    } catch {
+      parsed = prior;
+    }
+  }
+  if (object(parsed)) return JSON.stringify({ ...parsed, verification: note });
+  return JSON.stringify({ verification: note, priorResult: parsed });
 }
