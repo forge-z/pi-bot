@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio. Com `subagents.enabled: true`, o modelo pode delegar trabalho somente leitura a um subagente e recebe só a resposta final; desligado por padrão.
+## [0.5.0] - 2026-11-20
+
+pt-BR: 0.5.0 sobe o harness para o Pi 1.6.0. A resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio. Com `subagents.enabled: true`, o modelo pode delegar trabalho somente leitura a um subagente e recebe só a resposta final; desligado por padrão.
 
 ### Added
 
@@ -22,6 +24,8 @@ pt-BR: a resposta depois de uma aprovação no chat passa a ser entregue nesse c
 
 - A tool result that is only a pending task id, with no async job manifest, is not a promise to return. The assistant polls within the turn for about 50 seconds (`execute` stops at 60), uses the registered job when one exists, or, from a user turn, creates one one-shot schedule that calls `notify` in the same chat. Scheduled runs still speak only through `notify`.
 - The eyes reaction waits 4 seconds (`reaction_delay_ms` in `config.yaml`) and is cancelled when that turn's first reply is sent. `0` reacts immediately, as before. No new environment variable.
+- Package version is 0.5.0. The MCP client announces that same version.
+- `@earendil-works/pi-ai`, `@earendil-works/pi-durable`, and `@earendil-works/chord` are 1.6.0, with `pi-codemode`, `pi-schema`, and `pi-telemetry` at the same version. SQLite schema stays 2. A conversation this release writes stores `pi.tool` at version 4 and `pi.generation` at version 3; an older image blocks those tasks. The OpenAI, Azure, and Codex catalogs include GPT-6.2 Astra and GPT-6.2 Sol, which do not accept thinking level `off`. A saved model stays selected. No new environment variable.
 
 ## [0.4.0] - 2026-11-18
 
@@ -112,7 +116,8 @@ pt-BR: primeira versão pública (alfa) — assistente no Telegram, do setup e d
 - An image a provider would refuse is dropped before it enters history, so one bad image does not fail later turns.
 - An in-flight MCP call unlocks when its deadline passes, and recording the same job run id twice keeps the tool result. ([#1](https://github.com/forge-z/pi-bot/pull/1))
 
-[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/forge-z/pi-bot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/forge-z/pi-bot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/forge-z/pi-bot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/forge-z/pi-bot/releases/tag/v0.2.0

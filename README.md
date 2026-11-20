@@ -257,11 +257,11 @@ docker run --rm -v old:/from -v new:/to alpine cp -a /from/. /to/
 
 Back up the volume before upgrading. The first boot of this release migrates `pending_jobs` by adding columns. SQLite `ALTER TABLE` has no down migration. On startup, leftover `mcp_calls` rows whose id starts with `mcp-stage:` are deleted, and a call left `running` is reclassified (`failed` for a read, `uncertain` for a write). The jobs poller then deletes finished job rows older than 30 days. Open rows stay. There is no rollback of that data: restore the backup if you need the previous volume. The earlier `durable.sqlite` migration to schema 2, from the previous release, still has no rollback either.
 
-Rolling the image back without restoring the backup leaves the ledger on a shape the previous release may not read.
+Rolling the image back without restoring the backup leaves the ledger on a shape the previous release may not read. Pi 1.6.0 keeps SQLite schema 2 and writes `pi.tool` version 4 and `pi.generation` version 3; the previous image blocks those tasks.
 
 ## Notes
 
-- The harness is Pi 1.5.2 (`pi-ai`, `pi-durable`, and `chord`). Conversations stay in `durable.sqlite`. The process is headless, so a turn runs without a Continue, Fork, or Cancel prompt. Deferred MCP search matches a tool whose parameters only name a model through a local `$ref`.
+- The harness is Pi 1.6.0 (`pi-ai`, `pi-durable`, and `chord`). Conversations stay in `durable.sqlite`. The process is headless, so a turn runs without a Continue, Fork, or Cancel prompt. Deferred MCP search matches a tool whose parameters only name a model through a local `$ref`. The OpenAI, Azure, and Codex catalogs include GPT-6.2 Astra and GPT-6.2 Sol. `/thinking` does not offer `off` for those models. A conversation keeps the model it already saved.
 - Chat history, credentials, and the ledger are only as private as the volume and the host.
 - The assistant has no shell, file, patch, or browser of its own. MCP results are untrusted data.
 - `ask_user` posts one question in the same chat and topic and ends the turn. Up to six choices become buttons (`ask:<32 hex>:<index>`). A tap is the next message (`Answer to: … -> …`). Typing is a normal message and clears the buttons. A repeated or stale tap does nothing. Scheduled runs cannot ask. These buttons are not approval cards.
