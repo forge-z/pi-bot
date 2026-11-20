@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-20
+
+pt-BR: 0.5.1 deixa de tratar como escrita uma leitura cujo `execute` usa um alias simples (`const gh = tools.github.repos; gh.getContent(...)`) ou um verbo de leitura no meio do nome (`inboxesMessagesList`, `v1ExtractPost`). Essas chamadas voltam a falhar em silêncio, como as outras leituras. A conferência "Deu certo" / "Não rodou" guarda o erro original ao lado da nota.
+
+### Fixed
+
+- An `execute` program is a read when every resolved call is a read. A simple alias counts: `const`, `let`, or `var` with `X = tools.a.b`, then `X.method(` or `X.c.method(`, and `const { getContent } = tools.github.repos`. Brackets and any use that does not resolve stay writes. One write call makes the program a write.
+- A leaf the read globs miss is a read when a read verb is its own camelCase word: `get`, `list`, `fetch`, `search`, `read`, `describe`, `extract`, `query`, `find`, `status`, `usage`, `metrics` (`inboxesMessagesList`, `v1ExtractPost`). A write verb in that leaf stays a write (`create`, `update`, `delete`, `send`, `post`, `publish`, `remove`, `exec`, `run`, `start`, `stop`, `upload`, `write`, `set`, `put`, `patch`, `merge`, `purge`, `revoke`). A trailing HTTP `Post` next to a read verb (`ExtractPost`, `SearchPost`) is not a write. `createOrUpdateFileContents`, `machines.exec`, `automation.run`, and `messages.send` stay writes. An explicit read glob still wins, so `getRunById` stays a read.
+- Confirming an uncertain call ("Deu certo" / "Não rodou") keeps the original result on the row and stores the verification note beside it.
+
+### Changed
+
+- Package version is 0.5.1. The MCP client announces that same version.
+
 ## [0.5.0] - 2026-11-20
 
 pt-BR: 0.5.0 sobe o harness para o Pi 1.6.0. A resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio. Com `subagents.enabled: true`, o modelo pode delegar trabalho somente leitura a um subagente e recebe só a resposta final; desligado por padrão.
@@ -116,7 +130,8 @@ pt-BR: primeira versão pública (alfa) — assistente no Telegram, do setup e d
 - An image a provider would refuse is dropped before it enters history, so one bad image does not fail later turns.
 - An in-flight MCP call unlocks when its deadline passes, and recording the same job run id twice keeps the tool result. ([#1](https://github.com/forge-z/pi-bot/pull/1))
 
-[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/forge-z/pi-bot/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/forge-z/pi-bot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/forge-z/pi-bot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/forge-z/pi-bot/compare/v0.2.0...v0.3.0

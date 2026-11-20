@@ -68,6 +68,9 @@ mcp_servers:
         - "**.show*"
         - "**.view*"
         - "**.status*"
+        # A leaf these prefixes miss is still a read when a read verb is its own
+        # camelCase word (inboxesMessagesList, v1ExtractPost). A write verb in
+        # that leaf stays a write. See docs/mcp-uncertain.md.
       # Globs for write tools. Takes precedence over read globs.
       # A name like get_or_create matches **.get* and must still be a write.
       write:

@@ -169,11 +169,19 @@ test("uma escrita pendurada libera recursos, mas bloqueia a próxima ação até
       /resultado MCP incerto/i,
     );
     const lost = calls.list("conversation")[0];
+    const before = lost.result;
     calls.reconcile(
       "conversation",
       lost.id,
       "Usuário verificou o efeito remoto",
     );
+    const kept = store.get<{ result: string }>(
+      "SELECT result FROM mcp_calls WHERE id=?",
+      lost.id,
+    )?.result;
+    assert.match(kept ?? "", /estourou o prazo/);
+    assert.match(kept ?? "", /Usuário verificou o efeito remoto/);
+    assert.match(before ?? "", /estourou o prazo/);
     const next = await calls.execute("conversation", 4, "mock", "fast", {});
     assert.match(JSON.stringify(next), /done:fast/);
   } finally {
