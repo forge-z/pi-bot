@@ -310,3 +310,39 @@ test("a local composio write keeps the scheduled refusal and sends interactively
     await close(interactive);
   }
 });
+
+test("a scheduled run uses the server's own list, not the name or the Executor list", async () => {
+  const scheduled = await runTurn({
+    server: "composio",
+    tool: "GMAIL_LIST",
+    args: {},
+    scheduled: true,
+    result: { kind: "text", text: "should not run" },
+    checkResult: (result) => {
+      assert.equal(result.isError, true);
+      assert.match(
+        JSON.stringify(result),
+        new RegExp(SCHEDULED_APPROVAL_REFUSAL),
+      );
+    },
+  });
+  try {
+    assert.equal(scheduled.calls, 0);
+  } finally {
+    await close(scheduled);
+  }
+
+  const listed = await runTurn({
+    server: "composio",
+    tool: "GMAIL_LIST_MESSAGES",
+    args: {},
+    scheduled: true,
+    result: { kind: "text", text: "inbox" },
+    checkResult: (result) => assert.equal(result.isError, false),
+  });
+  try {
+    assert.equal(listed.calls, 1);
+  } finally {
+    await close(listed);
+  }
+});

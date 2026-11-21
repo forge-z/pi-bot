@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
-import { mcpCallIsReadOnly } from "../src/mcp-calls.js";
+import { mcpCallIsDeclaredRead, mcpCallIsReadOnly } from "../src/mcp-calls.js";
 import {
   executorDecidesApproval,
   globMatch,
@@ -384,6 +384,121 @@ test("subagent values apply, and an invalid one is logged and keeps its default"
       assert.match(lines.join("\n"), new RegExp(`subagents\\.${field}`));
   } finally {
     console.error = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a declared read needs the server's own list or a trusted hint, never a name", async () => {
+  const root = await dir();
+  const path = join(root, "declared.yaml");
+  await writeFile(
+    path,
+    [
+      "mcp_servers:",
+      "  notes:",
+      "    trust: trusted",
+      "    tools:",
+      '      read: ["notes.get*"]',
+      "      write: []",
+      "",
+    ].join("\n"),
+  );
+  try {
+    const config = loadHarnessConfig({ CONFIG_FILE: path });
+    const notes = { server: "notes", config };
+    assert.equal(mcpCallIsReadOnly("listNotes", undefined, notes), true);
+    assert.equal(mcpCallIsDeclaredRead("listNotes", undefined, notes), false);
+    assert.equal(mcpCallIsDeclaredRead("search", undefined, notes), false);
+    assert.equal(mcpCallIsDeclaredRead("notes.getOne", undefined, notes), true);
+    assert.equal(
+      mcpCallIsDeclaredRead("lookup", undefined, {
+        ...notes,
+        readOnlyHint: true,
+      }),
+      true,
+    );
+    const executor = loadHarnessConfig({
+      CONFIG_FILE: join(root, "none.yaml"),
+    });
+    const read = "tools.instabox.machines.list";
+    assert.equal(
+      mcpCallIsDeclaredRead("call", { path: read }, { config: executor }),
+      true,
+    );
+    assert.equal(
+      mcpCallIsDeclaredRead("search", undefined, { config: executor }),
+      true,
+    );
+    assert.equal(
+      mcpCallIsDeclaredRead(
+        "call",
+        { code: `await tools.call({ path: "${read}" })` },
+        { config: executor },
+      ),
+      false,
+    );
+    assert.equal(
+      mcpCallIsDeclaredRead(
+        "call",
+        { calls: [`tools.call("${read}")`] },
+        {
+          config: executor,
+        },
+      ),
+      false,
+    );
+    assert.equal(
+      mcpCallIsDeclaredRead(
+        "execute",
+        { code: `return await tools.call({ path: "${read}" })` },
+        { config: executor },
+      ),
+      false,
+    );
+    assert.equal(
+      mcpCallIsDeclaredRead(
+        "call",
+        { path: "tools.mail.listAndDelete" },
+        {
+          config: executor,
+        },
+      ),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WhatsApp attachment URLs are off by default and the list applies", async () => {
+  const root = await dir();
+  const path = join(root, "wa.yaml");
+  await writeFile(
+    path,
+    [
+      "whatsapp:",
+      "  attachment_urls:",
+      '    hosts: ["Files.Example.com"]',
+      "    timeout_seconds: 5",
+      "    max_mb: 1",
+      "",
+    ].join("\n"),
+  );
+  try {
+    assert.deepEqual(
+      loadHarnessConfig({ CONFIG_FILE: join(root, "none.yaml") })
+        .whatsappAttachmentUrls,
+      { hosts: [], timeoutMs: 20_000, maxBytes: 16 * 1024 * 1024 },
+    );
+    assert.deepEqual(
+      loadHarnessConfig({ CONFIG_FILE: path }).whatsappAttachmentUrls,
+      {
+        hosts: ["files.example.com"],
+        timeoutMs: 5000,
+        maxBytes: 1024 * 1024,
+      },
+    );
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

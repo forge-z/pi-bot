@@ -139,21 +139,27 @@ function pathIsRead(
       }
     | undefined,
   allowHint: boolean,
+  byName = true,
 ) {
   const normalized = path.trim();
   if (!normalized || NOT_A_READ.has(normalized)) return false;
   const leaf = normalized.split(".").pop() ?? normalized;
-  if (READ_ONLY.has(normalized) || READ_ONLY.has(leaf)) return true;
-  const policy = mcpServerPolicy(
-    context?.config ?? loadHarnessConfig(),
-    context?.server,
-  );
+  const config = context?.config ?? loadHarnessConfig();
+  // The meta tools are Executor protocol. A server with its own list must name them.
+  if (
+    (READ_ONLY.has(normalized) || READ_ONLY.has(leaf)) &&
+    (byName || executorDecidesApproval(config, context?.server))
+  )
+    return true;
+  const policy = mcpServerPolicy(config, context?.server);
   if (policy.write.some((pattern) => globMatch(pattern, normalized)))
     return false;
   if (policy.read.some((pattern) => globMatch(pattern, normalized)))
     return true;
-  const byWord = leafWordRead(leaf);
-  if (byWord !== undefined) return byWord;
+  if (byName) {
+    const byWord = leafWordRead(leaf);
+    if (byWord !== undefined) return byWord;
+  }
   return allowHint && policy.trusted && context?.readOnlyHint === true;
 }
 
@@ -500,15 +506,9 @@ export function mcpUncertainNeedsNotice(call: {
   args: string;
   result: string | null;
 }) {
+  // Only a call classified as a write when it was sent is ever recorded as
+  // `uncertain`. Classifying it again would let a config change hide the notice.
   if (call.state !== "uncertain") return false;
-  let args: Record<string, unknown> | undefined;
-  try {
-    const parsed = JSON.parse(call.args) as unknown;
-    if (object(parsed)) args = parsed;
-  } catch {
-    args = undefined;
-  }
-  if (mcpCallIsReadOnly(call.tool, args)) return false;
   if (!call.result) return true;
   try {
     const body = JSON.parse(call.result) as {
@@ -549,6 +549,67 @@ export function mcpCallIsReadOnly(
     );
   }
   return pathIsRead(tool, context, true);
+}
+
+/** Targets named by fields of a delegated `call`. Any code or unnamed step returns undefined. */
+function namedTargets(
+  value: unknown,
+  into: InnerCall[],
+  depth = 0,
+): InnerCall[] | undefined {
+  if (depth > 8) return undefined;
+  if (value == null) return into;
+  if (Array.isArray(value)) {
+    for (const item of value)
+      if (!namedTargets(item, into, depth + 1)) return undefined;
+    return into;
+  }
+  // A string reached here is a program or an expression, not a tool name.
+  if (!object(value)) return undefined;
+  if ("code" in value || "execution" in value) return undefined;
+  const target = [value.path, value.address, value.tool].find(
+    (item): item is string => typeof item === "string" && !!item.trim(),
+  );
+  if (target) into.push({ target, args: value.input });
+  if ("calls" in value && !namedTargets(value.calls, into, depth + 1))
+    return undefined;
+  if ("body" in value && !namedTargets(value.body, into, depth + 1))
+    return undefined;
+  if (
+    !target &&
+    "input" in value &&
+    !namedTargets(value.input, into, depth + 1)
+  )
+    return undefined;
+  return into;
+}
+
+/**
+ * A read the operator declared: a `read` glob of this server's list (and no
+ * `write` glob), or `readOnlyHint` on a trusted server. Name words, `execute`
+ * programs and anything else this cannot prove stay writes. This authorizes
+ * calls nobody approves (subagents, scheduled runs) and decides a resend.
+ */
+export function mcpCallIsDeclaredRead(
+  tool: string,
+  args?: Record<string, unknown>,
+  context?: {
+    server?: string;
+    readOnlyHint?: boolean;
+    config?: HarnessConfig;
+  },
+) {
+  if (tool === "resume") return false;
+  if (tool === "execute" || tool === "tools.execute") return false;
+  if (DELEGATED.has(tool)) {
+    const inner = namedTargets(object(args) ? args : {}, []);
+    return (
+      !!inner &&
+      inner.length > 0 &&
+      inner.every((item) => pathIsRead(item.target, context, false, false))
+    );
+  }
+  return pathIsRead(tool, context, true, false);
 }
 
 /** Executor hosted resume often uses executionId + action instead of requestId + response. */
@@ -1166,7 +1227,12 @@ export class McpCalls {
     }
   }
 
-  private isRead(server: string, tool: string, args?: Record<string, unknown>) {
+  private isRead(
+    server: string,
+    tool: string,
+    args?: Record<string, unknown>,
+    declared = false,
+  ) {
     const gateway = this.gateway as {
       toolReadOnlyHint?: (server: string, tool: string) => boolean | undefined;
     };
@@ -1175,7 +1241,10 @@ export class McpCalls {
       gateway.toolReadOnlyHint(server, tool) === true
         ? true
         : undefined;
-    return mcpCallIsReadOnly(tool, args, { server, readOnlyHint });
+    return (declared ? mcpCallIsDeclaredRead : mcpCallIsReadOnly)(tool, args, {
+      server,
+      readOnlyHint,
+    });
   }
 
   private callIsReadOnly(call: McpCall) {
@@ -1273,7 +1342,7 @@ export class McpCalls {
       const result = await this.gateway.callDirect(call.server, tool, args, {
         signal: combined,
         binding: call.binding,
-        readOnly: this.isRead(call.server, tool, args),
+        readOnly: this.isRead(call.server, tool, args, true),
         onElicitation: (params, elicitationSignal) =>
           this.elicit(
             call,

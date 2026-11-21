@@ -8,11 +8,6 @@ if [[ ! "$JOB_ID" =~ ^[a-z0-9-]{8,40}$ ]]; then
   exit 1
 fi
 
-if [ -f "$HOME/.agents-env.sh" ]; then
-  # shellcheck source=/dev/null
-  source "$HOME/.agents-env.sh"
-fi
-
 JOBS_BASE="$HOME/jobs"
 JOB_DIR="$JOBS_BASE/$JOB_ID"
 STATUS_FILE="$JOB_DIR/status.json"
@@ -35,6 +30,21 @@ if [ ! -f "$JOB_DIR/request.json" ]; then
   fail "request.json não encontrado no diretório do job"
 fi
 
+# Não execute o modo legado na mesma conta que tem credenciais de escrita.
+if [ "${JOB_READONLY:-}" = "1" ] || [ -f "$JOB_DIR/readonly" ] || ! node -e '
+  try {
+    if (JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).writes === true) process.exit(0);
+  } catch {}
+  process.exit(1);
+' "$JOB_DIR/request.json"; then
+  fail "A sandbox compartilhada exige writes: true."
+fi
+
+if [ -f "$HOME/.agents-env.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$HOME/.agents-env.sh"
+fi
+
 # Grava status RUNNING de forma atômica
 node -e '
   const fs = require("fs");
@@ -49,109 +59,6 @@ REPO=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"u
 AGENT=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.agent||"");' "$JOB_DIR/request.json")
 BRANCH=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.branch||"");' "$JOB_DIR/request.json")
 PROMPT=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.prompt||"");' "$JOB_DIR/request.json")
-WRITES=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const w=r.writes; process.stdout.write(w===true?"1":w===false?"0":"");' "$JOB_DIR/request.json")
-
-# writes:false in the request survives when the exec wrapper drops JOB_READONLY.
-# The marker file is written by start-job.sh while that variable is still set.
-READONLY=0
-if [ "${JOB_READONLY:-}" = "1" ] || [ "$WRITES" = "0" ] || [ -f "$JOB_DIR/readonly" ]; then
-  READONLY=1
-fi
-
-GITHUB_ACCESS_HELD=0
-restore_github_access() {
-  [ "${GITHUB_ACCESS_HELD:-}" = "1" ] || return 0
-  GITHUB_ACCESS_HELD=0
-  # The worktree is reused. Put its remote URL and credential helper back
-  # so a later writes=true job can still push.
-  if [ -f "$JOB_DIR/repo-git-config.bak" ] && [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR/.git" ]; then
-    cp "$JOB_DIR/repo-git-config.bak" "$WORK_DIR/.git/config" || true
-  fi
-  if [ -f "$JOB_DIR/gitconfig.bak" ]; then
-    mv "$JOB_DIR/gitconfig.bak" "$HOME/.gitconfig" || true
-  fi
-  if [ -f "$JOB_DIR/xdg-gitconfig.bak" ]; then
-    mkdir -p "$HOME/.config/git" || true
-    mv "$JOB_DIR/xdg-gitconfig.bak" "$HOME/.config/git/config" || true
-  fi
-  if [ -f "$JOB_DIR/git-credentials.bak" ]; then
-    mv "$JOB_DIR/git-credentials.bak" "$HOME/.git-credentials" || true
-  fi
-  if [ -d "$JOB_DIR/gh-config.bak" ]; then
-    rm -rf "$HOME/.config/gh" || true
-    mv "$JOB_DIR/gh-config.bak" "$HOME/.config/gh" || true
-  fi
-  if [ -f "$JOB_DIR/agents-env.bak" ]; then
-    mv "$JOB_DIR/agents-env.bak" "$HOME/.agents-env.sh" || true
-  fi
-}
-trap restore_github_access EXIT
-
-hold_file() {
-  local src="$1" dest="$2"
-  if [ -f "$src" ]; then
-    mv "$src" "$dest"
-  fi
-}
-
-# Clone already used the real credentials. Drop every GitHub write path before
-# the agent: env tokens, gh login, credential helpers, and tokens in the remote URL.
-lock_github_write_access() {
-  local name="" email="" remote="" url="" clean="" key=""
-  if [ -f "$WORK_DIR/.git/config" ]; then
-    cp "$WORK_DIR/.git/config" "$JOB_DIR/repo-git-config.bak"
-  fi
-  # Set before any mutation so a failed lock still puts files back.
-  GITHUB_ACCESS_HELD=1
-  name=$(git -C "$WORK_DIR" config --get user.name 2>/dev/null || true)
-  if [ -z "$name" ]; then
-    name=$(git config --global --get user.name 2>/dev/null || true)
-  fi
-  email=$(git -C "$WORK_DIR" config --get user.email 2>/dev/null || true)
-  if [ -z "$email" ]; then
-    email=$(git config --global --get user.email 2>/dev/null || true)
-  fi
-  if [ -n "$name" ]; then git -C "$WORK_DIR" config user.name "$name"; fi
-  if [ -n "$email" ]; then git -C "$WORK_DIR" config user.email "$email"; fi
-
-  printf 'protocol=https\nhost=github.com\n\n' | git -C "$WORK_DIR" credential reject >/dev/null 2>&1 || true
-
-  while IFS= read -r remote; do
-    [ -n "$remote" ] || continue
-    url=$(git -C "$WORK_DIR" remote get-url "$remote" 2>/dev/null || true)
-    clean=$(printf '%s' "$url" | sed -E 's#^(https?://)[^/@]*@#\1#')
-    if [ -n "$clean" ] && [ "$clean" != "$url" ]; then
-      git -C "$WORK_DIR" remote set-url "$remote" "$clean"
-    fi
-  done < <(git -C "$WORK_DIR" remote 2>/dev/null || true)
-  git -C "$WORK_DIR" remote set-url --push origin no-push
-
-  git -C "$WORK_DIR" config --local --unset-all credential.helper >/dev/null 2>&1 || true
-  while IFS= read -r key; do
-    [ -n "$key" ] || continue
-    git -C "$WORK_DIR" config --local --unset-all "$key" >/dev/null 2>&1 || true
-  done < <(git -C "$WORK_DIR" config --local --name-only --get-regexp '^credential\.' 2>/dev/null || true)
-  # An empty helper resets helpers inherited from global and system config.
-  git -C "$WORK_DIR" config --local credential.helper ""
-
-  hold_file "$HOME/.gitconfig" "$JOB_DIR/gitconfig.bak"
-  hold_file "$HOME/.config/git/config" "$JOB_DIR/xdg-gitconfig.bak"
-  hold_file "$HOME/.git-credentials" "$JOB_DIR/git-credentials.bak"
-  if [ -d "$HOME/.config/gh" ] && [ ! -d "$JOB_DIR/gh-config.bak" ]; then
-    mv "$HOME/.config/gh" "$JOB_DIR/gh-config.bak"
-  fi
-  if [ -f "$HOME/.agents-env.sh" ]; then
-    cp "$HOME/.agents-env.sh" "$JOB_DIR/agents-env.bak"
-    grep -v -E '^[[:space:]]*(export[[:space:]]+)?(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN)=' "$JOB_DIR/agents-env.bak" > "$HOME/.agents-env.sh" || true
-  fi
-
-  unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN SSH_AUTH_SOCK
-  export GH_CONFIG_DIR="$JOB_DIR/gh-readonly"
-  mkdir -p "$GH_CONFIG_DIR"
-  export GIT_TERMINAL_PROMPT=0
-  export GIT_CONFIG_GLOBAL=/dev/null
-  export GIT_CONFIG_NOSYSTEM=1
-}
 
 if [ -z "$REPO" ]; then
   fail "Campo repo não fornecido em request.json"
@@ -174,18 +81,6 @@ fi
 git -C "$WORK_DIR" checkout -B "$BRANCH" origin/HEAD > "$JOB_DIR/checkout.log" 2>&1 || \
 git -C "$WORK_DIR" checkout -B "$BRANCH" HEAD > "$JOB_DIR/checkout.log" 2>&1 || \
 fail "Falha ao criar branch $BRANCH no repositório $REPO"
-
-if [ "$READONLY" = "1" ]; then
-  trap 'fail "Falha ao remover credenciais de escrita"' ERR
-  lock_github_write_access
-  trap - ERR
-  case "$PROMPT" in
-    *"não faça push"*) ;;
-    *) PROMPT="${PROMPT}
-
-Somente leitura: não faça push, não abra pull requests e não comente." ;;
-  esac
-fi
 
 if [ -f "$WORK_DIR/package-lock.json" ]; then
   (cd "$WORK_DIR" && npm ci) > "$JOB_DIR/npm-ci.log" 2>&1 || fail "Falha no npm ci em $REPO"
@@ -219,27 +114,20 @@ elif [ "$AGENT_EXIT" -ne 0 ]; then
 fi
 
 PR_URL=""
-if [ "$READONLY" != "1" ]; then
-  # Verifica se há alterações para commitar e criar PR
-  if [ -n "$(git -C "$WORK_DIR" status --porcelain)" ]; then
-    git -C "$WORK_DIR" add -A > "$JOB_DIR/git.log" 2>&1
-    COMMIT_MSG="feat(agent): tarefa $JOB_ID"
-    git -C "$WORK_DIR" commit -m "$COMMIT_MSG" >> "$JOB_DIR/git.log" 2>&1 || true
-  fi
-
-  # Se a branch local estiver à frente da origin, faz push normal e cria PR
-  LOCAL_REV=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || true)
-  REMOTE_REV=$(git -C "$WORK_DIR" rev-parse "origin/$BRANCH" 2>/dev/null || true)
-
-  if [ "$LOCAL_REV" != "$REMOTE_REV" ] && [ -n "$LOCAL_REV" ]; then
-    git -C "$WORK_DIR" push -u origin "$BRANCH" >> "$JOB_DIR/git.log" 2>&1 || fail "Falha ao enviar branch $BRANCH para origin"
-    PR_URL=$(cd "$WORK_DIR" && gh pr create --fill --head "$BRANCH" 2>> "$JOB_DIR/git.log" || gh pr view --json url -q .url 2>> "$JOB_DIR/git.log" || true)
-  fi
+# Verifica se há alterações para commitar e criar PR
+if [ -n "$(git -C "$WORK_DIR" status --porcelain)" ]; then
+  git -C "$WORK_DIR" add -A > "$JOB_DIR/git.log" 2>&1
+  COMMIT_MSG="feat(agent): tarefa $JOB_ID"
+  git -C "$WORK_DIR" commit -m "$COMMIT_MSG" >> "$JOB_DIR/git.log" 2>&1 || true
 fi
 
-META_BRANCH="$BRANCH"
-if [ "$READONLY" = "1" ]; then
-  META_BRANCH=""
+# Se a branch local estiver à frente da origin, faz push normal e cria PR
+LOCAL_REV=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || true)
+REMOTE_REV=$(git -C "$WORK_DIR" rev-parse "origin/$BRANCH" 2>/dev/null || true)
+
+if [ "$LOCAL_REV" != "$REMOTE_REV" ] && [ -n "$LOCAL_REV" ]; then
+  git -C "$WORK_DIR" push -u origin "$BRANCH" >> "$JOB_DIR/git.log" 2>&1 || fail "Falha ao enviar branch $BRANCH para origin"
+  PR_URL=$(cd "$WORK_DIR" && gh pr create --fill --head "$BRANCH" 2>> "$JOB_DIR/git.log" || gh pr view --json url -q .url 2>> "$JOB_DIR/git.log" || true)
 fi
 
 # Grava status final DONE com JSON.stringify via node de forma atômica
@@ -265,6 +153,6 @@ node -e '
   };
   fs.writeFileSync(statusPath + ".tmp", JSON.stringify(res));
   fs.renameSync(statusPath + ".tmp", statusPath);
-' "$STATUS_FILE" "$AGENT_LOG" "$PR_URL" "$META_BRANCH"
+' "$STATUS_FILE" "$AGENT_LOG" "$PR_URL" "$BRANCH"
 
 exit 0

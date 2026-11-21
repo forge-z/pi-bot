@@ -57,7 +57,8 @@ test("only a write with no known result asks for a check", () => {
       args: "{}",
       result: null,
     }),
-    false,
+    true,
+    "the classification recorded at send wins over the current config",
   );
   assert.equal(
     mcpUncertainNeedsNotice({ ...write, state: "failed", result: null }),

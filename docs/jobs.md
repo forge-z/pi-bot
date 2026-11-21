@@ -174,7 +174,7 @@ sandbox_code_task:
       accountId: "${INSTABOX_ACCOUNT_ID}"
       input:
         id: "${INSTABOX_MACHINE_ID}"
-        cmd: "bash ~/bin/start-job.sh ${job_id}" # writes=false prefixa com readonly.env
+        cmd: "bash ~/bin/start-job.sh ${job_id}"
         timeoutSeconds: 15
         stdin: "${payload}" # parâmetros do modelo em JSON
   parameters: # JSON Schema da chamada do modelo
@@ -185,11 +185,7 @@ sandbox_code_task:
       agent: { type: string, enum: [agy, pi, claude] }
       prompt: { type: string }
       branch: { type: string }
-      writes: { type: boolean } # padrão false; true pede o cartão antes do exec
-  readonly:
-    env: "JOB_READONLY=1" # prefixo do comando quando writes é false
-    command: input.cmd
-    prompt: "Somente leitura: não faça push, não abra pull requests e não comente."
+      writes: { type: boolean } # somente true é aceito; pede o cartão antes do exec
   allow:
     field: repo
     # patterns is empty in config.default.yaml. Set it here or via
@@ -197,11 +193,11 @@ sandbox_code_task:
     patterns: "example/*"
 ```
 
-- O disparo gera um `jobId` (`<idPrefix><timestamp-base36>-<random>`) e registra a linha em `pending_jobs` antes de chamar a sandbox. No caso do Instabox, o `jobId` vira `cmd` e os parâmetros vão apenas no `stdin` em JSON — o prompt nunca trafega pela linha de comando nem por variáveis de ambiente.
-- A ferramenta retorna imediatamente (`{ jobId, status: "dispatched" }`, ou `{ status: "approval_pending" }` quando `writes` é true), liberando o turno do Telegram.
+- O Instabox compartilhado rejeita `writes: false` ou omitido antes de chamar a sandbox. Ele executa na mesma conta que tem credenciais de escrita; mover arquivos ou limpar variáveis não isola o agente. Tarefas somente leitura precisam de um ambiente separado, sem acesso a credenciais de escrita.
+- Com `writes: true`, a ferramenta retorna `{ status: "approval_pending" }`. Só depois do aceite, o disparo gera um `jobId` (`<idPrefix><timestamp-base36>-<random>`) e registra a linha em `pending_jobs` antes de chamar a sandbox. No Instabox, só o `jobId` entra no comando; os parâmetros vão em JSON pelo `stdin`.
 - O poller usa o manifesto `job` para ler o status; no padrão, `/data/home/jobs/${id}/status.json` via `tools.instabox.machines.readFiles` a cada 20 segundos (com backoff). O `status:"completed"` do Executor é o envelope da chamada, não o estado do job. Um `status.json` ausente (404) durante a carência fica em silêncio.
-- Quando o job conclui, o poller entrega o resultado como um turno novo no tópico original. Um job com `writes: true` pode incluir o link do Pull Request (`result.pr`) e o nome da branch. Com `writes` omitido ou false, o disparo não abre cartão: o comando de início ganha o prefixo `readonly.env`, o JSON do pedido leva `writes: false`, o prompt do agente ganha `readonly.prompt`, e o runner não faz push, não abre pull request e não grava branch no `status.json`. O resultado entra no turno dentro de um bloco que o modelo trata como dado, não como instrução. O link só é citado quando a URL inteira é `https://github.com/...`.
-- `writes: true` não registra a linha nem chama o exec até o cartão de aprovação (o mesmo "Aprovação MCP pendente", com repositório, agente, branch e um trecho curto do prompt). Recusar não dispara nada.
+- Quando o job conclui, o poller entrega o resultado como um turno novo no tópico original. Ele pode incluir o link do pull request (`result.pr`) e o nome da branch. O modelo trata o resultado como dado, não como instrução, e só cita links cuja URL inteira seja `https://github.com/...`.
+- O cartão "Aprovação MCP pendente" mostra repositório, agente, branch e um trecho curto do prompt. Recusar não dispara nada.
 - Linhas antigas de `instabox_code_task` continuam resolvendo porque o manifesto padrão mantém `tool: internal.instabox.codeTask`.
 - **Instalação na Sandbox Instabox**:
   1. Copie os scripts versionados no repositório (`scripts/instabox/start-job.sh` e `scripts/instabox/run-job.sh`) para o diretório `~/bin/` da máquina:
@@ -218,7 +214,8 @@ sandbox_code_task:
      export OPENAI_API_KEY="..."
      ```
   3. Certifique-se de que as ferramentas `git`, `gh`, `node` e os agentes CLI (`agy`, `pi`, `claude`) estejam instalados no ambiente da sandbox.
-  4. Atualize `~/bin/start-job.sh` e `~/bin/run-job.sh` com as cópias do repositório. `JOB_READONLY=1` no comando grava um marcador no diretório do job, e o JSON do pedido traz `writes: false`, então o runner continua somente leitura mesmo se o wrapper do exec descartar a variável. Depois do clone (que ainda usa a credencial de leitura) e antes do `npm ci` e do agente, o script apaga `GH_TOKEN`, `GITHUB_TOKEN` e `GH_ENTERPRISE_TOKEN`, tira essas linhas de `~/.agents-env.sh` durante o agente, afasta `~/.config/gh`, `~/.gitconfig` e o helper de credencial, zera o helper local (um helper vazio anula os de cima), tira usuário e token da URL do remote, aponta o push para `no-push`, define `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` e `GH_CONFIG_DIR` vazio, não faz commit, push nem `gh pr create`, não grava `branch` no `status.json`, e acrescenta a frase de somente leitura ao prompt se ela ainda não estiver lá. As credenciais de escrita voltam ao lugar quando o job termina, inclusive a URL do remote e o credential helper do worktree, para um `writes: true` seguinte. `writes: true` não muda: push e pull request seguem iguais.
+  4. Antes de reativar uma instalação antiga, encerre os jobs antigos, atualize o bot e instale as duas versões novas dos scripts. Remova a configuração legada `sandbox_code_task.readonly` e qualquer prefixo `JOB_READONLY=1` de comandos personalizados. Se houve jobs sem aprovação, trate as credenciais de escrita da máquina como potencialmente expostas e rotacione-as.
+  5. Restrinja o acesso direto ao terminal e à API de execução da máquina a operadores autorizados. Os scripts recusam pedidos sem `writes: true`, mas quem verifica o aceite do cartão é o bot, não a máquina.
 
 - **Variáveis de Ambiente**:
   - `INSTABOX_MACHINE_ID`: opcional. Sem ela, o `discover` do manifesto escolhe a máquina somente quando existe exatamente uma em execução. Zero ou várias é erro e a lista é mostrada. Não há nome padrão.
