@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Telegram messages waiting for a transient retry keep later messages in the same chat/topic behind them. Other chats, topics, and callback queries continue independently.
+
 ## [0.5.1] - 2026-11-20
 
 pt-BR: 0.5.1 deixa de tratar como escrita uma leitura cujo `execute` usa um alias simples (`const gh = tools.github.repos; gh.getContent(...)`) ou um verbo de leitura no meio do nome (`inboxesMessagesList`, `v1ExtractPost`). Essas chamadas voltam a falhar em silêncio, como as outras leituras. A conferência "Deu certo" / "Não rodou" guarda o erro original ao lado da nota.
