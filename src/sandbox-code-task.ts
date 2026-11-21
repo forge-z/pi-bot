@@ -74,6 +74,13 @@ function readTask(env: Env): Task | undefined {
   };
 }
 
+function isInstabox(task: Task): boolean {
+  return (
+    task.job === "internal.instabox.codeTask" ||
+    /^(?:tools\.)?instabox\.machines\.exec$/.test(task.exec.tool)
+  );
+}
+
 /**
  * System-prompt line while the long-task tool is actually registered.
  * The name comes from config. An incomplete block hides both the tool and this line.
@@ -81,6 +88,8 @@ function readTask(env: Env): Task | undefined {
 export function sandboxTaskSteer(env: Env = process.env): string | undefined {
   const task = readTask(env);
   if (!task) return;
+  if (isInstabox(task))
+    return `For a long-running code task the user authorizes to run with write access, call ${task.tool} once with writes=true and wait for approval. Never poll that work in a loop. Do not use this tool for read-only work.`;
   return `For anything long-running, or when the user asks to be told when it finishes ("avise quando terminar"), call ${task.tool} once. Never poll that work in a loop.`;
 }
 
@@ -418,6 +427,7 @@ export function createSandboxCodeTaskTool(
 ) {
   const task = readTask(env);
   if (!task) return undefined;
+  const instabox = isInstabox(task);
   const patterns = allowPatterns(task.allow, env);
   const executor = (env.ASYNC_JOB_EXECUTOR ?? "").trim() || "executor";
   const usesSandbox =
@@ -427,7 +437,7 @@ export function createSandboxCodeTaskTool(
       typeof spec.conversationId === "string" ? spec.conversationId : "";
     const input = isRecord(spec.input) ? spec.input : undefined;
     const call = (app.options.gateway as { callDirect?: Call }).callDirect;
-    if (!conversationId || !input || !call)
+    if (!conversationId || input?.writes !== true || !call)
       return {
         state: "failed",
         text: "A tarefa de escrita não foi disparada.",
@@ -453,7 +463,9 @@ export function createSandboxCodeTaskTool(
     name: task.tool,
     description:
       task.description ??
-      'Para qualquer tarefa que possa passar de ~60s ou quando pedirem "avise quando terminar": chame esta ferramenta uma vez. Nunca fique em loop de leitura esperando o fim. O disparo não bloqueia a conversa; o resultado chega automaticamente quando a tarefa termina. writes=true só para push, pull request ou comentário (pede aprovação antes de disparar); sem writes a tarefa é somente leitura.',
+      (instabox
+        ? "Executa tarefas de código com permissão de escrita no Instabox. Só use writes=true com autorização do usuário; o disparo espera aprovação no chat. Não use para tarefas somente leitura."
+        : 'Para qualquer tarefa que possa passar de ~60s ou quando pedirem "avise quando terminar": chame esta ferramenta uma vez. Nunca fique em loop de leitura esperando o fim. O disparo não bloqueia a conversa; o resultado chega automaticamente quando a tarefa termina. writes=true só para push, pull request ou comentário (pede aprovação antes de disparar); sem writes a tarefa é somente leitura.'),
     parameters: task.parameters,
     replay: "safe",
     execute: async (
@@ -480,6 +492,17 @@ export function createSandboxCodeTaskTool(
         return reply({
           error: `Valor "${allowedValue}" não permitido pela política (${patterns}).`,
         });
+
+      if (instabox && input.writes !== true)
+        return {
+          output: [
+            {
+              type: "text" as const,
+              text: "O Instabox compartilhado não aceita tarefas somente leitura. Nenhuma tarefa foi iniciada. Não mude para writes=true sem autorização do usuário para executar com permissão de escrita.",
+            },
+          ],
+          isError: true,
+        };
 
       const gateway = app.options.gateway as { callDirect?: Call };
       if (!gateway?.callDirect)

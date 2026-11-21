@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 JOB_ID="${1:-}"
 
@@ -20,16 +21,23 @@ if [ -d "$JOB_DIR" ]; then
   exit 0
 fi
 
+# O runner compartilhado tem credenciais de escrita. Recuse o modo legado.
+request=$(cat)
+if [ "${JOB_READONLY:-}" = "1" ] || ! node -e '
+  try {
+    if (JSON.parse(require("fs").readFileSync(0, "utf8")).writes === true) process.exit(0);
+  } catch {}
+  process.exit(1);
+' <<< "$request"; then
+  echo '{"error":"A sandbox compartilhada exige writes: true."}' >&2
+  exit 1
+fi
+
 mkdir -p "$JOB_DIR"
-cat > "$JOB_DIR/request.json"
+printf '%s\n' "$request" > "$JOB_DIR/request.json"
 
 echo '{"state":"PENDING"}' > "$JOB_DIR/status.json.tmp"
 mv "$JOB_DIR/status.json.tmp" "$JOB_DIR/status.json"
-
-# The runner reads this file. The env prefix can be dropped by the exec wrapper.
-if [ "${JOB_READONLY:-}" = "1" ]; then
-  : > "$JOB_DIR/readonly"
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/run-job.sh" ]; then
