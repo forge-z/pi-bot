@@ -14,6 +14,11 @@
 #    untrusted servers ignore readOnlyHint and treat the tool as a write.
 # 4. Otherwise -> write.
 #
+# Calls nobody approves (subagents, a scheduled write gate) and the decision to
+# resend after a transport failure need a declared read: a 'read' glob of the
+# server's own lists (or the executor lists it inherits) with no 'write' glob,
+# or a trusted readOnlyHint. A read verb in the name, an `execute` program, or
+# a `call` whose target is code is not a declared read there.
 # Read/write decides uncertain results, timeouts, and whether a write is retried.
 # It is not an approval gate for `executor`, or for a server with no `tools`
 # list of its own (that server inherits executor's lists). Executor decides
@@ -26,6 +31,7 @@
 #
 # Meta/protocol tools:
 # 'search', 'describe', and 'skills' stay hardcoded reads in code; the model cannot call 'resume'.
+# A server with its own `tools` list must list them to make them declared reads.
 
 mcp_servers:
   # Map of MCP server names to their trust level and tool lists.
@@ -70,7 +76,8 @@ mcp_servers:
         - "**.status*"
         # A leaf these prefixes miss is still a read when a read verb is its own
         # camelCase word (inboxesMessagesList, v1ExtractPost). A write verb in
-        # that leaf stays a write. See docs/mcp-uncertain.md.
+        # that leaf stays a write. See docs/mcp-uncertain.md. The name alone
+        # never lets a subagent or scheduled run send the call.
       # Globs for write tools. Takes precedence over read globs.
       # A name like get_or_create matches **.get* and must still be a write.
       write:
@@ -257,6 +264,18 @@ sandbox_code_task:
 # $DATA_DIR/config.yaml. There is no environment variable for this.
 reaction_delay_ms: 4000
 
+# WhatsApp sends a file as bytes, so the bot itself downloads an MCP
+# attachment that carries only a URL. By default it downloads nothing: only
+# attachments with inline bytes are sent. Each host listed here (exact name,
+# HTTPS only) is allowed, and every redirect must also land on a listed host.
+# A download stops at timeout_seconds or past max_mb. Telegram passes URLs to
+# Telegram and does not use this list.
+whatsapp:
+  attachment_urls:
+    hosts: []
+    timeout_seconds: 20
+    max_mb: 16
+
 # Operator skills (prompt text on the volume). Not the MCP `skills` tool.
 # Each entry is a folder name under $DATA_DIR/skills/<name>/SKILL.md.
 # The file starts with YAML frontmatter (`name` equal to the folder, and
@@ -275,7 +294,8 @@ skills:
 # `subagent` tool to hand self-contained read-only work to a child
 # conversation and get only its final answer back. The child uses the same
 # model, sees only MCP tools (plus tool_search when some tool is deferred), and
-# every MCP call that is not a read is refused before it is sent. No approval
+# every MCP call that is not a declared read (a read glob of the server's list
+# or a trusted readOnlyHint, never a name) is refused before it is sent. No approval
 # card, schedule, notify, file or job comes from a child. /stop also stops
 # running subagents. Read at startup: a change needs a restart. Off, the prompt
 # and tool list are exactly the same as without this block. An invalid value

@@ -1,3 +1,7 @@
+import {
+  type AttachmentUrlPolicy,
+  loadHarnessConfig,
+} from "./harness-config.js";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -634,12 +638,83 @@ async function openBaileysSocket(
   return sock as unknown as WaSocket;
 }
 
-async function mediaBytes(media: OutboundMedia, fetchImpl: typeof fetch) {
+const MAX_ATTACHMENT_REDIRECTS = 3;
+
+function allowedAttachmentUrl(value: string, policy: AttachmentUrlPolicy) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.username || url.password)
+    return undefined;
+  return policy.hosts.includes(url.hostname.toLowerCase()) ? url : undefined;
+}
+
+/** The bot downloads a URL attachment only from an allowed HTTPS host, at every
+ * redirect, within the deadline and the byte cap. */
+async function mediaBytes(
+  media: OutboundMedia,
+  fetchImpl: typeof fetch,
+  policy: AttachmentUrlPolicy,
+) {
   if (media.data) return Buffer.from(media.data, "base64");
   if (!media.url) throw new Error("attachment has no bytes");
-  const response = await fetchImpl(media.url);
-  if (!response.ok) throw new Error("attachment download failed");
-  return Buffer.from(await response.arrayBuffer());
+  const signal = AbortSignal.timeout(policy.timeoutMs);
+  let next = media.url;
+  for (let hop = 0; hop <= MAX_ATTACHMENT_REDIRECTS; hop += 1) {
+    const url = allowedAttachmentUrl(next, policy);
+    if (!url)
+      throw new Error(
+        "attachment URL not allowed: the host is not in whatsapp.attachment_urls.hosts",
+      );
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { redirect: "manual", signal });
+    } catch {
+      throw new Error("attachment download failed");
+    }
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel().catch(() => undefined);
+      next = new URL(location, url).href;
+      continue;
+    }
+    if (!response.ok) throw new Error("attachment download failed");
+    return limitedBody(response, policy.maxBytes);
+  }
+  throw new Error("attachment download failed: too many redirects");
+}
+
+async function limitedBody(response: Response, maxBytes: number) {
+  const tooLarge = () =>
+    new Error("attachment is larger than the allowed size");
+  if (Number(response.headers.get("content-length") ?? 0) > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw tooLarge();
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw tooLarge();
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === tooLarge().message)
+      throw error;
+    throw new Error("attachment download failed");
+  }
+  return Buffer.concat(chunks);
 }
 
 function contentFor(
@@ -691,6 +766,8 @@ interface WhatsAppGatewayOptions {
     message: WaRawMessage,
   ) => Promise<{ data: Uint8Array; mimeType: string } | undefined>;
   fetchImpl?: typeof fetch;
+  /** Overrides `whatsapp.attachment_urls` from the harness config. */
+  attachmentUrls?: AttachmentUrlPolicy;
 }
 
 /**
@@ -768,7 +845,12 @@ export class WhatsAppGateway implements Channel {
   ): Promise<ChannelSendResult> {
     let bytes: Buffer;
     try {
-      bytes = await mediaBytes(media, this.options.fetchImpl ?? fetch);
+      bytes = await mediaBytes(
+        media,
+        this.options.fetchImpl ?? fetch,
+        this.options.attachmentUrls ??
+          loadHarnessConfig().whatsappAttachmentUrls,
+      );
     } catch (error) {
       throw new ChannelNotSent(
         error instanceof Error ? error.message : "Nothing was sent.",
