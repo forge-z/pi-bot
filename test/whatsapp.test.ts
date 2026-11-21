@@ -3808,3 +3808,105 @@ test("a WhatsApp command reply is prefixed only in the linked account chat", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("WhatsApp downloads a URL attachment only from an allowed host, within the limits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-wa-url-"));
+  const harness = socketHarness();
+  const sent: Array<Record<string, unknown>> = [];
+  harness.socket.sendMessage = async (_jid, content) => {
+    sent.push(content);
+    return { key: { id: `out-${sent.length}` } };
+  };
+  const fetched: string[] = [];
+  const routes: Record<string, () => Response> = {
+    "https://files.example.com/a.jpg": () => new Response("img"),
+    "https://files.example.com/hop": () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data" },
+      }),
+    "https://files.example.com/big": () => new Response("x".repeat(64)),
+  };
+  const fetchImpl = (async (input: string | URL) => {
+    const url = String(input);
+    fetched.push(url);
+    const route = routes[url];
+    return route ? route() : new Response("nope", { status: 404 });
+  }) as typeof fetch;
+  const make = (hosts: string[]) =>
+    new WhatsAppGateway({
+      sessionDir: join(dir, "auth"),
+      allowed: [OWNER],
+      onMessage: async () => {},
+      socketFactory: () => harness.socket,
+      fetchImpl,
+      ...(hosts.length
+        ? { attachmentUrls: { hosts, timeoutMs: 5000, maxBytes: 16 } }
+        : {}),
+    });
+  const other = "15550009999@s.whatsapp.net";
+  const refused = (pattern: RegExp) => (error: unknown) => {
+    assert.ok(error instanceof ChannelNotSent);
+    assert.match(error.message, pattern);
+    return true;
+  };
+  const byDefault = make([]);
+  try {
+    await byDefault.start();
+    harness.open();
+    await assert.rejects(
+      () =>
+        byDefault.sendMedia(other, {
+          kind: "photo",
+          url: "https://files.example.com/a.jpg",
+        }),
+      refused(/not allowed/),
+    );
+    assert.equal(fetched.length, 0);
+  } finally {
+    await byDefault.close();
+  }
+  const gateway = make(["files.example.com"]);
+  try {
+    await gateway.start();
+    harness.open();
+    await gateway.sendMedia(other, {
+      kind: "photo",
+      url: "https://files.example.com/a.jpg",
+    });
+    assert.equal(sent.length, 1);
+    for (const url of [
+      "http://files.example.com/a.jpg",
+      "https://127.0.0.1/a.jpg",
+      "https://user:pw@files.example.com/a.jpg",
+    ])
+      await assert.rejects(
+        () => gateway.sendMedia(other, { kind: "photo", url }),
+        refused(/not allowed/),
+      );
+    await assert.rejects(
+      () =>
+        gateway.sendMedia(other, {
+          kind: "photo",
+          url: "https://files.example.com/hop",
+        }),
+      refused(/not allowed/),
+    );
+    await assert.rejects(
+      () =>
+        gateway.sendMedia(other, {
+          kind: "photo",
+          url: "https://files.example.com/big",
+        }),
+      refused(/larger/),
+    );
+    assert.equal(sent.length, 1);
+    assert.equal(
+      fetched.includes("http://169.254.169.254/latest/meta-data"),
+      false,
+    );
+  } finally {
+    await gateway.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

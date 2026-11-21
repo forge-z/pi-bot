@@ -96,7 +96,7 @@ import {
 import {
   McpCalls,
   effectiveToolCalls,
-  mcpCallIsReadOnly,
+  mcpCallIsDeclaredRead,
   type McpCall,
 } from "./mcp-calls.js";
 import {
@@ -1365,12 +1365,17 @@ export class Runtime {
                   // A subagent only reads, on every server, Executor included. It
                   // runs like a scheduled turn: no card, no job, no chat.
                   const child = !!(await this.subagentParent(conversationId));
-                  if (
-                    child &&
-                    !mcpCallIsReadOnly(tool.name, args, {
-                      server: server.server,
-                    })
-                  )
+                  // Calls nobody approves need a read the server's policy declares:
+                  // tool names and delegated code never authorize them.
+                  const gateway = this.options.gateway;
+                  const declaredRead = mcpCallIsDeclaredRead(tool.name, args, {
+                    server: server.server,
+                    readOnlyHint:
+                      gateway instanceof McpGateway
+                        ? gateway.toolReadOnlyHint(server.server, tool.name)
+                        : undefined,
+                  });
+                  if (child && !declaredRead)
                     return {
                       output: [
                         { type: "text" as const, text: SUBAGENT_WRITE_REFUSAL },
@@ -1388,7 +1393,7 @@ export class Runtime {
                     ? null
                     : scheduledApprovalRefusal(
                         this.scheduledTurn(conversationId),
-                        mcpCallIsReadOnly(tool.name, args),
+                        declaredRead,
                       );
                   if (refusal)
                     return {

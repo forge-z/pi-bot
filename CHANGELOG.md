@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista do próprio servidor declara como leitura; um verbo de leitura no nome ou um programa `execute` não basta. O WhatsApp não baixa mais anexos por URL, a menos que o host esteja em `whatsapp.attachment_urls.hosts`.
+
+### Security
+
+- Subagents, the scheduled write gate, and the resend after a transport failure use a declared read: a `read` glob of the server's own list (or the Executor lists it inherits) and no `write` glob, or `readOnlyHint` on a `trusted` server. Name words, `execute` programs, and `call` targets written as code no longer count. A server with its own list must list `search`, `describe`, and `skills` itself.
+- The scheduled write gate passes the server name, so a server with its own `tools` list is checked against that list instead of the Executor list.
+- The uncertain-call notice trusts the `uncertain` state recorded at send instead of classifying the call again with the current config.
+- WhatsApp sends a URL-only MCP attachment only from a host in `whatsapp.attachment_urls.hosts` (empty by default): HTTPS, no credentials in the URL, every redirect checked against the list, up to 3 redirects, `timeout_seconds` (20) and `max_mb` (16) enforced while downloading.
+
 ## [0.5.1] - 2026-11-20
 
 pt-BR: 0.5.1 deixa de tratar como escrita uma leitura cujo `execute` usa um alias simples (`const gh = tools.github.repos; gh.getContent(...)`) ou um verbo de leitura no meio do nome (`inboxesMessagesList`, `v1ExtractPost`). Essas chamadas voltam a falhar em silêncio, como as outras leituras. A conferência "Deu certo" / "Não rodou" guarda o erro original ao lado da nota.

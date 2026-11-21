@@ -31,7 +31,7 @@ An invalid value is logged and keeps its default. No environment variable is inv
 - It uses the same model as the conversation that called it, with the `thinking` level above.
 - It sees the MCP tools, plus `tool_search` when some MCP tool is deferred. It does not see `subagent`, `progress`, `notify`, `tasks_*`, `ask_user`, `send_attachment`, `sandbox_code_task`, `conversation_usage` or `read_skill`.
 - It does not see the conversation. The task text must carry everything it needs.
-- It only reads. Every MCP call that is not a read is refused before it is sent, on every server, Executor included. The read and write lists are the same ones a scheduled run uses (`mcp_servers.*.tools` in `config.yaml`).
+- It only reads. Every MCP call that is not a declared read is refused before it is sent, on every server, Executor included. A declared read matches a `read` glob of the server's list (`mcp_servers.*.tools` in `config.yaml`, or the Executor lists it inherits) and no `write` glob, or has `readOnlyHint` on a `trusted` server. A read verb in the tool name, an `execute` program, or a `call` whose target is code is not enough. A scheduled run uses the same rule.
 - It runs like a scheduled run: an approval pause or a URL step is skipped and no card is shown, no async job is registered, and a file an MCP tool returns is replaced by one line of text. Nothing is sent to the chat.
 - After `max_turns` tool rounds it stops without an answer, and the caller sees `turn_limit`.
 

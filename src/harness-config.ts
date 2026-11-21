@@ -55,7 +55,22 @@ export interface HarnessConfig {
   reactionDelayMs: number;
   /** `subagents` block. Off unless the file turns it on. */
   subagents: SubagentsConfig;
+  /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
+  whatsappAttachmentUrls: AttachmentUrlPolicy;
 }
+
+export interface AttachmentUrlPolicy {
+  /** Exact HTTPS host names. Empty sends only attachments that carry bytes. */
+  hosts: string[];
+  timeoutMs: number;
+  maxBytes: number;
+}
+
+const ATTACHMENT_URL_DEFAULTS: AttachmentUrlPolicy = {
+  hosts: [],
+  timeoutMs: 20_000,
+  maxBytes: 16 * 1024 * 1024,
+};
 
 const EMPTY: HarnessConfig = {
   mcpServers: {},
@@ -64,6 +79,7 @@ const EMPTY: HarnessConfig = {
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
   subagents: SUBAGENT_DEFAULTS,
+  whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
 };
 const globCache = new Map<string, RegExp | null>();
 let cache: { key: string; config: HarnessConfig } | undefined;
@@ -240,6 +256,22 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
     ),
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
     subagents: subagentsFrom(raw.subagents),
+    whatsappAttachmentUrls: attachmentUrlsFrom(
+      isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,
+    ),
+  };
+}
+
+function attachmentUrlsFrom(value: unknown): AttachmentUrlPolicy {
+  if (!isRecord(value)) return ATTACHMENT_URL_DEFAULTS;
+  const seconds = positiveNumber(value.timeout_seconds);
+  const mb = positiveNumber(value.max_mb);
+  return {
+    hosts: stringList(value.hosts).map((host) => host.trim().toLowerCase()),
+    timeoutMs: seconds ? seconds * 1000 : ATTACHMENT_URL_DEFAULTS.timeoutMs,
+    maxBytes: mb
+      ? Math.floor(mb * 1024 * 1024)
+      : ATTACHMENT_URL_DEFAULTS.maxBytes,
   };
 }
 
