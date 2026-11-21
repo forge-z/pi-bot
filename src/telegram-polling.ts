@@ -396,6 +396,14 @@ export class TelegramPolling {
           const task = prev
             .catch(() => {})
             .then(async () => {
+              if (
+                [...this.retries].some(
+                  ([id, item]) => id < value.update_id && item.lane === lane,
+                )
+              ) {
+                this.inFlightUpdates.delete(value.update_id);
+                return;
+              }
               let settle = true;
               try {
                 await this.engine.receive(value, signal);
