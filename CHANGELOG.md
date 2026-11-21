@@ -18,6 +18,7 @@ pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista
 
 ### Fixed
 
+- WhatsApp numbered approval replies only decide the specific pending request after its full prompt was sent to the replying chat. Replies from another JID, or before successful delivery, leave the action pending.
 - Telegram messages waiting for a transient retry keep later messages in the same chat/topic behind them. Other chats, topics, and callback queries continue independently.
 
 ## [0.5.1] - 2026-11-20

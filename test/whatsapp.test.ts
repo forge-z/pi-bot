@@ -38,7 +38,7 @@ import {
   writeStoredTelegram,
   writeStoredWhatsapp,
 } from "../src/setup.js";
-import { Store, type Delivery } from "../src/store.js";
+import { queueWhatsApp, Store, type Delivery } from "../src/store.js";
 import { queueNotify } from "../src/task-telegram.js";
 import { sweepMcpApprovals } from "../src/telegram-approvals.js";
 import { Telegram } from "../src/telegram.js";
@@ -2311,6 +2311,7 @@ test("WhatsApp approvals are a numbered reply", async () => {
     assert.equal((card?.text ?? "").includes("Approve"), false);
     assert.equal(card?.channel, "whatsapp");
     assert.equal(await takeNumberedApproval(app, id, JID, "9"), false);
+    app.store.run("UPDATE deliveries SET state='sent' WHERE id=?", card!.id);
     assert.equal(await takeNumberedApproval(app, id, JID, "1"), true);
     assert.deepEqual(actions, ["decline"]);
     assert.match(
@@ -2319,6 +2320,126 @@ test("WhatsApp approvals are a numbered reply", async () => {
       )?.text ?? "",
       /Declined/,
     );
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("WhatsApp approval requires the full request delivered to the replying JID", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-wa-approval-binding-"));
+  const app = await Runtime.open({
+    dir,
+    mode: "demo",
+    gateway: { catalog: async () => [] },
+  });
+  const actions: string[] = [];
+  app.mcpCalls = {
+    decide: async (
+      _conversationId: string,
+      interactionId: string,
+      action: string,
+    ) => {
+      actions.push(action);
+      app.store.run(
+        "UPDATE mcp_interactions SET state='accepted' WHERE id=?",
+        interactionId,
+      );
+    },
+    close: async () => {},
+  } as unknown as McpCalls;
+  try {
+    const id = await app.create("WhatsApp");
+    bindChannelChat(app.store, "whatsapp", JID, id);
+    mcpTables(app.store);
+    app.store.run(
+      "INSERT INTO mcp_calls VALUES (?,?,?,?,?,?,?,?,?)",
+      "call-1",
+      id,
+      "gmail",
+      "send_email",
+      JSON.stringify({
+        to: "recipient@example.test",
+        subject: "Review",
+        body: "Body",
+      }),
+      "pending",
+      null,
+      "binding",
+      Date.now(),
+    );
+    app.store.run(
+      "INSERT INTO mcp_interactions VALUES (?,?,?,?,?,?,?,?)",
+      "int-1",
+      "call-1",
+      id,
+      "gmail",
+      "form",
+      JSON.stringify({
+        message: "Send?",
+        requestedSchema: { type: "object", properties: {} },
+      }),
+      "pending",
+      null,
+    );
+    queueWhatsappApprovals(app);
+    const card = app.store.get<Delivery>(
+      "SELECT * FROM deliveries WHERE id='whatsapp:approval:int-1:0'",
+    )!;
+    assert.match(card.text, /1\. Approve/);
+    const assertPending = async (chat = JID) => {
+      assert.equal(await takeNumberedApproval(app, id, chat, "1"), false);
+      assert.deepEqual(actions, []);
+      assert.equal(
+        app.store.get<{ state: string }>(
+          "SELECT state FROM mcp_interactions WHERE id='int-1'",
+        )?.state,
+        "pending",
+      );
+      assert.ok(
+        app.store.get(
+          "SELECT 1 FROM meta WHERE key=?",
+          `whatsapp:approval:${id}`,
+        ),
+      );
+    };
+    for (const state of [
+      "pending",
+      "sending",
+      "failed",
+      "uncertain",
+      "cancelled",
+    ]) {
+      app.store.run("UPDATE deliveries SET state=? WHERE id=?", state, card.id);
+      await assertPending();
+    }
+    app.store.run("UPDATE deliveries SET state='sent' WHERE id=?", card.id);
+    const other = "15550009999@s.whatsapp.net";
+    bindChannelChat(app.store, "whatsapp", other, id);
+    await assertPending(other);
+    // A sent prompt for a different request does not authorize this one.
+    app.store.run(
+      "UPDATE deliveries SET id='whatsapp:approval:other:0' WHERE id=?",
+      card.id,
+    );
+    await assertPending();
+    app.store.run(
+      "UPDATE deliveries SET id=? WHERE id='whatsapp:approval:other:0'",
+      card.id,
+    );
+    queueWhatsApp(
+      app.store,
+      "whatsapp:approval:int-1:tail",
+      JID,
+      "More review",
+      id,
+    );
+    await assertPending();
+    app.store.run(
+      "UPDATE deliveries SET state='sent' WHERE id LIKE 'whatsapp:approval:int-1:%'",
+    );
+    assert.equal(await takeNumberedApproval(app, id, JID, "1"), true);
+    assert.deepEqual(actions, ["accept"]);
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });
@@ -2422,6 +2543,9 @@ test("a stale WhatsApp approval does not swallow the next reply", async () => {
         "SELECT * FROM deliveries WHERE id LIKE 'whatsapp:approval:%'",
       )?.text ?? "",
       /1\. Decline/,
+    );
+    app.store.run(
+      "UPDATE deliveries SET state='sent' WHERE id LIKE 'whatsapp:approval:%'",
     );
     assert.equal(await takeNumberedApproval(app, id, JID, "1"), true);
     assert.deepEqual(actions, ["decline"]);
@@ -3084,6 +3208,10 @@ test("a failed approval decision does not consume the reply", async () => {
       `whatsapp:approval:${id}`,
       JSON.stringify({ interactionId: "int-1", choices: ["decline"] }),
     );
+    queueWhatsApp(app.store, "whatsapp:approval:int-1", JID, "1. Decline", id);
+    app.store.run(
+      "UPDATE deliveries SET state='sent' WHERE id LIKE 'whatsapp:approval:%'",
+    );
     await acceptWhatsAppMessage(app, {
       channel: "whatsapp",
       chatId: JID,
@@ -3670,6 +3798,9 @@ test("a WhatsApp model number sets the model and an approval number wins", async
     );
     await acceptWhatsAppMessage(app, whatsappText(chat, "m4", "/thinking"));
     queueWhatsappApprovals(app);
+    app.store.run(
+      "UPDATE deliveries SET state='sent' WHERE id LIKE 'whatsapp:approval:%'",
+    );
     await acceptWhatsAppMessage(app, whatsappText(chat, "m5", "1"));
     assert.deepEqual(actions, ["decline"]);
     assert.equal(
