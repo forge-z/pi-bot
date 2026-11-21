@@ -207,7 +207,7 @@ async_jobs:
 # the manifest, not code.
 sandbox_code_task:
   tool: sandbox_code_task
-  description: 'Para qualquer tarefa que possa passar de ~60s ou quando pedirem "avise quando terminar": chame esta ferramenta uma vez. Nunca fique em loop de leitura esperando o fim. O disparo não bloqueia a conversa; o resultado chega automaticamente quando a tarefa termina. writes=true só para push, pull request ou comentário (pede aprovação antes de disparar); sem writes a tarefa é somente leitura.'
+  description: "Para tarefas longas de código que o usuário autoriza a executar com permissão de escrita, chame esta ferramenta uma vez com writes=true. A ferramenta pede aprovação no chat antes de disparar e entrega o resultado automaticamente, sem polling pelo modelo. Não use para tarefas somente leitura."
   job: "internal.instabox.codeTask"
   goal: prompt
   idPrefix: "cj-"
@@ -226,11 +226,6 @@ sandbox_code_task:
     # Comma-separated. `owner/*` matches that owner. Empty until the operator
     # sets `patterns` in $DATA_DIR/config.yaml or INSTABOX_REPO_ALLOWLIST.
     # Nothing is allowed until one of those is set. A set env var wins.
-  # writes=false prefixes `command` with `env` and appends `prompt`. writes=true waits for the card.
-  readonly:
-    env: "JOB_READONLY=1"
-    command: input.cmd
-    prompt: "Somente leitura: não faça push, não abra pull requests e não comente."
   parameters:
     type: object
     required: [repo, agent, prompt]
@@ -254,7 +249,7 @@ sandbox_code_task:
         description: "Branch base/alvo opcional (padrão agent/<jobId>)"
       writes:
         type: boolean
-        description: "true somente para push, pull request ou comentário. O padrão é false (somente leitura, sem cartão). true pede aprovação no Telegram antes de disparar."
+        description: "Informe true apenas quando o usuário autorizar execução com permissão de escrita. O bot pede aprovação antes do disparo. Omitido ou false é recusado."
 
 # Eyes on an inbound message that starts a turn. The reaction waits this many
 # milliseconds. A reply that is sent first cancels it, so a fast chat stays

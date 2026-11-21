@@ -160,73 +160,26 @@ async function createFixture(
   };
 }
 
-test("default config dispatches the configured Executor tool and registers the row", async () => {
-  const f = await createFixture();
+test("Instabox rejects read-only jobs before discovery, approval or dispatch", async () => {
+  const f = await createFixture({
+    INSTABOX_MACHINE_ID: "",
+    INSTABOX_ACCOUNT_ID: "",
+  });
   try {
-    const convId = await f.app.create("Test Conv");
+    const convId = await f.app.create("Read-only");
     const tool = createSandboxCodeTaskTool(f.app, f.env)!;
-    assert.equal(tool.name, "sandbox_code_task");
-    assert.match(tool.description, /60s/);
-    assert.match(tool.description, /avise quando terminar/);
-    assert.match(tool.description, /loop/);
-
-    const secret = "TAREFA_SECRETA_NAO_VAI_NO_CMD";
-    const res = await tool.execute(
-      {
-        repo: "example/app",
-        agent: "agy",
-        prompt: secret,
-        branch: "feature/x",
-      },
-      { conversationId: convId } as unknown as ToolExecutionApi,
-      context,
-    );
-    const output = JSON.parse(getText(res)) as {
-      status: string;
-      jobId: string;
-    };
-    assert.equal(output.status, "dispatched");
-    assert.match(output.jobId, /^cj-[a-z0-9-]+$/);
-
-    const call = f.calls[0];
-    assert.equal(call?.server, "executor");
-    assert.equal(call?.tool, "execute");
-    const code = String(call?.args.code ?? "");
-    assert.match(code, /await tools\.instabox\.machines\.exec\(/);
-    const input = JSON.parse(
-      /machines\.exec\((\{.*\})\)/.exec(code)?.[1] ?? "null",
-    ) as {
-      accountId?: string;
-      input: { id: string; cmd: string; stdin: string; timeoutSeconds: number };
-    };
-    assert.equal(input.accountId, "acc-test-1");
-    assert.equal(input.input.id, "machine-test-1");
-    assert.match(
-      input.input.cmd,
-      new RegExp(`^JOB_READONLY=1 bash ~/bin/start-job\\.sh ${output.jobId}$`),
-    );
-    assert.equal(input.input.timeoutSeconds, 15);
-    assert.doesNotMatch(input.input.cmd, new RegExp(secret));
-    const payload = JSON.parse(input.input.stdin) as {
-      prompt: string;
-      repo: string;
-      writes: boolean;
-    };
-    assert.equal(payload.writes, false);
-    assert.equal(
-      payload.prompt,
-      `${secret}\n\nSomente leitura: não faça push, não abra pull requests e não comente.`,
-    );
-    assert.equal(payload.repo, "example/app");
-    assert.equal(f.app.mcpCalls?.interactions(convId).length, 0);
-
-    // Backward compatible: the old job path still owns the row.
-    const row = f.app.store.get<{ run_id: string; tool: string }>(
-      "SELECT run_id, tool FROM pending_jobs WHERE conversation_id=?",
-      convId,
-    );
-    assert.equal(row?.run_id, output.jobId);
-    assert.equal(row?.tool, "internal.instabox.codeTask");
+    for (const args of [{}, { writes: false }]) {
+      const res = await tool.execute(
+        { repo: "example/app", agent: "agy", prompt: "review", ...args },
+        { conversationId: convId } as unknown as ToolExecutionApi,
+        context,
+      );
+      assert.equal(res.isError, true);
+      assert.match(getText(res), /não aceita tarefas somente leitura/);
+    }
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.app.mcpCalls!.interactions(convId).length, 0);
+    assert.equal(jobCount(f.app, convId), 0);
   } finally {
     await f.close();
   }
@@ -249,6 +202,16 @@ function jobCount(app: Runtime, conversationId: string) {
       conversationId,
     )?.c ?? 0
   );
+}
+
+async function approveJob(app: Runtime, conversationId: string) {
+  const interaction = app.mcpCalls!.interactions(conversationId)[0]!;
+  await app.mcpCalls!.decide(conversationId, interaction.id, "accept", {});
+  const call = app.mcpCalls!.list(conversationId)[0]!;
+  const result = JSON.parse(call.result ?? "{}") as {
+    content?: { text: string }[];
+  };
+  return result.content?.[0]?.text ?? "";
 }
 
 test("writes=true waits for approval and dispatches only after accept", async () => {
@@ -299,12 +262,28 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     assert.match(message, /feature\/x/);
     assert.match(message, /\[link\]/);
     assert.doesNotMatch(message, /example\.test/);
-    await f.app.mcpCalls!.decide(convId, interaction.id, "accept", {});
+    const dispatched = JSON.parse(await approveJob(f.app, convId)) as {
+      status: string;
+      jobId: string;
+    };
+    assert.equal(dispatched.status, "dispatched");
+    assert.match(dispatched.jobId, /^cj-[a-z0-9-]+$/);
+    assert.equal(f.calls[0]?.server, "executor");
+    assert.equal(f.calls[0]?.tool, "execute");
     const execInput = JSON.parse(
       /machines\.exec\((\{.*\})\)/.exec(launched(f.calls).at(-1) ?? "")?.[1] ??
         "null",
-    ) as { input: { cmd: string; stdin: string } };
-    assert.match(execInput.input.cmd, /^bash ~\/bin\/start-job\.sh /);
+    ) as {
+      accountId: string;
+      input: { id: string; cmd: string; stdin: string; timeoutSeconds: number };
+    };
+    assert.equal(execInput.accountId, "acc-test-1");
+    assert.equal(execInput.input.id, "machine-test-1");
+    assert.equal(execInput.input.timeoutSeconds, 15);
+    assert.equal(
+      execInput.input.cmd,
+      "bash ~/bin/start-job.sh " + dispatched.jobId,
+    );
     assert.doesNotMatch(execInput.input.cmd, /JOB_READONLY/);
     const body = JSON.parse(execInput.input.stdin) as {
       prompt: string;
@@ -312,13 +291,12 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     };
     assert.equal(body.prompt, prompt);
     assert.equal(body.writes, true);
-    assert.match(
-      f.app.store.get<{ run_id: string }>(
-        "SELECT run_id FROM pending_jobs WHERE conversation_id=?",
-        convId,
-      )?.run_id ?? "",
-      /^cj-/,
+    const row = f.app.store.get<{ run_id: string; tool: string }>(
+      "SELECT run_id, tool FROM pending_jobs WHERE conversation_id=?",
+      convId,
     );
+    assert.equal(row?.run_id, dispatched.jobId);
+    assert.equal(row?.tool, "internal.instabox.codeTask");
   } finally {
     await f.close();
   }
@@ -387,11 +365,12 @@ test("deterministic dispatch failure closes the row", async () => {
       }),
     );
     const res = await tool.execute(
-      { repo: "example/repo", agent: "pi", prompt: "rode" },
+      { repo: "example/repo", agent: "pi", prompt: "rode", writes: true },
       { conversationId: convId } as unknown as ToolExecutionApi,
       context,
     );
-    assert.match(getText(res), /Erro ao disparar tarefa/);
+    assert.match(getText(res), /approval_pending/);
+    assert.match(await approveJob(f.app, convId), /Erro ao disparar tarefa/);
     const row = f.app.store.get<{ outcome: string | null }>(
       "SELECT outcome FROM pending_jobs WHERE conversation_id=?",
       convId,
@@ -411,11 +390,12 @@ test("indeterminate timeout keeps the row open for the poller", async () => {
       throw new Error("TimeoutError: The operation timed out");
     });
     const res = await tool.execute(
-      { repo: "example/repo", agent: "pi", prompt: "rode" },
+      { repo: "example/repo", agent: "pi", prompt: "rode", writes: true },
       { conversationId: convId } as unknown as ToolExecutionApi,
       context,
     );
-    assert.equal(getText(res), JOB_INDETERMINATE);
+    assert.match(getText(res), /approval_pending/);
+    assert.equal(await approveJob(f.app, convId), JOB_INDETERMINATE);
     const row = f.app.store.get<{ delivered_at: number | null }>(
       "SELECT delivered_at FROM pending_jobs WHERE conversation_id=?",
       convId,
@@ -565,11 +545,14 @@ test("a machine-not-found exec clears the cache and dispatches the machine found
     const convId = await f.app.create("Test Conv");
     const tool = createSandboxCodeTaskTool(f.app, f.env)!;
     const res = await tool.execute(
-      { repo: "example/repo", agent: "pi", prompt: "rode" },
+      { repo: "example/repo", agent: "pi", prompt: "rode", writes: true },
       { conversationId: convId } as unknown as ToolExecutionApi,
       context,
     );
-    const output = JSON.parse(getText(res)) as { status: string };
+    assert.match(getText(res), /approval_pending/);
+    const output = JSON.parse(await approveJob(f.app, convId)) as {
+      status: string;
+    };
     assert.equal(output.status, "dispatched");
     assert.equal(lists, 2);
     assert.equal(execs, 2);
@@ -620,7 +603,7 @@ test("repo allowlist is empty until config.yaml or the env override sets it", as
     const convId = await f.app.create("Allow");
     const tool = createSandboxCodeTaskTool(f.app, f.env)!;
     const res = await tool.execute(
-      { repo, agent: "pi", prompt: "x" },
+      { repo, agent: "pi", prompt: "x", writes: true },
       { conversationId: convId } as unknown as ToolExecutionApi,
       context,
     );
@@ -629,9 +612,9 @@ test("repo allowlist is empty until config.yaml or the env override sets it", as
   try {
     assert.match(await run(plain, "example/repo"), /não permitido/);
     assert.match(await run(plain, "other-org/repo"), /não permitido/);
-    assert.match(await run(custom, "other-org/repo"), /"dispatched"/);
+    assert.match(await run(custom, "other-org/repo"), /"approval_pending"/);
     assert.match(await run(custom, "example/repo"), /não permitido/);
-    assert.match(await run(fromEnv, "env-org/only"), /"dispatched"/);
+    assert.match(await run(fromEnv, "env-org/only"), /"approval_pending"/);
     assert.match(await run(fromEnv, "other-org/repo"), /não permitido/);
   } finally {
     await plain.close();
@@ -649,7 +632,8 @@ test("a configured sandbox task is on the model tool list and the prompt forbids
     const steer = sandboxTaskSteer(f.env);
     assert.ok(steer);
     assert.match(steer, new RegExp(tool.name));
-    assert.match(steer, /avise quando terminar/);
+    assert.match(steer, /writes=true/);
+    assert.match(steer, /Do not use this tool for read-only work/);
     assert.match(steer, /Never poll/);
     const convId = await f.app.create("Test Conv");
     const agent = await (await f.app.conversation(convId)).agent(context);
@@ -657,8 +641,11 @@ test("a configured sandbox task is on the model tool list and the prompt forbids
       (item: { name: string; description?: string }) => item.name === tool.name,
     );
     assert.ok(listed);
-    assert.match(listed.description ?? "", /avise quando terminar/);
-    assert.match(listed.description ?? "", /loop/);
+    assert.match(listed.description ?? "", /writes=true/);
+    assert.match(
+      listed.description ?? "",
+      /Não use para tarefas somente leitura/,
+    );
     const prompt = await sectionText(f.app, "long-task");
     assert.equal(prompt, steer);
   } finally {
