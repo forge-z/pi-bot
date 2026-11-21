@@ -227,8 +227,9 @@ function openApproval(app: Runtime, conversationId: string) {
     return undefined;
   }
   const row = app.store.get<{ state: string }>(
-    "SELECT state FROM mcp_interactions WHERE id=?",
+    "SELECT state FROM mcp_interactions WHERE id=? AND conversationId=?",
     open.interactionId,
+    conversationId,
   );
   if (row?.state !== "pending") {
     drop();
@@ -330,6 +331,28 @@ export async function takeNumberedApproval(
   if (!index) return false;
   const action = open.choices[index - 1];
   if (action !== "accept" && action !== "decline") return false;
+  const parts = app.store.all<{
+    state: string;
+    chat: string;
+    channel: string | null;
+    conversationId: string | null;
+  }>(
+    `SELECT d.state,d.chat,d.channel,c.conversationId FROM deliveries d
+     LEFT JOIN delivery_conversations c ON c.deliveryId=d.id
+     WHERE d.id>=? AND d.id<?`,
+    ...childIds(whatsappApprovalKey(open.interactionId)),
+  );
+  if (
+    !parts.length ||
+    parts.some(
+      (part) =>
+        part.state !== "sent" ||
+        part.channel !== "whatsapp" ||
+        part.chat !== chatId ||
+        part.conversationId !== conversationId,
+    )
+  )
+    return false;
   try {
     await app.mcpCalls.decide(
       conversationId,
