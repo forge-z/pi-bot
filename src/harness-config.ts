@@ -53,6 +53,7 @@ export interface HarnessConfig {
    * From `reaction_delay_ms`; missing or invalid stays at the default.
    */
   reactionDelayMs: number;
+  turnReceiptFooter: boolean;
   /** `subagents` block. Off unless the file turns it on. */
   subagents: SubagentsConfig;
   /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
@@ -78,6 +79,7 @@ const EMPTY: HarnessConfig = {
   asyncJob: {},
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
+  turnReceiptFooter: false,
   subagents: SUBAGENT_DEFAULTS,
   whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
 };
@@ -255,6 +257,8 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
       isRecord(raw.skills) ? raw.skills.always : undefined,
     ),
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
+    turnReceiptFooter:
+      isRecord(raw.turn_receipt) && raw.turn_receipt.footer === true,
     subagents: subagentsFrom(raw.subagents),
     whatsappAttachmentUrls: attachmentUrlsFrom(
       isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,

@@ -12,6 +12,7 @@ import {
   CommandError,
   COMPACTION_STATUS,
   commandStatus,
+  commandReceipt,
   resumeReport,
   type CommandAccess,
 } from "./commands.js";
@@ -24,6 +25,7 @@ const MENU_CAP = 30;
 
 const HELP = [
   "/status — status, tokens and cost",
+  "/recibo [n] — turn receipt",
   "/stop — stop this chat",
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
@@ -226,7 +228,10 @@ async function runCommand(
   // Extra text after /model or /thinking is ignored: WhatsApp has no buttons,
   // so the command still opens the numbered list, as /model does on Telegram.
   const takesArgs =
-    name === "compact" || name === "model" || name === "thinking";
+    name === "compact" ||
+    name === "model" ||
+    name === "thinking" ||
+    name === "recibo";
   if (name && args && !takesArgs) {
     reply(app, message, conversationId, `Unknown command.\n${HELP}`);
     return;
@@ -241,6 +246,15 @@ async function runCommand(
       message,
       conversationId,
       `${await commandStatus(app, conversationId, access, "chat")}\n${COMPACTION_STATUS}`,
+    );
+    return;
+  }
+  if (name === "recibo") {
+    reply(
+      app,
+      message,
+      conversationId,
+      commandReceipt(app, conversationId, access, args),
     );
     return;
   }
