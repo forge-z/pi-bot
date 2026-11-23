@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-23
+
 ### Changed
 
+- Package version is 0.5.2. The MCP client announces that same version.
 - Setup, diagnostics, built-in tool output, and chat messages use English. Setup no longer accepts Portuguese menu choices or yes/no answers. User and model content is unchanged.
 - Native web search and extraction now try the configured fallback when the primary succeeds but returns no results or no readable text.
 - Today’s and yesterday’s daily memory notes are included in chat and scheduled prompts, up to 2 KB per day, so recent notes no longer require a `memory_search` call.
@@ -33,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WhatsApp numbered approval replies only decide the specific pending request after its full prompt was sent to the replying chat. Replies from another JID, or before successful delivery, leave the action pending.
 - Telegram messages waiting for a transient retry keep later messages in the same chat/topic behind them. Other chats, topics, and callback queries continue independently.
 
-## [0.5.1] - 2026-11-20
+## 0.5.1 - 2026-11-20
 
 ### Fixed
 
@@ -45,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Package version is 0.5.1. The MCP client announces that same version.
 
-## [0.5.0] - 2026-11-20
+## 0.5.0 - 2026-11-20
 
 ### Added
 
@@ -146,9 +149,8 @@ Alpha. At this commit the README still calls the project alpha.
 - An image a provider would refuse is dropped before it enters history, so one bad image does not fail later turns.
 - An in-flight MCP call unlocks when its deadline passes, and recording the same job run id twice keeps the tool result. ([#1](https://github.com/forge-z/pi-bot/pull/1))
 
-[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.1...HEAD
-[0.5.1]: https://github.com/forge-z/pi-bot/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/forge-z/pi-bot/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/forge-z/pi-bot/compare/v0.4.0...v0.5.2
 [0.4.0]: https://github.com/forge-z/pi-bot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/forge-z/pi-bot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/forge-z/pi-bot/releases/tag/v0.2.0
