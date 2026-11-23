@@ -192,7 +192,7 @@ There is no BotFather menu. Type the command in the chat. `/help` and `/start` s
 | Command     | What WhatsApp does                                                                                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/status`   | Status, tokens, and cost for this chat                                                                                                                                 |
-| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                                                                                             |
+| `/receipt`  | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                                                                                            |
 | `/stop`     | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
 | `/new`      | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
 | `/resume`   | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
@@ -238,7 +238,7 @@ On Telegram the app registers this menu on start. There is nothing to set in Bot
 | `/stop`     | Stop this topic                                                                                   |
 | `/compact`  | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
 | `/status`   | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
-| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                        |
+| `/receipt`  | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                       |
 | `/help`     | This list                                                                                         |
 
 `/resume` dismisses an uncertain MCP result without repeating the call (the call may already have run) and continues a task that was parked after a crash. `/new` does not clear an uncertain result.

@@ -25,7 +25,7 @@ const MENU_CAP = 30;
 
 const HELP = [
   "/status — status, tokens and cost",
-  "/recibo [n] — turn receipt",
+  "/receipt [n] — turn receipt",
   "/stop — stop this chat",
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
@@ -231,7 +231,7 @@ async function runCommand(
     name === "compact" ||
     name === "model" ||
     name === "thinking" ||
-    name === "recibo";
+    name === "receipt";
   if (name && args && !takesArgs) {
     reply(app, message, conversationId, `Unknown command.\n${HELP}`);
     return;
@@ -249,7 +249,7 @@ async function runCommand(
     );
     return;
   }
-  if (name === "recibo") {
+  if (name === "receipt") {
     reply(
       app,
       message,
