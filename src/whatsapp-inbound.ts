@@ -20,10 +20,7 @@ import {
 import { isRetryableError, type Runtime } from "./runtime.js";
 import { childIds, queueWhatsApp } from "./store.js";
 import type { McpInteraction } from "./mcp-calls.js";
-import {
-  mcpApprovalPrompt,
-  rememberAndAccept,
-} from "./telegram-approvals.js";
+import { mcpApprovalPrompt, rememberAndAccept } from "./telegram-approvals.js";
 import { transcribeAudio } from "./transcribe.js";
 import { describeImage } from "./vision.js";
 import { chatSeesImages } from "./commands.js";

@@ -1095,7 +1095,11 @@ function rememberTarget(
     return;
   }
   if (!object(args) || !object(payload)) return;
-  if (!app.mcpCalls?.callIsRead(call.server, call.tool, args)) return;
+  if (
+    typeof app.mcpCalls?.callIsRead !== "function" ||
+    !app.mcpCalls.callIsRead(call.server, call.tool, args)
+  )
+    return;
   if (looksLikeMailSend(call.server, call.tool, args)) return;
   const invocation =
     item.kind === "resume" && object(payload.invocation)

@@ -139,7 +139,8 @@ export class TurnReceipts {
           conversationId,
           callId,
         );
-        approvals.requested += (counted?.total ?? 0) - (counted?.remembered ?? 0);
+        approvals.requested +=
+          (counted?.total ?? 0) - (counted?.remembered ?? 0);
         approvals.remembered += counted?.remembered ?? 0;
       }
       const label = tools.get(toolName);

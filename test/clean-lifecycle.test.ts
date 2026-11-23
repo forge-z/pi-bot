@@ -179,8 +179,6 @@ test("/help lists the commands that remain and not the removed ones", async () =
         "receipt",
         "approvals",
         "revoke",
-      "approvals",
-      "revoke",
         "help",
       ],
     );

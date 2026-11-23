@@ -20,7 +20,9 @@ export function commandReceipt(
 }
 
 function rememberedApprovals(app: Runtime) {
-  return app.mcpCalls?.rememberedApprovals ?? new RememberedApprovals(app.store);
+  return (
+    app.mcpCalls?.rememberedApprovals ?? new RememberedApprovals(app.store)
+  );
 }
 
 /** `/approvals`: the reads that no longer ask, numbered for `/revoke`. */

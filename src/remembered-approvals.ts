@@ -203,7 +203,9 @@ export function formatRememberedApprovals(rules: RememberedApproval[]) {
     return "No remembered approvals. A read approval card offers “Sempre permitir isto”.";
   const lines = rules.map((rule) => {
     const resource = rule.resource
-      ? ` · ${Object.entries(JSON.parse(rule.resource) as Record<string, unknown>)
+      ? ` · ${Object.entries(
+          JSON.parse(rule.resource) as Record<string, unknown>,
+        )
           .map(([key, value]) => `${key}=${String(value)}`)
           .join(", ")}`
       : "";
