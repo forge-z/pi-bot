@@ -28,6 +28,8 @@ export const cleanCommands = [
   { command: "compact", description: "Compact this topic's history" },
   { command: "status", description: "Model, usage, MCPs, run, and version" },
   { command: "receipt", description: "Show the turn receipt" },
+  { command: "approvals", description: "Reads that are always allowed" },
+  { command: "revoke", description: "Remove an always-allowed read" },
   { command: "help", description: "Help" },
 ];
 /**

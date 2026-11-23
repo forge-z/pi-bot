@@ -129,15 +129,20 @@ export class TurnReceipts {
       const unverified =
         approval ||
         (!!call && ["uncertain", "running", "paused"].includes(call.state));
-      if (callId)
-        approvals.requested +=
-          this.store.get<{ total: number }>(
-            `SELECT COUNT(*) AS total FROM mcp_interactions WHERE conversationId=? AND callId=?
+      if (callId) {
+        const counted = this.store.get<{ total: number; remembered: number }>(
+          `SELECT COUNT(*) AS total, COALESCE(SUM(json_valid(response)
+             AND json_extract(response,'$.remembered') IS NOT NULL),0) AS remembered
+           FROM mcp_interactions WHERE conversationId=? AND callId=?
            AND (kind='form' OR (kind='resume' AND json_valid(payload)
              AND json_extract(payload,'$.status')='approval-required'))`,
-            conversationId,
-            callId,
-          )?.total ?? 0;
+          conversationId,
+          callId,
+        );
+        approvals.requested +=
+          (counted?.total ?? 0) - (counted?.remembered ?? 0);
+        approvals.remembered += counted?.remembered ?? 0;
+      }
       const label = tools.get(toolName);
       const operation = label?.slice(label.indexOf("/") + 1);
       if (

@@ -2,6 +2,11 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { readAppInfo } from "./app-info.js";
 import { resolveFunctions } from "./functions.js";
 import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
+import {
+  formatRememberedApprovals,
+  RememberedApprovals,
+  revokeRememberedApproval,
+} from "./remembered-approvals.js";
 import type { Runtime } from "./runtime.js";
 
 export function commandReceipt(
@@ -12,6 +17,33 @@ export function commandReceipt(
 ) {
   app.commands.authorize(conversationId, access);
   return app.turnReceipts.show(conversationId, argument);
+}
+
+function rememberedApprovals(app: Runtime) {
+  return (
+    app.mcpCalls?.rememberedApprovals ?? new RememberedApprovals(app.store)
+  );
+}
+
+/** `/approvals`: the reads that no longer ask, numbered for `/revoke`. */
+export function commandApprovals(
+  app: Runtime,
+  conversationId: string,
+  access: CommandAccess,
+) {
+  app.commands.authorize(conversationId, access);
+  return formatRememberedApprovals(rememberedApprovals(app).list());
+}
+
+/** `/revoke <n>`: that read asks for approval again, in chats and scheduled runs. */
+export function commandRevoke(
+  app: Runtime,
+  conversationId: string,
+  access: CommandAccess,
+  argument: string,
+) {
+  app.commands.authorize(conversationId, access);
+  return revokeRememberedApproval(rememberedApprovals(app), argument);
 }
 
 export type CommandAccess = {
