@@ -245,7 +245,12 @@ async function retarget(
   return { args };
 }
 
-type DispatchText = { text: string; isError?: true; rejected?: true };
+type DispatchText = {
+  text: string;
+  isError?: true;
+  rejected?: true;
+  approvalRequested?: boolean;
+};
 
 async function dispatchJob(
   app: Runtime,
@@ -341,8 +346,9 @@ async function dispatchJob(
         if (app.scheduledTurn(conversationId))
           return { text: SCHEDULED_APPROVAL_REFUSAL, isError: true };
         // Nothing ran yet: leave the row open so a later approval delivers.
+        let approvalRequested = false;
         try {
-          app.mcpCalls?.noteExecutorPause(
+          approvalRequested = !!app.mcpCalls?.noteExecutorPause(
             conversationId,
             server,
             tool,
@@ -352,13 +358,16 @@ async function dispatchJob(
         } catch {
           /* the tool result still reports the pending approval */
         }
-        return json({
-          jobId,
-          status: "approval_pending",
-          ...(outcome.requestId ? { requestId: outcome.requestId } : {}),
-          message:
-            "A chamada pausou aguardando aprovação. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
-        });
+        return {
+          ...json({
+            jobId,
+            status: "approval_pending",
+            ...(outcome.requestId ? { requestId: outcome.requestId } : {}),
+            message:
+              "A chamada pausou aguardando aprovaOção. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
+          }),
+          approvalRequested,
+        };
       }
       if (outcome.kind === "failure")
         return outcome.deterministic
@@ -413,12 +422,13 @@ async function dispatchJob(
 }
 
 function asToolResult(outcome: DispatchText) {
-  return outcome.isError
-    ? {
-        output: [{ type: "text" as const, text: outcome.text }],
-        isError: true as const,
-      }
-    : { output: [{ type: "text" as const, text: outcome.text }] };
+  return {
+    output: [{ type: "text" as const, text: outcome.text }],
+    ...(outcome.isError ? { isError: true as const } : {}),
+    ...(outcome.approvalRequested
+      ? { details: { receiptApprovalRequested: true } }
+      : {}),
+  };
 }
 
 export function createSandboxCodeTaskTool(
@@ -532,12 +542,15 @@ export function createSandboxCodeTaskTool(
             error:
               "Aprovação indisponível; a tarefa de escrita não foi disparada.",
           });
-        return reply({
-          status: "approval_pending",
-          requestId,
-          message:
-            "A escrita precisa de aprovação. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
-        });
+        return {
+          ...reply({
+            status: "approval_pending",
+            requestId,
+            message:
+              "A escrita precisa de aprovação. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
+          }),
+          details: { receiptApprovalRequested: true },
+        };
       }
       return asToolResult(
         await dispatchJob(

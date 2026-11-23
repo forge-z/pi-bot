@@ -151,11 +151,12 @@ As respostas são texto puro, cortadas em 3800 caracteres. Um título Markdown v
 
 ### Comandos
 
-Não há menu no BotFather. O comando é texto no chat. `/help` e `/start` enviam esta lista. Os nomes continuam em inglês:
+Não há menu no BotFather. O comando é texto no chat. `/help` e `/start` enviam esta lista:
 
 | Comando     | O que o WhatsApp faz                                                                                                                                             |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/status`   | Estado, tokens e custo deste chat                                                                                                                                |
+| `/recibo`   | Recibo do último turno. `/recibo <n>` conta do mais recente (1) para trás                                                                                        |
 | `/stop`     | Cancela o trabalho pendente neste chat, e o texto ainda segue para o modelo. A legenda de uma foto ou nota de voz conta. `/cancel` não é comando                 |
 | `/new`      | Nova conversa neste chat. A anterior permanece no volume. Resultados MCP incertos permanecem; `/resume` é que os dispensa. Este chat fica ligado à conversa nova |
 | `/resume`   | Retoma uma tarefa presa, ou dispensa um resultado MCP incerto                                                                                                    |
@@ -201,9 +202,12 @@ No Telegram o app registra este menu ao subir. Não há o que configurar no BotF
 | `/stop`     | Para este tópico                                                                                                |
 | `/compact`  | Compacta este tópico agora. O texto depois do comando é um foco opcional. Recusa enquanto o tópico está ocupado |
 | `/status`   | Modelo, tokens e custo deste tópico, MCPs, a execução atual e a versão                                          |
+| `/recibo`   | Recibo do último turno. `/recibo <n>` conta do mais recente (1) para trás                                       |
 | `/help`     | Esta lista                                                                                                      |
 
 `/resume` dispensa um resultado MCP incerto sem repetir a chamada (a chamada pode já ter ocorrido) e continua uma tarefa que ficou estacionada depois de um crash. `/new` não limpa um resultado incerto.
+
+Os recibos são gravados por conversa a partir da instalação deste recurso. Mostram as contagens de ferramentas, o tempo de execução, erros, pedidos de aprovação, resultados MCP sem verificar, chamadas a ferramentas de busca, tokens e custo do modelo quando disponível. Não guardam texto da conversa, argumentos, conteúdo de páginas nem chaves. Para acrescentar uma linha curta às respostas finais no chat, use `turn_receipt.footer: true` no `config.yaml`. Por padrão, a linha fica desligada.
 
 Cada tópico nativo (tópico de forum) tem o próprio histórico, modelo e esforço.
 

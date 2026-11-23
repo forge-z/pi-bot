@@ -138,6 +138,14 @@ test("Mensagem durante turno com ferramenta pendente vira steer e é vista pelo 
     await wait(f.app, convId);
 
     assert.ok(steerSeenInTranscript, "mensagem steer foi vista pelo modelo");
+    assert.equal(
+      f.app.store.all(
+        "SELECT * FROM turn_receipts WHERE conversationId=?",
+        convId,
+      ).length,
+      1,
+    );
+    assert.match(f.app.turnReceipts.show(convId, ""), /mcp_tools: 1 chamada/);
 
     const snapshot = await f.app.snapshot(convId);
     const assistants = snapshot.view.entries.filter(

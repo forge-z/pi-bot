@@ -4,6 +4,16 @@ import { resolveFunctions } from "./functions.js";
 import { formatMcpStatus, MCP_DISCOVERY_UNANSWERED } from "./mcp.js";
 import type { Runtime } from "./runtime.js";
 
+export function commandReceipt(
+  app: Runtime,
+  conversationId: string,
+  access: CommandAccess,
+  argument: string,
+) {
+  app.commands.authorize(conversationId, access);
+  return app.turnReceipts.show(conversationId, argument);
+}
+
 export type CommandAccess = {
   source: "telegram" | "whatsapp";
   user: string;
