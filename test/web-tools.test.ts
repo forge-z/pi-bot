@@ -112,31 +112,88 @@ test("search applies filters on both providers and falls back on HTTP 429", asyn
   assert.equal(calls[1]!.headers.get("x-api-key"), null);
 });
 
-test("an empty successful result is not retried for search or extraction", async () => {
-  const urls: string[] = [];
-  const tools = createWebTools(
-    config,
-    { exa, firecrawl },
-    {
-      fetch: async (url) => {
-        urls.push(String(url));
-        return Response.json({ results: [] });
-      },
+for (const { scenario, fallbackBody, expectedProvider } of [
+  {
+    scenario: "fallback has content",
+    fallbackBody: {
+      search: { web: [{ url: "https://example.org/", title: "Found" }] },
+      extract: { markdown: "Found text" },
     },
-  );
-  const search = await execute(tools, "web_search", { query: "no matches" });
-  const page = await execute(tools, "web_extract", {
-    url: "https://example.org/",
+    expectedProvider: "firecrawl",
+  },
+  {
+    scenario: "fallback is also empty",
+    fallbackBody: { search: { web: [] }, extract: { markdown: "" } },
+    expectedProvider: "firecrawl",
+  },
+  {
+    scenario: "fallback fails",
+    fallbackBody: null,
+    expectedProvider: "exa",
+  },
+  {
+    scenario: "no fallback",
+    fallbackBody: undefined,
+    expectedProvider: "exa",
+  },
+]) {
+  test(`empty search results and whitespace-only extraction: ${scenario}`, async () => {
+    const urls: string[] = [];
+    const tools = createWebTools(
+      fallbackBody === undefined
+        ? { search: ["exa"], extract: ["exa"] }
+        : config,
+      { exa, firecrawl },
+      {
+        fetch: async (url) => {
+          const endpoint = String(url);
+          urls.push(endpoint);
+          const isSearch = endpoint.endsWith("/search");
+          if (endpoint.startsWith("https://api.exa.ai/")) {
+            return Response.json({
+              results: isSearch ? [] : [{ text: " \n\t " }],
+            });
+          }
+          return fallbackBody
+            ? Response.json({
+                success: true,
+                data: isSearch ? fallbackBody.search : fallbackBody.extract,
+              })
+            : new Response(null, { status: 503 });
+        },
+      },
+    );
+    const search = await execute(tools, "web_search", { query: "no matches" });
+    const page = await execute(tools, "web_extract", {
+      url: "https://example.org/",
+    });
+    assert.equal(search.isError, false);
+    assert.equal(page.isError, false);
+    const provider = new RegExp(`"provider":"${expectedProvider}"`);
+    assert.match(search.text, provider);
+    assert.match(page.text, provider);
+    assert.match(
+      search.text,
+      fallbackBody?.search.web.length ? /"title":"Found"/ : /"result":\[\]/,
+    );
+    assert.ok(
+      page.text.includes(
+        `"text":${JSON.stringify(fallbackBody?.extract.markdown ?? " \n\t ")}`,
+      ),
+    );
+    assert.deepEqual(
+      urls,
+      fallbackBody === undefined
+        ? ["https://api.exa.ai/search", "https://api.exa.ai/contents"]
+        : [
+            "https://api.exa.ai/search",
+            "https://api.firecrawl.dev/v2/search",
+            "https://api.exa.ai/contents",
+            "https://api.firecrawl.dev/v2/scrape",
+          ],
+    );
   });
-  assert.equal(search.isError, false);
-  assert.match(search.text, /"result":\[\]/);
-  assert.equal(page.isError, false);
-  assert.match(page.text, /"text":""/);
-  assert.deepEqual(urls, [
-    "https://api.exa.ai/search",
-    "https://api.exa.ai/contents",
-  ]);
-});
+}
 
 test("extract falls back on an Exa page error, bounds the text and wraps untrusted data", async () => {
   const calls: { url: string; body: unknown }[] = [];
@@ -598,7 +655,7 @@ test("Local alone registers extraction without any key and reads text without re
   assert.deepEqual(urls, [pageUrl, "https://example.org/real"]);
 });
 
-test("Local refuses nonpublic redirect targets, enforces size, and accepts empty success without fallback", async () => {
+test("Local refuses nonpublic redirects, enforces size, and falls back on empty success", async () => {
   for (const [response, failure] of [
     [
       localResponse(302, { location: "https://private.local/" }),
@@ -638,15 +695,21 @@ test("Local refuses nonpublic redirect targets, enforces size, and accepts empty
         },
         fetch: async () => {
           fallbackCalls++;
-          return new Response("", { status: 500 });
+          return failure
+            ? new Response("", { status: 500 })
+            : Response.json({ content: "Fallback text" });
         },
       },
     );
     const result = await execute(tools, "web_extract", { url: pageUrl });
     assert.equal(localCalls, 1);
-    assert.equal(fallbackCalls, failure ? 1 : 0);
+    assert.equal(fallbackCalls, 1);
     if (failure) assert.match(result.text, failure);
-    else assert.match(result.text, /"text":""/);
+    else
+      assert.match(
+        result.text,
+        /"provider":"deepseek".*"text":"Fallback text"/,
+      );
   }
 });
 
