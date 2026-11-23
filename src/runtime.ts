@@ -74,6 +74,7 @@ import {
   removeOwnedConversations,
 } from "./conversation-trash.js";
 import { logFailure } from "./log.js";
+import { receiptFooter, TurnReceipts } from "./turn-receipts.js";
 import lockfile from "proper-lockfile";
 import {
   Store,
@@ -402,6 +403,7 @@ function conversationTitle(value: unknown, limit = 100) {
   return value.trim();
 }
 export class Runtime {
+  readonly turnReceipts: TurnReceipts;
   readonly store: Store;
   readonly models: MutableModels;
   readonly settings: Settings;
@@ -518,6 +520,7 @@ export class Runtime {
     this.guardGateway(options.gateway);
     this.pendingJobs = new PendingJobs(this, options.env ?? process.env);
     this.store = options.store ?? new Store(options.dir);
+    this.turnReceipts = new TurnReceipts(this.store);
     this.models =
       options.models ??
       createModels({ credentials: new SqlCredentials(this.store) });
@@ -2740,6 +2743,36 @@ export class Runtime {
       const monitor = (async () => {
         const settled = await submission.wait(context);
         if (this.closing) return;
+        const toolNames = new Map(
+          this.registry
+            .snapshot()
+            .tools()
+            .map(({ tool }) => [tool.name, tool.name]),
+        );
+        for (const server of this.mcpStatus)
+          for (const tool of server.tools)
+            toolNames.set(
+              mcpToolName(server.server, tool.name),
+              `${server.server}/${tool.name}`,
+            );
+        const receipt = await this.turnReceipts
+          .record(
+            this.harness,
+            conversation,
+            settled,
+            toolNames,
+            this.options.redact,
+          )
+          .catch((error: unknown) => {
+            if (!this.closing)
+              logFailure("Falha ao gravar o recibo do turno", error);
+          });
+        if (this.closing) return;
+        const withReceipt = (text: string) =>
+          receipt &&
+          loadHarnessConfig(this.options.env ?? process.env).turnReceiptFooter
+            ? `${text}\n\n${receiptFooter(receipt)}`
+            : text;
         const mirror = this.store.get<RequestTelegramRoute>(
           "SELECT * FROM request_telegram_routes WHERE conversationId=? AND requestId=?",
           conversationId,
@@ -2850,7 +2883,7 @@ export class Runtime {
               conversationId,
               requestId,
               "completion",
-              answer,
+              withReceipt(answer),
             );
           if (
             answer &&
@@ -2867,7 +2900,7 @@ export class Runtime {
                 deliveredKey,
                 JSON.stringify({ requestId, at: Date.now() }),
               );
-              reply(answer);
+              reply(withReceipt(answer));
             }
           } else if (
             source === "telegram" &&

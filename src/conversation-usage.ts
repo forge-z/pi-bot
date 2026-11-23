@@ -311,6 +311,13 @@ export function summarizeConversationUsage(
   };
 }
 
+export function summarizeModelUsage(usages: readonly Usage[]) {
+  return {
+    tokens: sumTokens(usages.map(tokensOf)),
+    usd: combineCosts(usages.map(priceOf)),
+  };
+}
+
 export const conversationUsageTool = defineTool({
   name: CONVERSATION_USAGE_TOOL_NAME,
   description:

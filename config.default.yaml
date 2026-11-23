@@ -264,6 +264,10 @@ sandbox_code_task:
 # $DATA_DIR/config.yaml. There is no environment variable for this.
 reaction_delay_ms: 4000
 
+# /recibo always works. Enable this to append a short line to final chat replies.
+turn_receipt:
+  footer: false
+
 # WhatsApp sends a file as bytes, so the bot itself downloads an MCP
 # attachment that carries only a URL. By default it downloads nothing: only
 # attachments with inline bytes are sent. Each host listed here (exact name,

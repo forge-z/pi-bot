@@ -45,6 +45,7 @@ import {
   CommandError,
   chatSeesImages,
   commandStatus,
+  commandReceipt,
   resumeReport,
 } from "./commands.js";
 import {
@@ -436,6 +437,7 @@ const CLEAN_HELP = [
   "/stop — stop this topic",
   "/compact — compact this topic (optional instructions)",
   "/status — status, including tokens and cost",
+  "/recibo [n] — turn receipt",
   "/help — help",
   "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort. /compact runs that same compaction now; text after the command is optional focus for this topic. Upsy sign-in: open the link the bot sends (or the one npm run setup prints) and paste the final browser URL back, even if the page does not load.",
 ].join("\n");
@@ -1247,6 +1249,15 @@ export class Telegram {
             // is what keeps the later "usuário" token its own literal.
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
+        );
+      } else if (command === "recibo") {
+        reply(
+          commandReceipt(
+            this.app,
+            id,
+            { source: "telegram", ...owner },
+            text.slice("/recibo".length).trim(),
+          ),
         );
       } else if (command === "compact") {
         const instructions = text.slice("/compact".length).trim();

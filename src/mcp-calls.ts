@@ -50,6 +50,13 @@ export interface McpInteraction {
   state: string;
   response: string | null;
 }
+
+export function mcpTaskCallId(conversationId: string, taskId: number) {
+  return createHash("sha256")
+    .update(`mcp:${conversationId}:${taskId}`)
+    .digest("hex")
+    .slice(0, 24);
+}
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 /** Executor meta tools. Protocol, not a provider name list. */
@@ -1097,10 +1104,7 @@ export class McpCalls {
       throw new PolicyError(
         "Retomada exige decisão humana pela solicitação exibida na conversa; use decide.",
       );
-    const id = createHash("sha256")
-      .update(`mcp:${conversationId}:${taskId}`)
-      .digest("hex")
-      .slice(0, 24);
+    const id = mcpTaskCallId(conversationId, taskId);
     const existing = this.store.get<McpCall>(
       "SELECT * FROM mcp_calls WHERE id=?",
       id,
