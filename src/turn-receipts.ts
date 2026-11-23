@@ -252,7 +252,7 @@ export class TurnReceipts {
       (argument && !/^[1-9]\d*$/.test(argument)) ||
       !Number.isSafeInteger(ordinal)
     )
-      return "Uso: /recibo ou /recibo <n> (1 = último turno).";
+      return "Uso: /receipt ou /receipt <n> (1 = último turno).";
     const row = this.store.get<ReceiptRow>(
       `SELECT status,summary FROM turn_receipts WHERE conversationId=?
        ORDER BY rowid DESC LIMIT 1 OFFSET ?`,
@@ -286,5 +286,5 @@ function cost(summary: ReceiptSummary) {
 
 export function receiptFooter(summary: ReceiptSummary) {
   const calls = summary.tools.reduce((total, tool) => total + tool.calls, 0);
-  return `Recibo: ${calls} chamada(s) · ${count.format(summary.inputTokens + summary.outputTokens)} tokens · ${cost(summary)} · /recibo`;
+  return `Recibo: ${calls} chamada(s) · ${count.format(summary.inputTokens + summary.outputTokens)} tokens · ${cost(summary)} · /receipt`;
 }

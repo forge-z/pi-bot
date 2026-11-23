@@ -264,7 +264,7 @@ sandbox_code_task:
 # $DATA_DIR/config.yaml. There is no environment variable for this.
 reaction_delay_ms: 4000
 
-# /recibo always works. Enable this to append a short line to final chat replies.
+# /receipt always works. Enable this to append a short line to final chat replies.
 turn_receipt:
   footer: false
 
