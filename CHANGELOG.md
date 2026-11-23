@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Setup and doctor report the config path and ownership when web settings cannot be written. A config file the gateway cannot read now stops startup instead of silently using defaults.
+- Docker Compose repairs ownership and owner access for the volume's config and SQLite files before starting the unprivileged gateway.
 - WhatsApp numbered approval replies only decide the specific pending request after its full prompt was sent to the replying chat. Replies from another JID, or before successful delivery, leave the action pending.
 - Telegram messages waiting for a transient retry keep later messages in the same chat/topic behind them. Other chats, topics, and callback queries continue independently.
 

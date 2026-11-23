@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -21,6 +21,7 @@ import { McpGateway, mcpToolName } from "../src/mcp.js";
 import { Runtime } from "../src/runtime.js";
 import {
   describeWebSetup,
+  checkWebConfigWriteAccess,
   readVolumeWebKeys,
   resolveWebKeys,
   saveWebSetup,
@@ -342,6 +343,82 @@ test("setup preserves unrelated YAML, stores keys separately and diagnoses actua
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("setup still reads and preserves the original Exa and Firecrawl volume format", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-web-legacy-"));
+  const db = new DatabaseSync(join(dir, "app.sqlite"));
+  const env = { DATA_DIR: dir };
+  try {
+    await writeFile(
+      join(dir, "config.yaml"),
+      "# existing config\nweb:\n  search: [firecrawl, exa]\n  extract: [exa]\n",
+    );
+    db.exec("CREATE TABLE credentials(provider TEXT PRIMARY KEY, value TEXT)");
+    const insert = db.prepare("INSERT INTO credentials VALUES (?,?)");
+    insert.run("web:exa", JSON.stringify({ type: "api_key", key: exa }));
+    insert.run(
+      "web:firecrawl",
+      JSON.stringify({ type: "api_key", key: firecrawl }),
+    );
+
+    const { web } = loadHarnessConfig(env);
+    assert.deepEqual(web, { search: ["firecrawl", "exa"], extract: ["exa"] });
+    assert.deepEqual(readVolumeWebKeys(dir), { exa, firecrawl });
+    assert.deepEqual(describeWebSetup(dir, env), [
+      "web.search: firecrawl → exa",
+      "web.extract: exa — warning: no fallback",
+    ]);
+
+    saveWebSetup(db, env, web, {});
+    assert.deepEqual(loadHarnessConfig(env).web, web);
+    assert.deepEqual(readVolumeWebKeys(dir), { exa, firecrawl });
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "web setup reports write denial and rolls back changed credentials",
+  {
+    skip: !process.getuid || process.getuid() === 0,
+  },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-readonly-"));
+    const db = new DatabaseSync(join(dir, "app.sqlite"));
+    const env = { DATA_DIR: dir };
+    const path = join(dir, "config.yaml");
+    try {
+      saveWebSetup(db, env, config, { exa });
+      await chmod(path, 0o400);
+      const denied = (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(error.message.includes(path));
+        assert.match(
+          error.message,
+          /Cannot write config.*EACCES.*process UID \d+.*file owner UID \d+/,
+        );
+        return true;
+      };
+      assert.throws(() => checkWebConfigWriteAccess(env), denied);
+      assert.throws(
+        () =>
+          saveWebSetup(
+            db,
+            env,
+            { search: ["context"], extract: ["local", "context"] },
+            { exa: null, context: "fixture-context" },
+          ),
+        denied,
+      );
+      assert.deepEqual(loadHarnessConfig(env).web, config);
+      assert.deepEqual(readVolumeWebKeys(dir), { exa });
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 const pageUrl = "https://example.org/article";
 const match = { url: pageUrl, title: "Example title" };

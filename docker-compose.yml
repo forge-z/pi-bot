@@ -1,7 +1,32 @@
 services:
+  pi-bot-volume-repair:
+    build:
+      context: .
+    user: "0:0"
+    command: ["node", "scripts/repair-data-permissions.mjs"]
+    restart: "no"
+    networks:
+      - volume-repair
+    volumes:
+      - pi_bot_data:/app/data
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      disable: true
+
   pi-bot:
     build:
       context: .
+    depends_on:
+      pi-bot-volume-repair:
+        condition: service_completed_successfully
     restart: unless-stopped
     init: true
     env_file:
@@ -31,3 +56,7 @@ services:
 
 volumes:
   pi_bot_data:
+
+networks:
+  volume-repair:
+    internal: true

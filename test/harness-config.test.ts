@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
@@ -180,6 +180,39 @@ test("invalid yaml is logged and the defaults stay", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "an unreadable user config is not replaced with defaults, even after a cached read",
+  {
+    skip: !process.getuid || process.getuid() === 0,
+  },
+  async () => {
+    const root = await dir();
+    const path = join(root, "config.yaml");
+    const env = { CONFIG_FILE: path };
+    try {
+      await writeFile(path, "web: { search: [context] }\n");
+      assert.deepEqual(loadHarnessConfig(env).web.search, ["context"]);
+      await chmod(path, 0o000);
+      assert.throws(
+        () => loadHarnessConfig(env),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.ok(error.message.includes(path));
+          assert.match(
+            error.message,
+            /Cannot read config.*EACCES.*process UID \d+.*file owner UID \d+/,
+          );
+          return true;
+        },
+      );
+      await chmod(path, 0o600);
+      assert.deepEqual(loadHarnessConfig(env).web.search, ["context"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("executor and a server with no tool list of its own let Executor decide approval", async () => {
   const defaults = loadHarnessConfig({

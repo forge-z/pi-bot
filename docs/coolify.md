@@ -93,7 +93,7 @@ The named volume `pi_bot_data` mounts at `/app/data`. Data is stored in `/app/da
 
 ## 5. Container hardening
 
-Compose sets `read_only: true`, a 16 MB tmpfs at `/tmp`, `cap_drop: ALL`, `no-new-privileges`, `init: true`, `restart: unless-stopped`, and a 45-second shutdown grace period. The health check runs `node dist/src/healthcheck.js` every 30 seconds after a 40-second start period, with three attempts.
+The gateway runs as UID 1000 with a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. On redeploy, Compose first runs a one-shot volume repair with only the capabilities needed to restore access to the data directory, `config.yaml`, and SQLite files. The repair makes no network requests, does not follow symlinks, and does not walk the volume. Setup runs as the same non-root user as the gateway. The gateway health check runs `node dist/src/healthcheck.js` every 30 seconds after a 40-second start period, with three attempts.
 
 The only writable locations should be `/app/data` and `/tmp`. If writes are denied, verify the volume mount before changing `read_only`. The first poll must finish before the service reports healthy, so an initial `unhealthy` with normal logs can be temporary.
 
@@ -143,3 +143,5 @@ Use the actual names from `docker volume ls`: `old` is the existing `pi_agent_tg
 | Container is initially unhealthy               | Allow about a minute for the first polling cycle before investigating.                                                                           |
 
 There is no public port, domain, webhook, or web chat in this deployment. Do not run two processes against one volume.
+
+If setup or doctor reports a permissions error on `/app/data/config.yaml`, redeploy with the repository's Docker Compose file so the repair runs on the existing volume. Check the `pi-bot-volume-repair` logs if it cannot complete. An external `CONFIG_FILE` override is not changed by the repair.
