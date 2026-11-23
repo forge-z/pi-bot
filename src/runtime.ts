@@ -13,6 +13,7 @@ import { redactSecretPatterns } from "./config.js";
 import { readWebKeys, resolveWebKeys } from "./web-config.js";
 import { createWebTools } from "./web-tools.js";
 import { deadlineFailure } from "./mcp-calls.js";
+import { rememberedApprovalTarget } from "./telegram-approvals.js";
 import {
   createReadSkillTool,
   loadOperatorSkills,
@@ -595,6 +596,9 @@ export class Runtime {
           // The model already receives the tool error. The chat is not pinged.
           console.warn(`Pi-Agent: ${notice.text}`);
         },
+      );
+      this.mcpCalls.setRememberedTarget((call, kind, payload) =>
+        rememberedApprovalTarget(this, call, kind, payload),
       );
     }
   }

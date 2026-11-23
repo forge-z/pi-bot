@@ -103,7 +103,9 @@ test("polling readiness, health and graceful stop stay offline and create no top
       "stop",
       "compact",
       "status",
-      "recibo",
+      "receipt",
+      "approvals",
+      "revoke",
       "help",
     ];
     assert.deepEqual(
@@ -174,7 +176,9 @@ test("/help lists the commands that remain and not the removed ones", async () =
         "stop",
         "compact",
         "status",
-        "recibo",
+        "receipt",
+        "approvals",
+        "revoke",
         "help",
       ],
     );

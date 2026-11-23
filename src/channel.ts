@@ -75,7 +75,7 @@ export class ChannelNotSent extends Error {
 
 export interface ApprovalChoice {
   label: string;
-  action: "accept" | "decline";
+  action: "accept" | "decline" | "remember";
 }
 
 /** Numbered list used when the channel cannot show buttons. */
