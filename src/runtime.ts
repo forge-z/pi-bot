@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Memory } from "./memory.js";
+import { withTextModelFallback } from "./text-model-fallback.js";
 import { discardTelegramControls } from "./telegram-controls.js";
 import {
   attachmentMedia,
@@ -1109,7 +1110,10 @@ export class Runtime {
       app.harness = await Harness.open(
         await SqliteStorage.open(app.durableDatabase),
         {
-          models: app.models,
+          models: withTextModelFallback(
+            app.models,
+            app.settings.setup()?.fallbackModel,
+          ),
           registry,
           settings: {
             toolExecution: "sequential",

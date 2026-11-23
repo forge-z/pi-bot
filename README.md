@@ -52,6 +52,12 @@ Environment variables are optional overrides. When one is set, it wins over the 
 
 Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat reserve (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) is ignored when an official setup is already on the volume.
 
+### Text model fallback
+
+In `npm run setup`, select **Text model**, choose your primary provider and model as usual, then select **Fallback model** if you want a backup. Choose another model from the primary provider or select a different official API-key provider. Setup asks for a key only if the selected provider needs one. Use **None** to remove the fallback, then **Save and back** and restart the gateway to apply. Both model choices and any keys are saved on the volume.
+
+For chat and scheduled runs, the bot tries the selected model first (including a conversation's `/model` choice). If that request fails, hits a rate limit, or takes more than two minutes, the bot tries the fallback with the same conversation context. It does not retry on user cancellation or when the fallback is already the selected model. The switch does not change the saved primary or replay tools that have already run.
+
 ### Native web search and extraction
 
 `web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.

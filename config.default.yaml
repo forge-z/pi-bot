@@ -33,6 +33,9 @@
 # 'search', 'describe', and 'skills' stay hardcoded reads in code; the model cannot call 'resume'.
 # A server with its own `tools` list must list them to make them declared reads.
 
+# The optional text model fallback is off by default. Choose it in npm run setup
+# under Text model. Model selections and credentials live in the volume database.
+
 # Native read tools. Each list is ordered: primary, then fallback. Set [] to
 # disable the operation. Keyed providers without a key are skipped. The
 # explicitly selected "local" extractor needs no key. Use npm run setup

@@ -35,6 +35,8 @@ Use a fresh Telegram bot and volume. Pi Bot refuses a volume associated with a d
 
 No environment variables are required to start the container. `npm run setup` saves the bot token, user IDs, model keys, and MCP settings in the volume's SQLite database. Token entry is hidden; Enter keeps the existing value. If the token has not been set, the process reports it and stays up so setup can run.
 
+To set a backup for model errors, timeouts, and rate limits, use [Text model → Fallback model](../README.md#text-model-fallback) in setup. No extra environment variable is needed.
+
 ### Optional variables
 
 - `TELEGRAM_BOT_TOKEN` or `TELEGRAM_BOT_TOKEN_FILE`, and `TELEGRAM_ALLOWED_USERS`: override the corresponding saved values.
