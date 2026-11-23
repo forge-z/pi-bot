@@ -56,7 +56,7 @@ Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat
 
 `web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
 
-In `npm run setup`, select **Web search** to choose a primary and fallback for each tool and save the keys on the volume. Set `EXA_API_KEY` and/or `FIRECRAWL_API_KEY` to override the saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations is:
+In `npm run setup`, select **Web search** to choose a primary and optional fallback for each tool. Select a slot, choose a provider from the numbered menu, and use **Save and back** to save the section. Keys are shared between slots and stored on the volume. The environment variables below override saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations remains:
 
 ```yaml
 web:
@@ -64,7 +64,21 @@ web:
   extract: [exa, firecrawl]
 ```
 
-A provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, an error, rate limit or timeout tries the next provider; an empty result does not. An empty list disables that operation. When no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
+| Provider  | Search | Extract | API key override      |
+| --------- | ------ | ------- | --------------------- |
+| Brave     | Yes    | —       | `BRAVE_API_KEY`       |
+| Context   | Yes    | Yes     | `CONTEXT_DEV_API_KEY` |
+| DeepSeek  | Yes    | Yes     | `DEEPSEEK_API_KEY`    |
+| Exa       | Yes    | Yes     | `EXA_API_KEY`         |
+| Firecrawl | Yes    | Yes     | `FIRECRAWL_API_KEY`   |
+| Parallel  | Yes    | Yes     | `PARALLEL_API_KEY`    |
+| Tavily    | Yes    | Yes     | `TAVILY_API_KEY`      |
+| TinyFish  | Yes    | Yes     | `TINYFISH_API_KEY`    |
+| Local     | —      | Yes     | None                  |
+
+Brave's LLM Context API returns excerpts from search results, not arbitrary-URL extraction. Local extracts text directly from public HTML and plain-text pages without an API key. It does not run JavaScript or load embedded resources; choose a hosted extractor for pages that require rendering.
+
+A keyed provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, an error, rate limit or timeout tries the next provider; an empty result does not. An empty list disables that operation. Local is available only when explicitly selected. If no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
 
 ### Sandbox
 

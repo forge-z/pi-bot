@@ -26,6 +26,8 @@ import {
   saveWebSetup,
 } from "../src/web-config.js";
 import { createWebTools } from "../src/web-tools.js";
+import type { LocalGet } from "../src/web-local.js";
+import { WEB_CHOICES, WEB_KEY_ENV } from "../src/web-providers.js";
 
 const exa = "test-exa-credential";
 const firecrawl = "test-firecrawl-credential";
@@ -282,6 +284,370 @@ test("setup preserves unrelated YAML, stores keys separately and diagnoses actua
     db.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+const pageUrl = "https://example.org/article";
+const match = { url: pageUrl, title: "Example title" };
+const apiKey = "synthetic-provider-secret";
+const filter = {
+  query: "example",
+  limit: 2,
+  freshness: "week",
+  domains: ["example.org"],
+};
+const now = () => Date.UTC(2026, 5, 15, 12);
+const searchCases = [
+  [
+    "brave",
+    "https://api.search.brave.com/res/v1/web/search",
+    "x-subscription-token",
+    { q: "example site:example.org", count: "2", freshness: "pw" },
+    { web: { results: [{ ...match, description: apiKey }] } },
+    "GET",
+  ],
+  [
+    "context",
+    "https://api.context.dev/v1/web/search",
+    "authorization",
+    {
+      query: "example",
+      numResults: 2,
+      includeDomains: ["example.org"],
+      freshness: "last_week",
+    },
+    { results: [{ ...match, description: apiKey }] },
+    "POST",
+  ],
+  [
+    "deepseek",
+    "https://api.deepseek.com/v1/tools/search",
+    "authorization",
+    { query: "example site:example.org after:2026-06-08", count: 2 },
+    { results: [{ ...match, snippet: apiKey }] },
+    "POST",
+  ],
+  [
+    "parallel",
+    "https://api.parallel.ai/v1/search",
+    "x-api-key",
+    {
+      search_queries: ["example"],
+      advanced_settings: {
+        max_results: 2,
+        source_policy: {
+          include_domains: ["example.org"],
+          after_date: "2026-06-08",
+        },
+      },
+    },
+    { results: [{ ...match, excerpts: [apiKey] }] },
+    "POST",
+  ],
+  [
+    "tavily",
+    "https://api.tavily.com/search",
+    "authorization",
+    {
+      query: "example",
+      max_results: 2,
+      include_domains: ["example.org"],
+      time_range: "week",
+      filter_by_published_date: true,
+    },
+    { results: [{ ...match, content: apiKey }] },
+    "POST",
+  ],
+  [
+    "tinyfish",
+    "https://api.search.tinyfish.ai/",
+    "x-api-key",
+    {
+      query: "example",
+      include_domains: "example.org",
+      recency_minutes: "10080",
+    },
+    { results: [{ ...match, snippet: apiKey }] },
+    "GET",
+  ],
+] as const;
+
+for (const [
+  provider,
+  endpoint,
+  header,
+  params,
+  response,
+  method,
+] of searchCases) {
+  test(`${provider} search passes documented filters and normalizes results`, async () => {
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      assert.deepEqual(
+        method === "GET"
+          ? Object.fromEntries(url.searchParams)
+          : JSON.parse(String(init?.body)),
+        params,
+      );
+      url.search = "";
+      assert.equal(url.href, endpoint);
+      assert.equal(init?.method, method);
+      assert.equal(init?.redirect, "error");
+      assert.equal(
+        new Headers(init?.headers).get(header),
+        header === "authorization" ? `Bearer ${apiKey}` : apiKey,
+      );
+      return Response.json(response);
+    };
+    const tools = createWebTools(
+      { search: [provider], extract: [] },
+      { [provider]: apiKey },
+      { fetch, now },
+    );
+    const result = await execute(tools, "web_search", filter);
+    assert.equal(result.isError, false);
+    assert.match(result.text, /<untrusted_tool_result/);
+    assert.ok(result.text.includes(JSON.stringify(provider)));
+    assert.match(
+      result.text,
+      /"title":"Example title","snippet":"\[redacted\]"/,
+    );
+    assert.ok(!result.text.includes(apiKey));
+  });
+}
+
+const extractionCases = [
+  [
+    "context",
+    "https://api.context.dev/v1/web/scrape",
+    "authorization",
+    {
+      url: pageUrl,
+      formats: { markdown: true },
+      sharedParams: { mainContentOnly: true },
+    },
+    {
+      url: pageUrl,
+      metadata: { title: match.title },
+      markdown: { success: true, data: apiKey },
+    },
+  ],
+  [
+    "deepseek",
+    "https://api.deepseek.com/v1/tools/fetch",
+    "authorization",
+    { url: pageUrl },
+    { title: match.title, content: apiKey },
+  ],
+  [
+    "parallel",
+    "https://api.parallel.ai/v1/extract",
+    "x-api-key",
+    { urls: [pageUrl], advanced_settings: { full_content: true } },
+    { results: [{ ...match, full_content: apiKey }] },
+  ],
+  [
+    "tavily",
+    "https://api.tavily.com/extract",
+    "authorization",
+    { urls: [pageUrl], format: "markdown" },
+    { results: [{ ...match, raw_content: apiKey }] },
+  ],
+  [
+    "tinyfish",
+    "https://api.fetch.tinyfish.ai/",
+    "x-api-key",
+    { urls: [pageUrl], format: "markdown" },
+    { results: [{ ...match, text: apiKey }] },
+  ],
+] as const;
+
+for (const [provider, endpoint, header, body, response] of extractionCases) {
+  test(`${provider} extraction uses the URL API and normalizes the content`, async () => {
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      assert.equal(String(input), endpoint);
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), body);
+      assert.equal(
+        new Headers(init?.headers).get(header),
+        header === "authorization" ? `Bearer ${apiKey}` : apiKey,
+      );
+      return Response.json(response);
+    };
+    const tools = createWebTools(
+      { search: [], extract: [provider] },
+      { [provider]: apiKey },
+      { fetch },
+    );
+    const result = await execute(tools, "web_extract", { url: pageUrl });
+    assert.equal(result.isError, false);
+    assert.match(result.text, /<untrusted_tool_result/);
+    assert.ok(result.text.includes(JSON.stringify(provider)));
+    assert.match(result.text, /"title":"Example title","text":"\[redacted\]"/);
+    assert.ok(!result.text.includes(apiKey));
+  });
+}
+
+test("both primary and fallback choices validate by operation, and provider env keys override the volume", async () => {
+  assert.deepEqual(WEB_CHOICES.search, [
+    "brave",
+    "context",
+    "deepseek",
+    "exa",
+    "firecrawl",
+    "parallel",
+    "tavily",
+    "tinyfish",
+  ]);
+  assert.deepEqual(WEB_CHOICES.extract, [
+    "local",
+    "context",
+    "deepseek",
+    "exa",
+    "firecrawl",
+    "parallel",
+    "tavily",
+    "tinyfish",
+  ]);
+  const dir = await mkdtemp(join(tmpdir(), "pi-web-choices-"));
+  const db = new DatabaseSync(join(dir, "app.sqlite"));
+  try {
+    const env = { DATA_DIR: dir };
+    const web: WebConfig = {
+      search: ["brave", "context"],
+      extract: ["tinyfish", "local"],
+    };
+    const keys = Object.fromEntries(
+      WEB_CHOICES.search.map((provider) => [provider, `stored-${provider}`]),
+    );
+    saveWebSetup(db, env, web, keys);
+    assert.deepEqual(loadHarnessConfig(env).web, web);
+    assert.deepEqual(readVolumeWebKeys(dir), keys);
+    const overrides = Object.fromEntries(
+      WEB_CHOICES.search.map((provider) => [
+        WEB_KEY_ENV[provider],
+        `override-${provider}`,
+      ]),
+    );
+    assert.deepEqual(
+      resolveWebKeys(overrides, readVolumeWebKeys(dir)),
+      Object.fromEntries(
+        WEB_CHOICES.search.map((provider) => [
+          provider,
+          `override-${provider}`,
+        ]),
+      ),
+    );
+    await writeFile(
+      join(dir, "config.yaml"),
+      "web:\n  search: [local]\n  extract: [brave]\n",
+    );
+    assert.deepEqual(loadHarnessConfig(env).web, config);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function localResponse(
+  status: number,
+  headers: Record<string, string>,
+  text = "",
+) {
+  return {
+    status,
+    headers,
+    body: (async function* () {
+      yield new TextEncoder().encode(text);
+    })(),
+    close() {},
+  };
+}
+
+test("Local alone registers extraction without any key and reads text without rendering resources", async () => {
+  const urls: string[] = [];
+  const localGet: LocalGet = async (url) => {
+    urls.push(url.href);
+    if (urls.length === 1) return localResponse(302, { location: "/real" });
+    return localResponse(
+      200,
+      { "content-type": "text/html; charset=utf-8" },
+      "<title>Title &amp; things</title><body><nav>menu</nav><main><p>Read &#x1f600; this</p><script>ignore me</script><img src='/file'></main></body>",
+    );
+  };
+  const tools = createWebTools(
+    { search: ["brave"], extract: ["local"] },
+    {},
+    { localGet },
+  );
+  assert.deepEqual(
+    tools.map(({ name }) => name),
+    ["web_extract"],
+  );
+  const result = await execute(tools, "web_extract", {
+    url: `${pageUrl}#anchor`,
+  });
+  assert.equal(result.isError, false);
+  assert.match(result.text, /"provider":"local"/);
+  assert.match(result.text, /"title":"Title & things","text":"Read 😀 this"/);
+  assert.doesNotMatch(result.text, /ignore me|menu|\/file/);
+  assert.deepEqual(urls, [pageUrl, "https://example.org/real"]);
+});
+
+test("Local refuses nonpublic redirect targets, enforces size, and accepts empty success without fallback", async () => {
+  for (const [response, failure] of [
+    [
+      localResponse(302, { location: "https://private.local/" }),
+      /requires a public/,
+    ],
+    [
+      localResponse(
+        200,
+        { "content-type": "text/plain" },
+        "x".repeat(512 * 1024 + 1),
+      ),
+      /response too large/,
+    ],
+    [localResponse(204, {}), undefined],
+  ] as const) {
+    let localCalls = 0;
+    let fallbackCalls = 0;
+    const tools = createWebTools(
+      { search: [], extract: ["local", "deepseek"] },
+      { deepseek: apiKey },
+      {
+        localGet: async () => {
+          localCalls++;
+          return response;
+        },
+        fetch: async () => {
+          fallbackCalls++;
+          return new Response("", { status: 500 });
+        },
+      },
+    );
+    const result = await execute(tools, "web_extract", { url: pageUrl });
+    assert.equal(localCalls, 1);
+    assert.equal(fallbackCalls, failure ? 1 : 0);
+    if (failure) assert.match(result.text, failure);
+    else assert.match(result.text, /"text":""/);
+  }
+});
+
+test("a hosted error can fall back to Local without a second API key", async () => {
+  const tools = createWebTools(
+    { search: [], extract: ["context", "local"] },
+    { context: apiKey },
+    {
+      fetch: async () =>
+        Response.json({ markdown: { success: false, message: apiKey } }),
+      localGet: async () =>
+        localResponse(200, { "content-type": "text/plain" }, "Fallback text"),
+    },
+  );
+  const result = await execute(tools, "web_extract", { url: pageUrl });
+  assert.equal(result.isError, false);
+  assert.match(result.text, /"provider":"local".*"text":"Fallback text"/);
+  assert.ok(!result.text.includes(apiKey));
 });
 
 test("without web keys the model gets and can call the existing Executor MCP search", async () => {

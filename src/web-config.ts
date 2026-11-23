@@ -3,29 +3,25 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMap, parseDocument } from "yaml";
 import { operatorSecret } from "./config.js";
+import { loadHarnessConfig, userConfigPath } from "./harness-config.js";
 import {
-  loadHarnessConfig,
-  userConfigPath,
-  WEB_PROVIDERS,
+  WEB_KEY_ENV,
+  WEB_SEARCH_PROVIDERS,
+  type RemoteWebProvider,
   type WebConfig,
   type WebProvider,
-} from "./harness-config.js";
+} from "./web-providers.js";
 
 type Env = Record<string, string | undefined>;
-export type WebKeys = Partial<Record<WebProvider, string>>;
+export type WebKeys = Partial<Record<RemoteWebProvider, string>>;
 
-export const WEB_KEY_ENV: Record<WebProvider, string> = {
-  exa: "EXA_API_KEY",
-  firecrawl: "FIRECRAWL_API_KEY",
-};
-
-export function webCredentialId(provider: WebProvider) {
+export function webCredentialId(provider: RemoteWebProvider) {
   return `web:${provider}`;
 }
 
 export function readWebKeys(db: DatabaseSync): WebKeys {
   const keys: WebKeys = {};
-  for (const provider of WEB_PROVIDERS) {
+  for (const provider of WEB_SEARCH_PROVIDERS) {
     try {
       const raw = (
         db
@@ -50,7 +46,7 @@ export function readWebKeys(db: DatabaseSync): WebKeys {
 
 export function resolveWebKeys(env: Env, stored: WebKeys): WebKeys {
   const keys = { ...stored };
-  for (const provider of WEB_PROVIDERS) {
+  for (const provider of WEB_SEARCH_PROVIDERS) {
     try {
       const override = operatorSecret(env, WEB_KEY_ENV[provider]);
       if (override) keys[provider] = override;
@@ -61,11 +57,13 @@ export function resolveWebKeys(env: Env, stored: WebKeys): WebKeys {
   return keys;
 }
 
-export function activeWebProviders(
-  order: WebConfig[keyof WebConfig],
+export function activeWebProviders<P extends WebProvider>(
+  order: readonly P[],
   keys: WebKeys,
 ) {
-  return order.filter((provider) => Boolean(keys[provider]));
+  return order.filter(
+    (provider: WebProvider) => provider === "local" || Boolean(keys[provider]),
+  );
 }
 
 export function readVolumeWebKeys(dir: string): WebKeys {
@@ -106,7 +104,7 @@ export function saveWebSetup(
   db: DatabaseSync,
   env: Env,
   config: WebConfig,
-  keys: Partial<Record<WebProvider, string | null>>,
+  keys: Partial<Record<RemoteWebProvider, string | null>>,
 ) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -117,7 +115,7 @@ export function saveWebSetup(
       "INSERT INTO credentials VALUES (?,?) ON CONFLICT(provider) DO UPDATE SET value=excluded.value",
     );
     const remove = db.prepare("DELETE FROM credentials WHERE provider=?");
-    for (const provider of WEB_PROVIDERS) {
+    for (const provider of WEB_SEARCH_PROVIDERS) {
       const key = keys[provider];
       if (key)
         write.run(
