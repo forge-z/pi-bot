@@ -435,6 +435,8 @@ const CLEAN_HELP = [
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
   "/compact — compact this topic (optional instructions)",
+  "/memoria — show saved memory",
+  "/esquecer <text> — remove matching lines from memory",
   "/status — status, including tokens and cost",
   "/help — help",
   "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort. /compact runs that same compaction now; text after the command is optional focus for this topic. Upsy sign-in: open the link the bot sends (or the one npm run setup prints) and paste the final browser URL back, even if the page does not load.",
@@ -1247,6 +1249,15 @@ export class Telegram {
             // is what keeps the later "usuário" token its own literal.
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
+        );
+      } else if (text === "/memoria") {
+        this.app.telegramChats.authorize(id, owner);
+        reply(this.app.memory?.show() ?? "Memory is disabled.");
+      } else if (command === "esquecer") {
+        this.app.telegramChats.authorize(id, owner);
+        reply(
+          this.app.memory?.forget(text.slice("/esquecer".length).trim()) ??
+            "Memory is disabled.",
         );
       } else if (command === "compact") {
         const instructions = text.slice("/compact".length).trim();

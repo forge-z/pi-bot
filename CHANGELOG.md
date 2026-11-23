@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista do próprio servidor declara como leitura; um verbo de leitura no nome ou um programa `execute` não basta. O WhatsApp não baixa mais anexos por URL, a menos que o host esteja em `whatsapp.attachment_urls.hosts`.
 
+### Added
+
+- Long-term memory in editable Markdown on the data volume. The idle curator uses the conversation's model by default and does not run from schedules. Daily notes are searchable with `memory_search`; Telegram and WhatsApp support `/memoria` and `/esquecer <text>`.
+
 ### Security
 
 - Subagents, the scheduled write gate, and the resend after a transport failure use a declared read: a `read` glob of the server's own list (or the Executor lists it inherits) and no `write` glob, or `readOnlyHint` on a `trusted` server. Name words, `execute` programs, and `call` targets written as code no longer count. A server with its own list must list `search`, `describe`, and `skills` itself.

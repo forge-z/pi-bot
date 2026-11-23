@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { DEFAULT_REACTION_DELAY_MS, reactionDelayMs } from "./reaction-ack.js";
+import type { MemoryConfig } from "./memory.js";
 
 /**
  * Product defaults in `config.default.yaml`, with an optional user file on top.
@@ -55,6 +56,7 @@ export interface HarnessConfig {
   reactionDelayMs: number;
   /** `subagents` block. Off unless the file turns it on. */
   subagents: SubagentsConfig;
+  memory: MemoryConfig;
   /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
   whatsappAttachmentUrls: AttachmentUrlPolicy;
 }
@@ -79,6 +81,7 @@ const EMPTY: HarnessConfig = {
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
   subagents: SUBAGENT_DEFAULTS,
+  memory: { enabled: true },
   whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
 };
 const globCache = new Map<string, RegExp | null>();
@@ -230,6 +233,30 @@ function subagentsFrom(value: unknown): SubagentsConfig {
   return out;
 }
 
+function memoryFrom(raw: unknown): MemoryConfig {
+  const value = isRecord(raw) ? raw : {};
+  const config: MemoryConfig = { enabled: value.enabled !== false };
+  if (value.curator_model != null) {
+    const model = value.curator_model;
+    if (
+      isRecord(model) &&
+      typeof model.provider === "string" &&
+      model.provider.trim() &&
+      typeof model.model_id === "string" &&
+      model.model_id.trim()
+    )
+      config.curatorModel = {
+        provider: model.provider.trim(),
+        modelId: model.model_id.trim(),
+      };
+    else
+      console.error(
+        "Pi-Agent: memory.curator_model inválido. Usando o modelo da conversa.",
+      );
+  }
+  return config;
+}
+
 function configFrom(raw: Record<string, unknown>): HarnessConfig {
   const servers = isRecord(raw.mcp_servers) ? raw.mcp_servers : {};
   const mcpServers: Record<string, ServerTools> = {};
@@ -256,6 +283,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
     ),
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
     subagents: subagentsFrom(raw.subagents),
+    memory: memoryFrom(raw.memory),
     whatsappAttachmentUrls: attachmentUrlsFrom(
       isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,
     ),

@@ -28,6 +28,8 @@ const HELP = [
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
   "/compact — compact this chat (optional instructions after the command)",
+  "/memoria — show saved memory",
+  "/esquecer <text> — remove matching lines from memory",
   "/model — choose a model (reply with the number)",
   "/thinking — choose effort (reply with the number)",
   "/crons — schedules in this chat (reply with the number to turn one on or off)",
@@ -226,7 +228,10 @@ async function runCommand(
   // Extra text after /model or /thinking is ignored: WhatsApp has no buttons,
   // so the command still opens the numbered list, as /model does on Telegram.
   const takesArgs =
-    name === "compact" || name === "model" || name === "thinking";
+    name === "compact" ||
+    name === "model" ||
+    name === "thinking" ||
+    name === "esquecer";
   if (name && args && !takesArgs) {
     reply(app, message, conversationId, `Unknown command.\n${HELP}`);
     return;
@@ -271,6 +276,13 @@ async function runCommand(
       conversationId,
       await app.compactConversation(conversationId, args || undefined),
     );
+    return;
+  }
+  if (name === "memoria" || name === "esquecer") {
+    app.commands.authorize(conversationId, access);
+    const text =
+      name === "memoria" ? app.memory?.show() : app.memory?.forget(args);
+    reply(app, message, conversationId, text ?? "Memory is disabled.");
     return;
   }
   if (name === "model" || name === "thinking") {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Runtime } from "../src/runtime.js";
@@ -102,6 +102,8 @@ test("polling readiness, health and graceful stop stay offline and create no top
       "resume",
       "stop",
       "compact",
+      "memoria",
+      "esquecer",
       "status",
       "help",
     ];
@@ -172,6 +174,8 @@ test("/help lists the commands that remain and not the removed ones", async () =
         "resume",
         "stop",
         "compact",
+        "memoria",
+        "esquecer",
         "status",
         "help",
       ],
@@ -187,6 +191,48 @@ test("/help lists the commands that remain and not the removed ones", async () =
   } finally {
     await polling.close();
     await f.close();
+  }
+});
+test("Telegram memory commands read and forget notes without starting a turn", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  await mkdir(join(f.dir, "memory"));
+  await writeFile(join(f.dir, "memory", "MEMORY.md"), "- Prefers tea\n");
+  const replies: string[] = [];
+  const api: TelegramApi = {
+    call: async (method, payload) => {
+      if (method === "sendMessage") {
+        replies.push((payload as { text: string }).text);
+        return { message_id: replies.length };
+      }
+      return {};
+    },
+  };
+  const polling = new TelegramPolling(f.app, api, config, { id: 123 });
+  try {
+    for (const [index, text] of [
+      "/memoria",
+      "/esquecer tea",
+      "/memoria",
+    ].entries()) {
+      await polling.engine.receive({
+        update_id: index + 1,
+        message: {
+          message_id: index + 10,
+          from: { id: 42, is_bot: false },
+          chat: { id: -100123, type: "supergroup" },
+          text,
+          date: 1000,
+        },
+      });
+      await polling.engine.flush();
+    }
+    assert.match(replies[0] ?? "", /Prefers tea/);
+    assert.match(replies[1] ?? "", /Removed 1/);
+    assert.match(replies[2] ?? "", /Memory is empty/);
+    assert.deepEqual(f.app.store.all("SELECT requestId FROM requests"), []);
+  } finally {
+    await polling.close();
   }
 });
 test("existing webhook is a fatal setup result before scheduler starts", async () => {
