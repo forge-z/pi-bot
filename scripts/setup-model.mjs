@@ -557,6 +557,7 @@ function currentFunctions() {
   try {
     const value = JSON.parse(raw);
     return {
+      ...(value?.fallbackModel ? { fallbackModel: value.fallbackModel } : {}),
       ...(value?.vision ? { vision: value.vision } : {}),
       ...(value?.audio ? { audio: value.audio } : {}),
     };
@@ -720,7 +721,7 @@ function functionKeys(functions, apiKey) {
   };
 }
 
-function commitSubscription(entry, effort, functions = currentFunctions()) {
+function commitSubscription(entry, effort, functions, fallbackKey) {
   const provider = resolved.piProviderId;
   const settings = { provider, modelId: entry.id, effort };
   const registered = models.getProvider(provider);
@@ -730,6 +731,9 @@ function commitSubscription(entry, effort, functions = currentFunctions()) {
     modelId: entry.id,
     effort,
     authMode: "chatgpt",
+    ...(functions.fallbackModel
+      ? { fallbackModel: functions.fallbackModel }
+      : {}),
     ...(resolved.chatVision === undefined
       ? {}
       : { chatVision: resolved.chatVision }),
@@ -743,7 +747,12 @@ function commitSubscription(entry, effort, functions = currentFunctions()) {
     return;
   }
   save(settings);
-  writeStoredSetup(db, record, functionKeys(functions), MODE);
+  writeStoredSetup(
+    db,
+    record,
+    { ...functionKeys(functions), fallback: fallbackKey },
+    MODE,
+  );
   writeChatgptAuthMode(new Store(dir));
   console.log(`Global default: ${label(settings)}`);
   console.log(
@@ -755,10 +764,20 @@ function commitSubscription(entry, effort, functions = currentFunctions()) {
   );
 }
 
-function commit(entry, effort, functions = currentFunctions()) {
-  if (resolved.mode === "subscription")
-    return commitSubscription(entry, effort, functions);
+function commit(entry, effort, functions = currentFunctions(), fallbackKey) {
+  const fallback = functions.fallbackModel;
   const provider = activeProviderId();
+  if (
+    fallback &&
+    ((fallback.provider === provider && fallback.modelId === entry.id) ||
+      (fallback.provider === LLM_PROVIDER_ID &&
+        (provider !== LLM_PROVIDER_ID ||
+          !catalog.some((entry) => entry.id === fallback.modelId))))
+  )
+    functions = { ...functions, fallbackModel: undefined };
+  if (functions.fallbackModel?.provider === provider) fallbackKey = undefined;
+  if (resolved.mode === "subscription")
+    return commitSubscription(entry, effort, functions, fallbackKey);
   const registered = models.getModel(provider, entry.id);
   const baseUrl = (registered?.baseUrl || resolved.baseUrl || "").replace(
     /\/+$/,
@@ -773,6 +792,9 @@ function commit(entry, effort, functions = currentFunctions()) {
     baseUrl,
     modelId: entry.id,
     effort,
+    ...(functions.fallbackModel
+      ? { fallbackModel: functions.fallbackModel }
+      : {}),
     // Omitted when the probe did not run (flags path until it does): absent means
     // "unknown", and runtime then falls back to what the catalog declares.
     ...(resolved.chatVision === undefined
@@ -794,6 +816,7 @@ function commit(entry, effort, functions = currentFunctions()) {
     record,
     {
       ...(apiKey ? { chat: apiKey } : {}),
+      fallback: fallbackKey,
       // A backend on the chat host inherits the chat key; otherwise the operator must
       // have provided one (menu prompt, or VISION_API_KEY / AUDIO_API_KEY).
       ...(functions.vision
@@ -881,6 +904,7 @@ function loadSession() {
       providerId: record?.providerId,
       baseUrl: record?.baseUrl || "",
       modelId: record?.modelId,
+      fallbackModel: record?.fallbackModel,
       effort: record?.effort,
       authMode: record?.authMode,
       kind:
@@ -1018,6 +1042,9 @@ function selectionOf(session) {
       : session.image.vision;
   const audio = session.audio.off ? undefined : session.audio.audio;
   return {
+    ...(session.text.fallbackModel
+      ? { fallbackModel: session.text.fallbackModel }
+      : {}),
     ...(vision?.modelId ? { vision } : {}),
     ...(audio?.modelId ? { audio } : {}),
   };
@@ -1142,7 +1169,9 @@ async function persistSetup(readline, session) {
   resolved.audioKey = session.audio.off
     ? ""
     : session.audio.newKey || session.audio.key || "";
-  commit(entry, effort, selectionOf(session));
+  commit(entry, effort, selectionOf(session), text.fallbackKey);
+  if (!options.dryRun) text.fallbackModel = currentFunctions().fallbackModel;
+  text.fallbackKey = undefined;
   return "";
 }
 
@@ -1520,6 +1549,86 @@ async function configureEffort(readline, draft) {
   draft.effort = answer || draft.effort || effortFor(entry, "");
 }
 
+async function configureTextFallback(readline, draft) {
+  if (!draft.modelId || !(await ensureCatalog({ text: draft }, undefined))) {
+    console.log("Choose a primary text model first.");
+    return;
+  }
+  const primary = activeProviderId();
+  const primaryCredential = officialProvider(draft.providerId)?.id ?? primary;
+  const providers = setupChoices().filter(
+    (choice) =>
+      choice.kind === "native" &&
+      choice.id !== primary &&
+      choice.id !== primaryCredential,
+  );
+  console.log("\nFallback text model provider");
+  console.log("0 - None");
+  console.log(`1 - Same as primary (${primary})`);
+  providers.forEach((choice, index) =>
+    console.log(`${index + 2} - ${choice.name}`),
+  );
+  console.log("b - Back");
+  const answer = (await readline.question("Choice: ")).trim().toLowerCase();
+  if (!answer || answer === "b" || answer === "back") return;
+  if (answer === "0" || answer === "none") {
+    draft.fallbackModel = undefined;
+    draft.fallbackKey = undefined;
+    return;
+  }
+  const provider =
+    answer === "1" || answer === primary
+      ? primary
+      : providers.find(
+          (choice, index) =>
+            answer === String(index + 2) || answer === choice.id,
+        )?.id;
+  if (!provider) {
+    console.log("Unknown provider.");
+    return;
+  }
+  const entries =
+    provider === primary
+      ? catalog.filter((entry) => entry.id !== draft.modelId)
+      : officialProvider(provider)
+          .getModels()
+          .filter((entry) => isChatModelId(entry.id))
+          .map(toCatalogEntry);
+  if (!entries.length) {
+    console.log("No other text models are available from this provider.");
+    return;
+  }
+  const unchangedProvider = draft.fallbackModel?.provider === provider;
+  const modelId = await pickListedModel(
+    readline,
+    entries,
+    unchangedProvider ? draft.fallbackModel.modelId : undefined,
+    `${provider}/`,
+  );
+  if (!entries.some((entry) => entry.id === modelId)) {
+    console.log(`Unknown model: ${modelId}.`);
+    return;
+  }
+  let key = unchangedProvider ? draft.fallbackKey : undefined;
+  if (provider !== primary && !key) {
+    const store = new Store(dir);
+    let authenticated;
+    try {
+      authenticated = await officialModels(new SqlCredentials(store)).checkAuth(
+        provider,
+      );
+    } finally {
+      store.close();
+    }
+    if (!authenticated) {
+      key = await askSecret(readline, "Fallback API key", false);
+      if (!key) return;
+    }
+  }
+  draft.fallbackModel = { provider, modelId };
+  draft.fallbackKey = provider === primary ? undefined : key;
+}
+
 async function testText(draft) {
   if (!draft.modelId) {
     console.log("Choose a model first.");
@@ -1573,6 +1682,10 @@ async function textMenu(readline, session) {
     console.log("2 - Model");
     console.log("3 - API key");
     console.log("4 - Effort");
+    const fallback = draft.fallbackModel;
+    console.log(
+      `5 - Fallback model: ${fallback ? `${fallback.provider}/${fallback.modelId}` : "None"}`,
+    );
     console.log("t - Test");
     printSectionEnd();
     const action = routeTextMenu(await readline.question("Choice: "));
@@ -1616,6 +1729,8 @@ async function textMenu(readline, session) {
       draft.apiKey = typed;
       resolved.apiKey = typed;
     } else if (action === "effort") await configureEffort(readline, draft);
+    else if (action === "fallback")
+      await configureTextFallback(readline, draft);
     else await testText(draft);
   }
 }
@@ -2847,7 +2962,11 @@ function selectionFromFlags() {
             : {}),
       }
     : undefined;
-  return { ...(vision ? { vision } : {}), ...(audio ? { audio } : {}) };
+  return {
+    ...(stored.fallbackModel ? { fallbackModel: stored.fallbackModel } : {}),
+    ...(vision ? { vision } : {}),
+    ...(audio ? { audio } : {}),
+  };
 }
 try {
   if (

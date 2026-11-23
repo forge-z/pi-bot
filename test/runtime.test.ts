@@ -11,7 +11,9 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { Runtime, assistantClock } from "../src/runtime.js";
+import { setupKey } from "../src/setup.js";
 import { Store, type Delivery } from "../src/store.js";
+import { withTextModelFallback } from "../src/text-model-fallback.js";
 const gateway = { catalog: async () => [] };
 async function temp() {
   return mkdtemp(join(tmpdir(), "pi-agent-test-"));
@@ -27,6 +29,106 @@ async function wait(app: Runtime, id: string) {
   await (await app.conversation(id)).waitForIdle(context);
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
+
+test("the conversation uses the saved fallback for a rate limit, then prefers the primary again", async () => {
+  const dir = await temp();
+  const { models, faux } = model([
+    fauxAssistantMessage("", {
+      stopReason: "error",
+      errorMessage: "429 Too Many Requests",
+    }),
+    fauxAssistantMessage("Primary answer"),
+  ]);
+  const backup = fauxProvider({ provider: "backup" });
+  backup.setResponses([fauxAssistantMessage("Fallback answer")]);
+  models.setProvider(backup.provider);
+  const app = await Runtime.open({
+    dir,
+    gateway,
+    models,
+    initialize: (store) =>
+      store.run(
+        "INSERT INTO meta VALUES (?,?)",
+        setupKey("demo"),
+        JSON.stringify({
+          modelId: faux.getModel().id,
+          fallbackModel: {
+            provider: backup.provider.id,
+            modelId: backup.getModel().id,
+          },
+        }),
+      ),
+  });
+  try {
+    const id = await app.create();
+    await app.submit(id, "limited", "First question", "telegram", "42");
+    await wait(app, id);
+    await app.submit(id, "healthy", "Second question", "telegram", "42");
+    await wait(app, id);
+    assert.deepEqual(
+      app.store
+        .all<Delivery>("SELECT * FROM deliveries ORDER BY rowid")
+        .map((row) => row.text.trimEnd()),
+      ["Fallback answer", "Primary answer"],
+    );
+    assert.equal(faux.state.callCount, 2);
+    assert.equal(backup.state.callCount, 1);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a hung model request times out and passes the same transcript to the fallback", async () => {
+  const { models, faux } = model([() => new Promise(() => {})]);
+  const backup = fauxProvider({ provider: "backup" });
+  backup.setResponses([
+    ({ messages }) => {
+      assert.equal(messages.at(-1)?.role, "user");
+      assert.equal(messages.at(-1)?.content, "Original question");
+      return fauxAssistantMessage("Fallback answer");
+    },
+  ]);
+  models.setProvider(backup.provider);
+  const routed = withTextModelFallback(
+    models,
+    { provider: backup.provider.id, modelId: backup.getModel().id },
+    50,
+  );
+  const result = await routed.completeSimple(faux.getModel(), {
+    messages: [
+      { role: "user", content: "Original question", timestamp: Date.now() },
+    ],
+  });
+  assert.equal(result.provider, "backup");
+  assert.deepEqual(result.content, [{ type: "text", text: "Fallback answer" }]);
+  assert.equal(faux.state.callCount, 1);
+  assert.equal(backup.state.callCount, 1);
+});
+
+test("cancelling an active model request does not call the fallback", async () => {
+  const controller = new AbortController();
+  const { models, faux } = model([
+    () => {
+      controller.abort();
+      return fauxAssistantMessage("Aborted");
+    },
+  ]);
+  const backup = fauxProvider({ provider: "backup" });
+  models.setProvider(backup.provider);
+  const routed = withTextModelFallback(models, {
+    provider: backup.provider.id,
+    modelId: backup.getModel().id,
+  });
+  const result = await routed.completeSimple(
+    faux.getModel(),
+    { messages: [] },
+    { signal: controller.signal },
+  );
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(faux.state.callCount, 1);
+  assert.equal(backup.state.callCount, 0);
+});
 
 test("the date line is the calendar day in TZ, with no clock time", () => {
   const now = new Date("2026-11-09T18:00:00Z");

@@ -17,6 +17,11 @@ import {
   setupChoices,
 } from "./native-providers.js";
 
+export interface TextModelRef {
+  provider: string;
+  modelId: string;
+}
+
 /**
  * What `npm run setup` records: the chosen provider, endpoint, model and the optional
  * per-function backends. The API key is not here - it goes to the `credentials` table,
@@ -27,6 +32,7 @@ export interface SetupRecord {
   baseUrl: string;
   modelId: string;
   effort?: string;
+  fallbackModel?: TextModelRef;
   /** Persisted on the volume; equivalent to `LLM_AUTH=chatgpt` when env is unset. */
   authMode?: "chatgpt";
   /** Probe result for the chat model, so runtime stops guessing it reads images. */
@@ -134,7 +140,12 @@ export const functionKeyId = (kind: "vision" | "audio") => `llm-${kind}`;
 export function writeStoredSetup(
   db: DatabaseSync,
   record: SetupRecord,
-  keys: { chat?: string; vision?: string; audio?: string } = {},
+  keys: {
+    chat?: string;
+    vision?: string;
+    audio?: string;
+    fallback?: string;
+  } = {},
   mode = "live",
 ) {
   // The wizard may run on a fresh volume, before the app created its schema.
@@ -158,6 +169,11 @@ export function writeStoredSetup(
     record.providerId === "openai-codex"
   )
     db.prepare("DELETE FROM credentials WHERE provider=?").run("llm");
+  if (record.fallbackModel && keys.fallback)
+    write.run(
+      record.fallbackModel.provider,
+      JSON.stringify({ type: "api_key", key: keys.fallback }),
+    );
   // A function on another host needs its own key; empty removes a stale one.
   for (const kind of ["vision", "audio"] as const) {
     const key = keys[kind];
@@ -246,11 +262,23 @@ export function migrateLegacyOfficialSetup(
     ).run(providerId, JSON.stringify({ type: "api_key", key: legacy.key }));
   }
   if (!recordCurrent) {
+    const fallback = record.fallbackModel;
+    const nativeFallback =
+      fallback?.provider === "llm"
+        ? findCatalogModel(providerId, fallback.modelId)
+        : undefined;
     const next: SetupRecord = {
       ...record,
       providerId,
       baseUrl,
       modelId: model.id,
+      ...(fallback?.provider === "llm"
+        ? {
+            fallbackModel: nativeFallback
+              ? { provider: providerId, modelId: nativeFallback.id }
+              : undefined,
+          }
+        : {}),
     };
     db.prepare(
       "INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -938,6 +966,8 @@ export function routeTextMenu(answer: string) {
     key: "key",
     "4": "effort",
     effort: "effort",
+    "5": "fallback",
+    fallback: "fallback",
     t: "test",
     test: "test",
   } as const);
