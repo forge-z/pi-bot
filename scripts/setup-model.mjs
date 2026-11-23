@@ -83,9 +83,9 @@ import {
   loadHarnessConfig,
 } from "../dist/src/harness-config.js";
 import {
-  activeWebProviders,
   readVolumeWebKeys,
   resolveWebKeys,
+  resolveWebProviders,
   saveWebSetup,
 } from "../dist/src/web-config.js";
 import {
@@ -1001,7 +1001,7 @@ function sessionStatus(session, summary) {
     audio: summary.audioOn && !session.audio.off,
     mcp: mcpOn,
     web: Object.values(web).some(
-      (order) => activeWebProviders(order, webKeys).length > 0,
+      (order) => resolveWebProviders(order, webKeys).available.length > 0,
     ),
   });
 }

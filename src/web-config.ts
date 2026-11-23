@@ -69,13 +69,20 @@ export function resolveWebKeys(env: Env, stored: WebKeys): WebKeys {
   return keys;
 }
 
-export function activeWebProviders<P extends WebProvider>(
+export function resolveWebProviders<P extends WebProvider>(
   order: readonly P[],
   keys: WebKeys,
 ) {
-  return order.filter(
-    (provider: WebProvider) => provider === "local" || Boolean(keys[provider]),
-  );
+  const available: P[] = [];
+  const missingKeys: string[] = [];
+  const missingKey = (provider: WebProvider) =>
+    provider === "local" || keys[provider] ? undefined : WEB_KEY_ENV[provider];
+  for (const provider of order) {
+    const key = missingKey(provider);
+    if (key) missingKeys.push(`${provider} (${key})`);
+    else available.push(provider);
+  }
+  return { available, missingKeys };
 }
 
 export function readVolumeWebKeys(dir: string): WebKeys {
@@ -191,11 +198,19 @@ export function describeWebSetup(dir: string, env: Env) {
   const keys = resolveWebKeys(env, readVolumeWebKeys(dir));
   const { web } = loadHarnessConfig({ ...env, DATA_DIR: dir });
   return (["search", "extract"] as const).map((operation) => {
-    const providers = activeWebProviders(web[operation], keys);
-    if (providers.length === 0)
+    if (web[operation].length === 0)
       return `web.${operation}: native tool disabled (MCP)`;
-    if (providers.length === 1)
-      return `web.${operation}: ${providers[0]} — warning: no fallback`;
-    return `web.${operation}: ${providers.join(" → ")}`;
+    const { available, missingKeys } = resolveWebProviders(
+      web[operation],
+      keys,
+    );
+    const skipped = missingKeys.length
+      ? `; missing API keys: ${missingKeys.join(", ")}`
+      : "";
+    if (available.length === 0)
+      return `web.${operation}: all configured providers unavailable${skipped}`;
+    if (available.length === 1)
+      return `web.${operation}: ${available[0]} — warning: no fallback${skipped}`;
+    return `web.${operation}: ${available.join(" → ")}${skipped}`;
   });
 }

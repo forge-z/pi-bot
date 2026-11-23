@@ -60,7 +60,7 @@ For chat and scheduled runs, the bot tries the selected model first (including a
 
 ### Native web search and extraction
 
-`web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
+`web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page and returns `publishedDate` from provider metadata, or `null` if none is supplied. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
 
 In `npm run setup`, select **Web search** to choose a primary and optional fallback for each tool. Select a slot, choose a provider from the numbered menu, and use **Save and back** to save the section. Keys are shared between slots and stored on the volume. The environment variables below override saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations remains:
 
@@ -84,7 +84,7 @@ web:
 
 Brave's LLM Context API returns excerpts from search results, not arbitrary-URL extraction. Local needs no API key. Like [Piko](https://github.com/dandkong/piko/blob/8e9f4405fa1c87e1bbdc7a73a41938442284b9aa/server/tools/web-extract.ts), it uses Mozilla Readability to extract the main article from public HTML, converts it to Markdown, and falls back to cleaned page text if it cannot identify an article. It does not run JavaScript or load embedded resources; choose a hosted extractor for pages that require rendering. Local checks every redirect and blocks non-public destinations.
 
-A keyed provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, the tool tries the fallback after an error, rate limit, timeout, zero search results, or empty or whitespace-only page content. If the fallback also returns an empty result, that result is returned normally. If no fallback is available or it fails, a successful empty result from the primary is still returned. An empty list disables that operation. Local is available only when explicitly selected. If no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
+A keyed provider without a key is skipped. On its first call after startup, each tool warns about skipped providers and names the missing environment variables. If all configured providers lack keys, the tool returns an explicit error and the assistant can use an available MCP tool. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, the tool tries the fallback after an error, rate limit, timeout, zero search results, or empty or whitespace-only page content. If the fallback also returns an empty result, that result is returned normally. If no fallback is available or it fails, a successful empty result from the primary is still returned. An empty list disables that operation. Local is available only when explicitly selected. Restart after changing the setup.
 
 ### Sandbox
 
