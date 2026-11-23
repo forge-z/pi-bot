@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Setup, diagnostics, built-in tool output, and chat messages use English. Setup no longer accepts Portuguese menu choices or yes/no answers. User and model content is unchanged.
+- Native web search and extraction now try the configured fallback when the primary succeeds but returns no results or no readable text.
 - Today’s and yesterday’s daily memory notes are included in chat and scheduled prompts, up to 2 KB per day, so recent notes no longer require a `memory_search` call.
 
 ### Added
