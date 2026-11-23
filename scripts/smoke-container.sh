@@ -34,6 +34,48 @@ chmod 644 "$fixture_dir/telegram.mjs"
 
 test "$(docker run --rm --network none --entrypoint id "$image" -u)" = 1000
 docker volume create "$volume" >/dev/null
+docker run --rm --network none --user 0:0 \
+  --mount "type=volume,source=$volume,target=/app/data" \
+  --entrypoint sh "$image" -ec '
+    umask 077
+    printf "web:\\n  search: [firecrawl, exa]\\n" > /app/data/config.yaml
+    touch /app/data/app.sqlite
+    printf fixture > /app/data/unrelated
+    ln -s unrelated /app/data/app.sqlite-journal
+  '
+docker run --rm --network none --read-only --cap-drop ALL \
+  --mount "type=volume,source=$volume,target=/app/data" \
+  --entrypoint sh "$image" -ec 'test "$(id -u)" = 1000 && test ! -w /app/data/config.yaml'
+docker run --rm --network none --read-only --user 0:0 \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --security-opt no-new-privileges:true \
+  --mount "type=volume,source=$volume,target=/app/data" \
+  "$image" node scripts/repair-data-permissions.mjs
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --mount "type=volume,source=$volume,target=/app/data" \
+  "$image" node --input-type=module -e '
+    import assert from "node:assert/strict";
+    import { lstatSync, statSync, unlinkSync } from "node:fs";
+    import { DatabaseSync } from "node:sqlite";
+    import { loadHarnessConfig } from "./dist/src/harness-config.js";
+    import { readWebKeys, saveWebSetup } from "./dist/src/web-config.js";
+    assert.equal(process.getuid(), 1000);
+    assert.equal(statSync("/app/data/config.yaml").uid, 1000);
+    assert.equal(statSync("/app/data/config.yaml").mode & 0o777, 0o600);
+    assert.equal(statSync("/app/data/app.sqlite").uid, 1000);
+    assert.equal(statSync("/app/data/unrelated").uid, 0);
+    assert.ok(lstatSync("/app/data/app.sqlite-journal").isSymbolicLink());
+    unlinkSync("/app/data/app.sqlite-journal");
+    assert.deepEqual(loadHarnessConfig().web.search, ["firecrawl", "exa"]);
+    const db = new DatabaseSync("/app/data/app.sqlite");
+    const web = { search: ["exa", "context"], extract: ["local", "context"] };
+    saveWebSetup(db, process.env, web, { exa: "offline-web-test-key" });
+    assert.deepEqual(loadHarnessConfig().web, web);
+    assert.deepEqual(readWebKeys(db), { exa: "offline-web-test-key" });
+    db.close();
+  '
+echo "Offline volume repair: root-owned config recovered, symlink skipped, settings saved as UID 1000"
 for run in 1 2; do
   docker run -d --name "$container" --network none --read-only \
     --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL \

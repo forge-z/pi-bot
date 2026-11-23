@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Setup and doctor report the config path and ownership when web settings cannot be written. A config file the gateway cannot read now stops startup instead of silently using defaults.
+- Docker Compose repairs ownership and owner access for the volume's config and SQLite files before starting the unprivileged gateway.
 
 ### Added
 

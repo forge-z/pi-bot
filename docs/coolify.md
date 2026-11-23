@@ -93,7 +93,7 @@ The named volume `pi_bot_data` mounts at `/app/data`. Data is stored in `/app/da
 
 ## 5. Container hardening
 
-Compose sets `read_only: true`, a 16 MB tmpfs at `/tmp`, `cap_drop: ALL`, `no-new-privileges`, `init: true`, `restart: unless-stopped`, and a 45-second shutdown grace period. The health check runs `node dist/src/healthcheck.js` every 30 seconds after a 40-second start period, with three attempts.
+The gateway runs as UID 1000 with a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. On redeploy, Compose first runs a one-shot volume repair with only the capabilities needed to restore access to the data directory, `config.yaml`, and SQLite files. The repair makes no network requests, does not follow symlinks, and does not walk the volume. Setup runs as the same non-root user as the gateway. The gateway health check runs `node dist/src/healthcheck.js` every 30 seconds after a 40-second start period, with three attempts.
 
 The only writable locations should be `/app/data` and `/tmp`. If writes are denied, verify the volume mount before changing `read_only`. The first poll must finish before the service reports healthy, so an initial `unhealthy` with normal logs can be temporary.
 
@@ -144,4 +144,4 @@ Use the actual names from `docker volume ls`: `old` is the existing `pi_agent_tg
 
 There is no public port, domain, webhook, or web chat in this deployment. Do not run two processes against one volume.
 
-Run setup as the container's default `node` user (UID 1000), not as root. If setup or doctor reports that `/app/data/config.yaml` cannot be written, check the file's owner and mode on the mounted volume. The file should be owned by the gateway user; mode `0600` is sufficient. Fix existing ownership on the Docker host rather than making the file world-writable or granting the gateway extra privileges.
+If setup or doctor reports a permissions error on `/app/data/config.yaml`, redeploy with the repository's Docker Compose file so the repair runs on the existing volume. Check the `pi-bot-volume-repair` logs if it cannot complete. An external `CONFIG_FILE` override is not changed by the repair.
