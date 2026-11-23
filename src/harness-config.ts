@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { DEFAULT_REACTION_DELAY_MS, reactionDelayMs } from "./reaction-ack.js";
 import type { MemoryConfig } from "./memory.js";
+import {
+  WEB_CHOICES,
+  type WebConfig,
+  type WebProvider,
+} from "./web-providers.js";
+
+export type { WebConfig } from "./web-providers.js";
 
 /**
  * Product defaults in `config.default.yaml`, with an optional user file on top.
@@ -63,34 +70,33 @@ export interface HarnessConfig {
   whatsappAttachmentUrls: AttachmentUrlPolicy;
 }
 
-export const WEB_PROVIDERS = ["exa", "firecrawl"] as const;
-export type WebProvider = (typeof WEB_PROVIDERS)[number];
-export type WebConfig = Record<"search" | "extract", readonly WebProvider[]>;
-
 const WEB_DEFAULTS: WebConfig = {
-  search: WEB_PROVIDERS,
-  extract: WEB_PROVIDERS,
+  search: ["exa", "firecrawl"],
+  extract: ["exa", "firecrawl"],
 };
-
-export function isWebProvider(value: unknown): value is WebProvider {
-  return value === "exa" || value === "firecrawl";
-}
 
 function webFrom(value: unknown): WebConfig {
   if (!isRecord(value)) return WEB_DEFAULTS;
-  const order = (operation: keyof WebConfig) => {
+  const order = <P extends WebProvider>(
+    operation: keyof WebConfig,
+    choices: readonly P[],
+    fallback: readonly P[],
+  ): readonly P[] => {
     const list = value[operation];
-    if (list === undefined) return WEB_DEFAULTS[operation];
+    if (list === undefined) return fallback;
     if (
       Array.isArray(list) &&
-      list.every(isWebProvider) &&
+      list.every((provider) => choices.includes(provider)) &&
       new Set(list).size === list.length
     )
       return list;
     console.error(`Pi-Agent: web.${operation} is invalid. Using the default.`);
-    return WEB_DEFAULTS[operation];
+    return fallback;
   };
-  return { search: order("search"), extract: order("extract") };
+  return {
+    search: order("search", WEB_CHOICES.search, WEB_DEFAULTS.search),
+    extract: order("extract", WEB_CHOICES.extract, WEB_DEFAULTS.extract),
+  };
 }
 
 export interface AttachmentUrlPolicy {

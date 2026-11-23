@@ -34,8 +34,9 @@
 # A server with its own `tools` list must list them to make them declared reads.
 
 # Native read tools. Each list is ordered: primary, then fallback. Set [] to
-# disable the operation. Providers without a key are skipped. Keys are not
-# stored here: use npm run setup or EXA_API_KEY / FIRECRAWL_API_KEY.
+# disable the operation. Keyed providers without a key are skipped. The
+# explicitly selected "local" extractor needs no key. Use npm run setup
+# or provider API key variables instead of saving keys in this file.
 web:
   search: [exa, firecrawl]
   extract: [exa, firecrawl]

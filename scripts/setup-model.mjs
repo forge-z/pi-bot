@@ -78,18 +78,18 @@ import {
   modelDefaultsKey,
 } from "../dist/src/settings.js";
 import { Store, SqlCredentials } from "../dist/src/store.js";
-import {
-  isWebProvider,
-  loadHarnessConfig,
-  WEB_PROVIDERS,
-} from "../dist/src/harness-config.js";
+import { loadHarnessConfig } from "../dist/src/harness-config.js";
 import {
   activeWebProviders,
   readVolumeWebKeys,
   resolveWebKeys,
   saveWebSetup,
-  WEB_KEY_ENV,
 } from "../dist/src/web-config.js";
+import {
+  WEB_CHOICES,
+  WEB_KEY_ENV,
+  WEB_PROVIDER_LABELS,
+} from "../dist/src/web-providers.js";
 import {
   oauthInteractionFromReadline,
   runSubscriptionLogin,
@@ -2345,66 +2345,109 @@ async function mcpMenu(readline, session) {
   }
 }
 
-async function webMenu(readline) {
-  console.log("\nWeb search");
-  console.log("Providers: exa, firecrawl, or none. Enter b to go back.");
-  const { web } = loadHarnessConfig(process.env);
-  const draft = {};
-  for (const [operation, label] of [
-    ["search", "Search"],
-    ["extract", "Extraction"],
-  ]) {
-    const order = [];
-    for (const [index, role] of ["primary", "fallback"].entries()) {
-      const current = web[operation][index] ?? "none";
-      for (;;) {
-        const input = (
-          await readline.question(`${label} ${role} [${current}]: `)
-        )
-          .trim()
-          .toLowerCase();
-        const provider = input || current;
-        if (provider === "b" || provider === "back") return;
-        if (provider === "none") break;
-        if (isWebProvider(provider) && !order.includes(provider)) {
-          order.push(provider);
-          break;
-        }
-        console.log("Choose a different provider: exa, firecrawl, or none.");
-      }
-    }
-    draft[operation] = order;
+const WEB_FIELDS = [
+  ["search", 0, "Search primary"],
+  ["search", 1, "Search fallback"],
+  ["extract", 0, "Extraction primary"],
+  ["extract", 1, "Extraction fallback"],
+];
+
+async function chooseWebProvider(readline, operation, label, order, role) {
+  const choices = WEB_CHOICES[operation];
+  console.log(`\n${label}`);
+  choices.forEach((provider, index) =>
+    console.log(`${index + 1} - ${WEB_PROVIDER_LABELS[provider]}`),
+  );
+  console.log("0 - None");
+  console.log("b - Back");
+  for (;;) {
+    const input = (await readline.question("Choice: ")).trim().toLowerCase();
+    if (input === "b" || input === "back") return;
+    if (input === "0" || input === "none") return null;
+    const provider = choices.find(
+      (choice, index) => input === String(index + 1) || input === choice,
+    );
+    if (provider && provider !== order[1 - role]) return provider;
+    console.log(
+      "Choose a provider different from the other slot, or choose None.",
+    );
   }
+}
+
+async function webMenu(readline) {
+  const { web } = loadHarnessConfig(process.env);
+  const draft = { search: [...web.search], extract: [...web.extract] };
   const stored = readVolumeWebKeys(dir);
   const keys = {};
-  for (const provider of WEB_PROVIDERS) {
-    if (!Object.values(draft).some((order) => order.includes(provider)))
+  for (;;) {
+    const available = resolveWebKeys(process.env, { ...stored, ...keys });
+    console.log("\nWeb search");
+    console.log("Set a primary and optional fallback for each operation.");
+    for (const [index, [operation, role, label]] of WEB_FIELDS.entries()) {
+      const provider = draft[operation][role];
+      const name = provider ? WEB_PROVIDER_LABELS[provider] : "None";
+      const missing = provider && provider !== "local" && !available[provider];
+      console.log(
+        `${index + 1} - ${label.padEnd(20)} ${name}${missing ? " (key not set)" : ""}`,
+      );
+    }
+    printSectionEnd();
+    const input = (await readline.question("Choice: ")).trim().toLowerCase();
+    if (input === "b" || input === "back") return;
+    if (["s", "save", "save and back"].includes(input)) {
+      try {
+        saveWebSetup(db, process.env, draft, keys);
+        console.log("Web settings saved. Restart the bot to apply.");
+        return;
+      } catch {
+        console.log(
+          "Could not save web settings. Check config.yaml and the volume.",
+        );
+        continue;
+      }
+    }
+    const field = WEB_FIELDS.find(
+      ([, , label], i) =>
+        input === String(i + 1) || input === label.toLowerCase(),
+    );
+    if (!field) {
+      console.log("Unknown choice. Use 1, 2, 3, 4, b, or s.");
       continue;
-    console.log(
-      `${WEB_KEY_ENV[provider]} in the environment takes precedence. Enter keeps the saved key; - removes it.`,
-    );
-    const value = await askSecret(
+    }
+    const [operation, role, label] = field;
+    const order = draft[operation];
+    if (role === 1 && !order[0]) {
+      console.log("Choose a primary provider before setting its fallback.");
+      continue;
+    }
+    const provider = await chooseWebProvider(
       readline,
-      `${provider} API key`,
-      Boolean(stored[provider]),
+      operation,
+      label,
+      order,
+      role,
     );
-    if (value) keys[provider] = value === "-" ? null : value;
-  }
-  if (
-    !(await askYesNo(
-      (prompt) => readline.question(prompt),
-      "Save web settings?",
-      true,
-    ))
-  )
-    return;
-  try {
-    saveWebSetup(db, process.env, draft, keys);
-    console.log("Web settings saved. Restart the bot to apply.");
-  } catch {
-    console.log(
-      "Could not save web settings. Check config.yaml and the volume.",
-    );
+    if (provider === undefined) continue;
+    if (provider === null) {
+      if (role === 0 && order[1])
+        console.log("Removing the primary also removes its fallback.");
+      order.length = Math.min(role, order.length);
+      continue;
+    }
+    order[role] = provider;
+    if (provider !== "local") {
+      console.log(
+        `${WEB_KEY_ENV[provider]} in the environment takes precedence. Enter keeps the saved key; - removes it.`,
+      );
+      const value = await askSecret(
+        readline,
+        `${WEB_PROVIDER_LABELS[provider]} API key`,
+        Boolean(
+          Object.hasOwn(keys, provider) ? keys[provider] : stored[provider],
+        ),
+      );
+      if (value) keys[provider] = value === "-" ? null : value;
+    }
   }
 }
 

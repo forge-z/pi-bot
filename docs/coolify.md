@@ -41,7 +41,7 @@ No environment variables are required to start the container. `npm run setup` sa
 - `TELEGRAM_ALLOWED_CHATS`: optional environment-only override. Chat IDs for groups and supergroups are negative. By default it uses the allowed user IDs for DMs.
 - `LLM_BASE_URL` and `LLM_API_KEY`: configure the compatible `llm` provider. They do not override a complete official provider setup.
 - `EXECUTOR_MCP_URL` and `EXECUTOR_TOKEN`: use together to override the saved Executor configuration. Setup offers Composio, Executor, Upsy, Self-hosted, Both, and None. `COMPOSIO_MCP_URL`, `COMPOSIO_API_KEY`, and `COMPOSIO_USER_ID` override saved Composio values. `SELF_HOSTED_MCP_URL` configures a generic gateway, with optional `SELF_HOSTED_TOKEN` and `SELF_HOSTED_HEADER`. Upsy credentials come from its OAuth setup flow, not environment variables.
-- `EXA_API_KEY` and `FIRECRAWL_API_KEY`: override keys saved through **Web search**. `npm run doctor` shows active providers and warns when there is no fallback.
+- [Web provider API key variables](../README.md#native-web-search-and-extraction) override keys saved through **Web search**. Local extraction needs no key. `npm run doctor` shows active providers and warns when there is no fallback.
 - `TZ`: container clock timezone for logs, for example `America/Sao_Paulo`. The container defaults to UTC. Schedules store their own IANA zones, and setup does not write `TZ`.
 - `LLM_MODELS`, `LLM_INPUT`, `VISION_*`, `AUDIO_*`, `ASYNC_JOB_*`, and `INSTABOX_*`: see [the example environment file](../.env.example) for details.
 

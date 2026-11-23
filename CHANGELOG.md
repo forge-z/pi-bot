@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Telegram and WhatsApp approval cards for a reviewable read offer "Always allow this". The rule is one MCP server, one held tool, the resource the arguments name (calendar, folder, repository, ...) and the credential binding, stored in SQLite with date and origin. A matching read is resumed without a card, also in scheduled runs, and counts as remembered in `/receipt`. `/approvals` lists rules and `/revoke <n>` removes one. Writes, sends, deletions and payments never get the button.
 - Telegram and WhatsApp can show per-turn tool, approval, search, token, and model-cost metadata with `/receipt [n]`. The SQLite receipt does not copy conversation text, arguments, page content, or keys. The reply footer is off by default.
-- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Web search** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With neither provider configured, the assistant keeps using its MCP tools.
+- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Web search** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With no available provider, the assistant keeps using its MCP tools.
+- The **Web search** setup now offers numbered primary and fallback menus for eight search providers and seven hosted extractors. Keyless **Local** extraction uses Piko's Readability-to-Markdown approach on public HTML pages.
 - Long-term memory in editable Markdown on the data volume. The idle curator uses the conversation's model by default and does not run from schedules. Daily notes are searchable with `memory_search`; Telegram and WhatsApp support `/memory` and `/forget <text>`.
 
 ### Security
