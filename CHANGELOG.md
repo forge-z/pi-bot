@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native web search and extraction now try the configured fallback when the primary succeeds but returns no results or no readable text.
 - Today’s and yesterday’s daily memory notes are included in chat and scheduled prompts, up to 2 KB per day, so recent notes no longer require a `memory_search` call.
 
+### Fixed
+
+- Setup and doctor report the config path and ownership when web settings cannot be written. A config file the gateway cannot read now stops startup instead of silently using defaults.
+
 ### Added
 
 - Telegram and WhatsApp approval cards for a reviewable read offer "Always allow this". The rule is one MCP server, one held tool, the resource the arguments name (calendar, folder, repository, ...) and the credential binding, stored in SQLite with date and origin. A matching read is resumed without a card, also in scheduled runs, and counts as remembered in `/receipt`. `/approvals` lists rules and `/revoke <n>` removes one. Writes, sends, deletions and payments never get the button.

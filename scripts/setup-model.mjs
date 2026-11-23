@@ -78,7 +78,10 @@ import {
   modelDefaultsKey,
 } from "../dist/src/settings.js";
 import { Store, SqlCredentials } from "../dist/src/store.js";
-import { loadHarnessConfig } from "../dist/src/harness-config.js";
+import {
+  HarnessConfigAccessError,
+  loadHarnessConfig,
+} from "../dist/src/harness-config.js";
 import {
   activeWebProviders,
   readVolumeWebKeys,
@@ -2399,9 +2402,11 @@ async function webMenu(readline) {
         saveWebSetup(db, process.env, draft, keys);
         console.log("Web settings saved. Restart the bot to apply.");
         return;
-      } catch {
+      } catch (error) {
         console.log(
-          "Could not save web settings. Check config.yaml and the volume.",
+          error instanceof HarnessConfigAccessError
+            ? error.message
+            : "Could not save web settings. Check config.yaml and the volume.",
         );
         continue;
       }
@@ -2983,6 +2988,10 @@ try {
       if (options.aggregators !== undefined) await aggregatorsFromFlags();
     }
   }
+} catch (error) {
+  if (!(error instanceof HarnessConfigAccessError)) throw error;
+  console.error(error.message);
+  process.exitCode = 1;
 } finally {
   closeDb();
 }

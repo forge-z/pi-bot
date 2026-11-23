@@ -143,3 +143,5 @@ Use the actual names from `docker volume ls`: `old` is the existing `pi_agent_tg
 | Container is initially unhealthy               | Allow about a minute for the first polling cycle before investigating.                                                                           |
 
 There is no public port, domain, webhook, or web chat in this deployment. Do not run two processes against one volume.
+
+Run setup as the container's default `node` user (UID 1000), not as root. If setup or doctor reports that `/app/data/config.yaml` cannot be written, check the file's owner and mode on the mounted volume. The file should be owned by the gateway user; mode `0600` is sufficient. Fix existing ownership on the Docker host rather than making the file world-writable or granting the gateway extra privileges.
