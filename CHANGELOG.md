@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista do próprio servidor declara como leitura; um verbo de leitura no nome ou um programa `execute` não basta. O WhatsApp não baixa mais anexos por URL, a menos que o host esteja em `whatsapp.attachment_urls.hosts`.
 
+pt-BR: `/recibo` mostra o último turno e `/recibo <n>` consulta os anteriores. Para acrescentar uma linha curta às respostas finais, use `turn_receipt.footer: true`.
+
 ### Added
 
-- Long-term memory in editable Markdown on the data volume. The idle curator uses the conversation's model by default and does not run from schedules. Daily notes are searchable with `memory_search`; Telegram and WhatsApp support `/memoria` and `/esquecer <text>`.
+- Telegram and WhatsApp can show per-turn tool, approval, search, token, and model-cost metadata with `/recibo [n]`. The SQLite receipt does not copy conversation text, arguments, page content, or keys. The reply footer is off by default.
+- Long-term memory in editable Markdown on the data volume. The idle curator uses the conversation's model by default and does not run from schedules. Daily notes are searchable with `memory_search`; Telegram and WhatsApp support `/memory` and `/forget <text>`.
 
 ### Security
 

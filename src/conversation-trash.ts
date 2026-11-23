@@ -444,6 +444,7 @@ export function removeAppHistory(store: Store, id: string, now: number) {
       "requests",
       "memory_inputs",
       "memory_curator",
+      "turn_receipts",
       "request_telegram_routes",
       "actions",
       "telegram",

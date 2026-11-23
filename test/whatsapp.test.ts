@@ -3506,11 +3506,7 @@ test("WhatsApp memory commands read and forget notes without starting a turn", a
   await mkdir(join(dir, "memory"));
   await writeFile(join(dir, "memory", "MEMORY.md"), "- Prefers tea\n");
   const chat = "15550001111@s.whatsapp.net";
-  for (const [index, text] of [
-    "/memoria",
-    "/esquecer tea",
-    "/memoria",
-  ].entries())
+  for (const [index, text] of ["/memory", "/forget tea", "/memory"].entries())
     await acceptWhatsAppMessage(
       app,
       whatsappText(chat, `memory${index}`, text),

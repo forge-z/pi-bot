@@ -95,7 +95,7 @@ The system prompt lists each name and description, in that order, after the base
 
 The bot reads up to 8 KB from `$DATA_DIR/memory/MEMORY.md` on each turn. It can look up daily notes (`YYYY-MM-DD.md`, UTC) using `memory_search`. Both files are plain Markdown you can edit. Memory is shared across all authorized chats and topics for the installation, including scheduled turns. Only direct user messages count toward curation: after 30 idle minutes and at least three new user messages, the background curator reviews the new messages once. It uses the conversation's configured model by default, with no shell, MCP, or extra model required.
 
-On Telegram or WhatsApp, `/memoria` shows `MEMORY.md` and `/esquecer <text>` removes matching lines from both durable and daily notes (case-insensitive literal text). These commands do not rewrite conversation history or prior replies.
+On Telegram or WhatsApp, `/memory` shows `MEMORY.md` and `/forget <text>` removes matching lines from both durable and daily notes (case-insensitive literal text). These commands do not rewrite conversation history or prior replies.
 
 To disable memory, set `memory.enabled: false` in `$DATA_DIR/config.yaml` and restart. To use another already configured model just for curation, set `memory.curator_model.provider` and `memory.curator_model.model_id` in that file.
 
@@ -195,11 +195,12 @@ Replies are plain text, cut at 3800 characters. A Markdown heading becomes `*tit
 
 ### Commands
 
-There is no BotFather menu. Type the command in the chat. `/help` and `/start` send this list. The names stay in English:
+There is no BotFather menu. Type the command in the chat. `/help` and `/start` send this list:
 
 | Command     | What WhatsApp does                                                                                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/status`   | Status, tokens, and cost for this chat                                                                                                                                 |
+| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                                                                                             |
 | `/stop`     | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
 | `/new`      | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
 | `/resume`   | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
@@ -245,9 +246,12 @@ On Telegram the app registers this menu on start. There is nothing to set in Bot
 | `/stop`     | Stop this topic                                                                                   |
 | `/compact`  | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
 | `/status`   | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
+| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                        |
 | `/help`     | This list                                                                                         |
 
 `/resume` dismisses an uncertain MCP result without repeating the call (the call may already have run) and continues a task that was parked after a crash. `/new` does not clear an uncertain result.
+
+Receipts are stored per conversation from the time this feature is installed. They show tool counts, execution time, errors, approval requests, unresolved MCP outcomes, calls to search tools, and model tokens and cost when known. They don't store conversation text, tool arguments, page content, or keys. Set `turn_receipt.footer: true` in `config.yaml` to add a short receipt line to final chat replies; it is off by default.
 
 Each native topic (a forum topic) has its own history, model, and effort.
 

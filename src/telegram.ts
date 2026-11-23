@@ -45,6 +45,7 @@ import {
   CommandError,
   chatSeesImages,
   commandStatus,
+  commandReceipt,
   resumeReport,
 } from "./commands.js";
 import {
@@ -435,9 +436,10 @@ const CLEAN_HELP = [
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
   "/compact — compact this topic (optional instructions)",
-  "/memoria — show saved memory",
-  "/esquecer <text> — remove matching lines from memory",
+  "/memory — show saved memory",
+  "/forget <text> — remove matching lines from memory",
   "/status — status, including tokens and cost",
+  "/recibo [n] — turn receipt",
   "/help — help",
   "Each native topic has its own history. Create topics in Telegram. Model choices persist after a restart. Automatic compaction uses the active model and effort. /compact runs that same compaction now; text after the command is optional focus for this topic. Upsy sign-in: open the link the bot sends (or the one npm run setup prints) and paste the final browser URL back, even if the page does not load.",
 ].join("\n");
@@ -1250,14 +1252,23 @@ export class Telegram {
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
         );
-      } else if (text === "/memoria") {
+      } else if (text === "/memory") {
         this.app.telegramChats.authorize(id, owner);
         reply(this.app.memory?.show() ?? "Memory is disabled.");
-      } else if (command === "esquecer") {
+      } else if (command === "forget") {
         this.app.telegramChats.authorize(id, owner);
         reply(
-          this.app.memory?.forget(text.slice("/esquecer".length).trim()) ??
+          this.app.memory?.forget(text.slice("/forget".length).trim()) ??
             "Memory is disabled.",
+        );
+      } else if (command === "recibo") {
+        reply(
+          commandReceipt(
+            this.app,
+            id,
+            { source: "telegram", ...owner },
+            text.slice("/recibo".length).trim(),
+          ),
         );
       } else if (command === "compact") {
         const instructions = text.slice("/compact".length).trim();

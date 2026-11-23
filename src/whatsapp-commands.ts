@@ -12,6 +12,7 @@ import {
   CommandError,
   COMPACTION_STATUS,
   commandStatus,
+  commandReceipt,
   resumeReport,
   type CommandAccess,
 } from "./commands.js";
@@ -24,12 +25,13 @@ const MENU_CAP = 30;
 
 const HELP = [
   "/status — status, tokens and cost",
+  "/recibo [n] — turn receipt",
   "/stop — stop this chat",
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
   "/compact — compact this chat (optional instructions after the command)",
-  "/memoria — show saved memory",
-  "/esquecer <text> — remove matching lines from memory",
+  "/memory — show saved memory",
+  "/forget <text> — remove matching lines from memory",
   "/model — choose a model (reply with the number)",
   "/thinking — choose effort (reply with the number)",
   "/crons — schedules in this chat (reply with the number to turn one on or off)",
@@ -231,7 +233,8 @@ async function runCommand(
     name === "compact" ||
     name === "model" ||
     name === "thinking" ||
-    name === "esquecer";
+    name === "forget" ||
+    name === "recibo";
   if (name && args && !takesArgs) {
     reply(app, message, conversationId, `Unknown command.\n${HELP}`);
     return;
@@ -246,6 +249,15 @@ async function runCommand(
       message,
       conversationId,
       `${await commandStatus(app, conversationId, access, "chat")}\n${COMPACTION_STATUS}`,
+    );
+    return;
+  }
+  if (name === "recibo") {
+    reply(
+      app,
+      message,
+      conversationId,
+      commandReceipt(app, conversationId, access, args),
     );
     return;
   }
@@ -278,10 +290,10 @@ async function runCommand(
     );
     return;
   }
-  if (name === "memoria" || name === "esquecer") {
+  if (name === "memory" || name === "forget") {
     app.commands.authorize(conversationId, access);
     const text =
-      name === "memoria" ? app.memory?.show() : app.memory?.forget(args);
+      name === "memory" ? app.memory?.show() : app.memory?.forget(args);
     reply(app, message, conversationId, text ?? "Memory is disabled.");
     return;
   }

@@ -54,6 +54,7 @@ export interface HarnessConfig {
    * From `reaction_delay_ms`; missing or invalid stays at the default.
    */
   reactionDelayMs: number;
+  turnReceiptFooter: boolean;
   /** `subagents` block. Off unless the file turns it on. */
   subagents: SubagentsConfig;
   memory: MemoryConfig;
@@ -80,6 +81,7 @@ const EMPTY: HarnessConfig = {
   asyncJob: {},
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
+  turnReceiptFooter: false,
   subagents: SUBAGENT_DEFAULTS,
   memory: { enabled: true },
   whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
@@ -282,6 +284,8 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
       isRecord(raw.skills) ? raw.skills.always : undefined,
     ),
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
+    turnReceiptFooter:
+      isRecord(raw.turn_receipt) && raw.turn_receipt.footer === true,
     subagents: subagentsFrom(raw.subagents),
     memory: memoryFrom(raw.memory),
     whatsappAttachmentUrls: attachmentUrlsFrom(

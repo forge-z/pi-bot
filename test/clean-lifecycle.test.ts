@@ -102,9 +102,10 @@ test("polling readiness, health and graceful stop stay offline and create no top
       "resume",
       "stop",
       "compact",
-      "memoria",
-      "esquecer",
+      "memory",
+      "forget",
       "status",
+      "recibo",
       "help",
     ];
     assert.deepEqual(
@@ -174,9 +175,10 @@ test("/help lists the commands that remain and not the removed ones", async () =
         "resume",
         "stop",
         "compact",
-        "memoria",
-        "esquecer",
+        "memory",
+        "forget",
         "status",
+        "recibo",
         "help",
       ],
     );
@@ -211,9 +213,9 @@ test("Telegram memory commands read and forget notes without starting a turn", a
   const polling = new TelegramPolling(f.app, api, config, { id: 123 });
   try {
     for (const [index, text] of [
-      "/memoria",
-      "/esquecer tea",
-      "/memoria",
+      "/memory",
+      "/forget tea",
+      "/memory",
     ].entries()) {
       await polling.engine.receive({
         update_id: index + 1,

@@ -170,7 +170,7 @@ export class Memory {
   }
 
   forget(text: string) {
-    if (!text.trim()) return "Usage: /esquecer <text>";
+    if (!text.trim()) return "Usage: /forget <text>";
     try {
       // Cancel a snapshot taken before the command, so it cannot reintroduce a removed fact.
       this.store.run("DELETE FROM memory_curator");
