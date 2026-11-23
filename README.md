@@ -106,6 +106,14 @@ skills:
 
 The system prompt lists each name and description, in that order, after the base instructions and before the MCP sections. The model loads a body with the read-only `read_skill` tool. The list is the same on every reply, including scheduled runs. An empty list, or a skills folder that is not there, leaves the prompt unchanged and does not register the tool. A missing name, invalid frontmatter, or an unreadable file is logged and skipped. An unknown `read_skill` name returns an error and no body. The bot still starts.
 
+### Long-term memory
+
+The bot reads up to 8 KB from `$DATA_DIR/memory/MEMORY.md` on each turn. It can look up daily notes (`YYYY-MM-DD.md`, UTC) using `memory_search`. Both files are plain Markdown you can edit. Memory is shared across all authorized chats and topics for the installation, including scheduled turns. Only direct user messages count toward curation: after 30 idle minutes and at least three new user messages, the background curator reviews the new messages once. It uses the conversation's configured model by default, with no shell, MCP, or extra model required.
+
+On Telegram or WhatsApp, `/memory` shows `MEMORY.md` and `/forget <text>` removes matching lines from both durable and daily notes (case-insensitive literal text). These commands do not rewrite conversation history or prior replies.
+
+To disable memory, set `memory.enabled: false` in `$DATA_DIR/config.yaml` and restart. To use another already configured model just for curation, set `memory.curator_model.provider` and `memory.curator_model.model_id` in that file.
+
 ### Subagents
 
 Off by default. When on, the model can hand self-contained read-only work (broad research, long reads) to a `subagent` and keep only its final answer in the conversation. A subagent uses the same model, sees only MCP tools, and every MCP call that is not a read is refused before it is sent. `/stop` stops running subagents too. Turn it on in `$DATA_DIR/config.yaml` and restart:

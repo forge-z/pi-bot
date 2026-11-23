@@ -442,6 +442,8 @@ export function removeAppHistory(store: Store, id: string, now: number) {
     );
     for (const table of [
       "requests",
+      "memory_inputs",
+      "memory_curator",
       "turn_receipts",
       "request_telegram_routes",
       "actions",

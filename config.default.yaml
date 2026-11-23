@@ -301,6 +301,14 @@ whatsapp:
 skills:
   always: []
 
+# Long-term Markdown memory on the volume. Restart after changing this block.
+# By default the curator uses the conversation's model; no extra model is required.
+memory:
+  enabled: true
+  # curator_model:
+  #   provider: openai
+  #   model_id: your-configured-model-id
+
 # Subagents (docs/subagents.md). When enabled, the model may call the
 # `subagent` tool to hand self-contained read-only work to a child
 # conversation and get only its final answer back. The child uses the same

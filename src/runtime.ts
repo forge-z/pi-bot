@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { Memory } from "./memory.js";
 import { discardTelegramControls } from "./telegram-controls.js";
 import {
   attachmentMedia,
@@ -408,6 +409,7 @@ function conversationTitle(value: unknown, limit = 100) {
 export class Runtime {
   readonly turnReceipts: TurnReceipts;
   readonly store: Store;
+  readonly memory?: Memory;
   readonly models: MutableModels;
   readonly settings: Settings;
   readonly tasks: Tasks;
@@ -587,6 +589,19 @@ export class Runtime {
     this.telegramChats = new TelegramChats(this);
     options.initialize?.(this.store);
     this.commands = new Commands(this);
+    const memory = loadHarnessConfig(options.env ?? process.env).memory;
+    if (memory.enabled)
+      this.memory = new Memory(
+        options.dir,
+        this.store,
+        memory,
+        this.models,
+        (id) => this.settings.conversation(id),
+        async (id, requestId) =>
+          this.taskTurnAnswer(await this.conversation(id), id, requestId),
+        (id) => this.isTurnBusy(id),
+        () => this.now(),
+      );
     if (options.gateway instanceof McpGateway) {
       this.mcpCalls = new McpCalls(
         this.store,
@@ -1028,6 +1043,7 @@ export class Runtime {
             ...(operatorSkillPrompt
               ? [createReadSkillTool(operatorSkills)]
               : []),
+            ...(app.memory ? [app.memory.searchTool()] : []),
             defineTool({
               name: "mcp_tools",
               description:
@@ -1065,10 +1081,19 @@ export class Runtime {
                   String(api.conversationId),
                   live?.run?.inputs ?? [],
                 );
-                if (run.offer) return;
-                const messages = withoutNotify(request.messages);
-                if (!messages) return;
-                return { messages };
+                const messages = run.offer
+                  ? undefined
+                  : withoutNotify(request.messages);
+                const memory =
+                  app!.memory &&
+                  app!.store.get(
+                    "SELECT 1 FROM conversations WHERE id=?",
+                    String(api.conversationId),
+                  )
+                    ? app!.memory.withContext(messages ?? request.messages)
+                    : undefined;
+                if (memory || messages)
+                  return { messages: memory ?? messages! };
               },
             }),
           ],
@@ -1209,6 +1234,7 @@ export class Runtime {
         void app!.sweepConversationTrash().catch(() => {});
       }, 60_000);
       app.trashTimer.unref();
+      app.memory?.start();
       return app;
     } catch (e) {
       await app?.tasks.close();
@@ -2502,7 +2528,7 @@ export class Runtime {
           route.messageThreadId,
         );
       }
-      this.store.run(
+      const inserted = this.store.run(
         "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,chat) VALUES (?,?,?,?,?)",
         conversationId,
         requestId,
@@ -2510,6 +2536,12 @@ export class Runtime {
         source,
         chat,
       );
+      if (
+        inserted.changes &&
+        ["web", "telegram", "whatsapp"].includes(source) &&
+        (!text.trimStart().startsWith("/") || text.trimStart().startsWith("//"))
+      )
+        this.memory?.capture(conversationId, requestId);
     });
     const existing = this.store.get<RequestRow>(
       "SELECT * FROM requests WHERE conversationId=? AND requestId=?",
@@ -2676,12 +2708,12 @@ export class Runtime {
         : "";
     return raw.trim();
   }
-  /** Task runs must not read another turn's assistant entry from a shared conversation. */
+  /** Read only the assistant entry associated with this request in a shared conversation. */
   private async taskTurnAnswer(
     conversation: Awaited<ReturnType<Runtime["conversation"]>>,
     conversationId: string,
     requestId: string,
-    settled: Awaited<ReturnType<Submission["wait"]>>,
+    settled?: Awaited<ReturnType<Submission["wait"]>>,
   ) {
     const receipt = await this.harness.commit(
       (tx) =>
@@ -2700,7 +2732,7 @@ export class Runtime {
     const answerId =
       receipt?.status === "done" && receipt.type === "input"
         ? receipt.answer
-        : settled.status === "done" && settled.type === "input"
+        : settled?.status === "done" && settled.type === "input"
           ? settled.answer
           : undefined;
     if (answerId === undefined) return "";
@@ -3514,6 +3546,7 @@ export class Runtime {
   }
   async close() {
     this.closing = true;
+    await this.memory?.close();
     this.options.heartbeat?.close();
     this.disarmMcpDiscoveryDeadline();
     clearInterval(this.trashTimer);

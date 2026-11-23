@@ -3492,6 +3492,34 @@ function whatsappText(chatId: string, messageId: string, text: string) {
   };
 }
 
+test("WhatsApp memory commands read and forget notes without starting a turn", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-wa-memory-"));
+  const app = await Runtime.open({
+    dir,
+    mode: "demo",
+    gateway: { catalog: async () => [] },
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await mkdir(join(dir, "memory"));
+  await writeFile(join(dir, "memory", "MEMORY.md"), "- Prefers tea\n");
+  const chat = "15550001111@s.whatsapp.net";
+  for (const [index, text] of ["/memory", "/forget tea", "/memory"].entries())
+    await acceptWhatsAppMessage(
+      app,
+      whatsappText(chat, `memory${index}`, text),
+    );
+  const replies = app.store.all<{ text: string }>(
+    "SELECT text FROM deliveries WHERE channel='whatsapp' ORDER BY rowid",
+  );
+  assert.match(replies[0]?.text ?? "", /Prefers tea/);
+  assert.match(replies[1]?.text ?? "", /Removed 1/);
+  assert.match(replies[2]?.text ?? "", /Memory is empty/);
+  assert.deepEqual(app.store.all("SELECT requestId FROM requests"), []);
+});
+
 test("a WhatsApp slash command replies and does not start a turn", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-wa-cmd-"));
   const app = await Runtime.open({

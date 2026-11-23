@@ -438,6 +438,8 @@ const CLEAN_HELP = [
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
   "/compact — compact this topic (optional instructions)",
+  "/memory — show saved memory",
+  "/forget <text> — remove matching lines from memory",
   "/status — status, including tokens and cost",
   "/receipt [n] — turn receipt",
   "/approvals — reads that are always allowed",
@@ -1253,6 +1255,15 @@ export class Telegram {
             // is what keeps the later "usuário" token its own literal.
             "Automatic compaction: this conversation's active model and effort.",
           ].join("\n"),
+        );
+      } else if (text === "/memory") {
+        this.app.telegramChats.authorize(id, owner);
+        reply(this.app.memory?.show() ?? "Memory is disabled.");
+      } else if (command === "forget") {
+        this.app.telegramChats.authorize(id, owner);
+        reply(
+          this.app.memory?.forget(text.slice("/forget".length).trim()) ??
+            "Memory is disabled.",
         );
       } else if (command === "receipt") {
         reply(

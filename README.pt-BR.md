@@ -100,6 +100,14 @@ skills:
 
 O prompt de sistema lista cada nome e descrição, nessa ordem, depois das instruções base e antes das seções de MCP. O modelo carrega o corpo com a ferramenta somente leitura `read_skill`. A lista é a mesma em toda resposta, inclusive nos runs agendados. Uma lista vazia, ou uma pasta de skills que não existe, deixa o prompt igual e não registra a ferramenta. Um nome ausente, frontmatter inválido ou arquivo ilegível é registrado no log e ignorado. Um nome desconhecido em `read_skill` devolve erro e nenhum corpo. O bot sobe mesmo assim.
 
+### Memória de longo prazo
+
+O bot lê até 8 KB de `$DATA_DIR/memory/MEMORY.md` a cada turno. Ele pode consultar as notas diárias (`AAAA-MM-DD.md`, em UTC) com `memory_search`. Os arquivos são Markdown editável à mão. A memória é compartilhada entre os chats e tópicos autorizados da instalação, inclusive em execuções agendadas. Só mensagens diretas do usuário contam para a curadoria: depois de 30 minutos de ociosidade e pelo menos três novas mensagens de usuário, o curador revisa as mensagens novas uma vez. Usa o modelo da conversa por padrão, sem shell, MCP ou modelo extra obrigatório.
+
+No Telegram ou WhatsApp, `/memory` mostra `MEMORY.md` e `/forget <text>` remove das notas diárias e duráveis as linhas que contêm esse texto, sem distinguir maiúsculas de minúsculas. Os comandos não alteram o histórico nem as respostas já enviadas.
+
+Para desativar, defina `memory.enabled: false` em `$DATA_DIR/config.yaml` e reinicie. Para usar outro modelo já configurado só para a curadoria, preencha `memory.curator_model.provider` e `memory.curator_model.model_id` no mesmo arquivo.
+
 ### Subagentes
 
 Desligado por padrão. Ligado, o modelo pode passar um trabalho somente leitura e autocontido (pesquisa ampla, leitura longa) para um `subagent` e guardar na conversa só a resposta final. O subagente usa o mesmo modelo, vê só as ferramentas MCP, e toda chamada MCP que não é leitura é recusada antes de ser enviada. O `/stop` também para os subagentes em execução. Ligue em `$DATA_DIR/config.yaml` e reinicie:

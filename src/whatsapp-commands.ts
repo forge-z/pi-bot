@@ -34,6 +34,8 @@ const HELP = [
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
   "/compact — compact this chat (optional instructions after the command)",
+  "/memory — show saved memory",
+  "/forget <text> — remove matching lines from memory",
   "/model — choose a model (reply with the number)",
   "/thinking — choose effort (reply with the number)",
   "/crons — schedules in this chat (reply with the number to turn one on or off)",
@@ -235,6 +237,7 @@ async function runCommand(
     name === "compact" ||
     name === "model" ||
     name === "thinking" ||
+    name === "forget" ||
     name === "receipt" ||
     name === "revoke";
   if (name && args && !takesArgs) {
@@ -308,6 +311,13 @@ async function runCommand(
       conversationId,
       await app.compactConversation(conversationId, args || undefined),
     );
+    return;
+  }
+  if (name === "memory" || name === "forget") {
+    app.commands.authorize(conversationId, access);
+    const text =
+      name === "memory" ? app.memory?.show() : app.memory?.forget(args);
+    reply(app, message, conversationId, text ?? "Memory is disabled.");
     return;
   }
   if (name === "model" || name === "thinking") {
