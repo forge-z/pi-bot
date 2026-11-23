@@ -27,7 +27,10 @@ import {
   readVolumeSetupFacts,
 } from "../dist/src/diagnose-volume.js";
 import { readAppInfo } from "../dist/src/app-info.js";
-import { describeWebSetup } from "../dist/src/web-config.js";
+import {
+  checkWebConfigWriteAccess,
+  describeWebSetup,
+} from "../dist/src/web-config.js";
 import { spawnSync } from "node:child_process";
 
 const optional = [
@@ -155,7 +158,12 @@ if (phoneGateway === "whatsapp") {
 const dataDir = process.env.DATA_DIR?.trim() || "/app/data";
 
 section("Web search");
-for (const line of describeWebSetup(dataDir, process.env)) console.log(line);
+try {
+  for (const line of describeWebSetup(dataDir, process.env)) console.log(line);
+  checkWebConfigWriteAccess({ ...process.env, DATA_DIR: dataDir });
+} catch (error) {
+  console.log(startupErrorMessage(error));
+}
 
 section("Model provider");
 const volumeFacts = readVolumeSetupFacts(dataDir, process.env);

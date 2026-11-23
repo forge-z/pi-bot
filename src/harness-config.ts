@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse } from "yaml";
 import { DEFAULT_REACTION_DELAY_MS, reactionDelayMs } from "./reaction-ack.js";
 import type { MemoryConfig } from "./memory.js";
@@ -14,7 +14,7 @@ export type { WebConfig } from "./web-providers.js";
 /**
  * Product defaults in `config.default.yaml`, with an optional user file on top.
  * The user path is `$DATA_DIR/config.yaml` unless `CONFIG_FILE` is set.
- * A file that does not parse is logged and ignored. This never throws.
+ * A file that does not parse is logged and ignored. A user file that cannot be read is an error.
  */
 
 type Env = Record<string, string | undefined>;
@@ -363,6 +363,46 @@ export function userConfigPath(env: Env = process.env) {
   return join(env.DATA_DIR?.trim() || "data", "config.yaml");
 }
 
+export function configDirectory(path: string) {
+  let directory = dirname(path);
+  for (;;) {
+    try {
+      statSync(directory);
+      return directory;
+    } catch (error) {
+      const parent = dirname(directory);
+      if (
+        (error as NodeJS.ErrnoException).code !== "ENOENT" ||
+        parent === directory
+      )
+        throw error;
+      directory = parent;
+    }
+  }
+}
+
+export class HarnessConfigAccessError extends Error {
+  constructor(
+    path: string,
+    operation: "read" | "write",
+    code: string | undefined,
+  ) {
+    let owner = "owner UID unavailable";
+    try {
+      owner = `file owner UID ${statSync(path).uid}`;
+    } catch {
+      try {
+        owner = `parent owner UID ${statSync(configDirectory(path)).uid}`;
+      } catch {
+        // Metadata may be inaccessible too.
+      }
+    }
+    super(
+      `Cannot ${operation} config ${path} (${code ?? "I/O error"}; process UID ${process.getuid?.() ?? "unknown"}; ${owner}). Check volume permissions and run setup as the gateway user.`,
+    );
+  }
+}
+
 /** The tool list this server uses. No list of its own means executor's list. */
 function toolListSource(config: HarnessConfig, server?: string) {
   const named = server ? config.mcpServers[server] : undefined;
@@ -395,13 +435,16 @@ export function mcpServerPolicy(config: HarnessConfig, server?: string) {
 function stamp(path: string) {
   try {
     const stat = statSync(path);
-    return `${stat.mtimeMs}:${stat.size}`;
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
   } catch {
     return "missing";
   }
 }
 
-function readDocument(path: string): {
+function readDocument(
+  path: string,
+  userFile = false,
+): {
   doc: Record<string, unknown>;
   problem?: string;
   missing?: boolean;
@@ -412,6 +455,7 @@ function readDocument(path: string): {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { doc: {}, missing: true };
+    if (userFile) throw new HarnessConfigAccessError(path, "read", code);
     return {
       doc: {},
       problem: code === "EISDIR" ? "not a file" : "unreadable",
@@ -430,14 +474,14 @@ function readDocument(path: string): {
   return { doc: parsed as Record<string, unknown> };
 }
 
-/** Loads defaults and the user file. Never throws; a bad user file is logged once. */
+/** Loads defaults and the user file. Malformed YAML is logged once. */
 export function loadHarnessConfig(env: Env = process.env): HarnessConfig {
   const defaults = defaultsPath();
   const user = userConfigPath(env);
   const key = `${defaults}|${stamp(defaults)}|${user}|${stamp(user)}`;
   if (cache?.key === key) return cache.config;
   const base = readDocument(defaults);
-  const over = readDocument(user);
+  const over = readDocument(user, true);
   if (base.missing)
     console.error(
       `Pi-Agent: config.default.yaml missing (${defaults}). No classification or job defaults are available.`,
