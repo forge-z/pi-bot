@@ -133,10 +133,7 @@ test("concurrent web/Telegram inputs serialize and same requestId deduplicates a
     assert.equal(replies[0].submissionId, replies[2].submissionId);
     await wait(app, id);
     assert.equal(faux.state.callCount, 2);
-    await assert.rejects(
-      app.submit(id, "one", "changed"),
-      /conteúdo diferente/,
-    );
+    await assert.rejects(app.submit(id, "one", "changed"), /different content/);
     const before = await app.snapshot(id);
     assert.equal(
       before.view.entries.filter((e) => e.kind === "pi.user").length,

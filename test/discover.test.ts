@@ -108,7 +108,7 @@ test("discovery fails and lists the machines when the choice is ambiguous", asyn
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.match(result.error, /INSTABOX_MACHINE_ID/);
-  assert.match(result.error, /não há exatamente uma máquina em execução/);
+  assert.match(result.error, /there is not exactly one running machine/);
   assert.match(result.error, /alpha \(m-1, running\)/);
   assert.match(result.error, /beta \(m-2, running\)/);
   assert.equal(observed(env), undefined);

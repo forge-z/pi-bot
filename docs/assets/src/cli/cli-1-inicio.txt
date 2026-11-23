@@ -10,6 +10,7 @@ Setup
 3 - Image model    not set
 4 - Audio model    not set
 5 - MCP platform   not set
+6 - Web search     not set
 
 s - Save and restart gateway
 q - Exit without saving

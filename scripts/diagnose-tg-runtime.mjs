@@ -93,36 +93,36 @@ const envStatus = (name) => {
       ? readFileSync(file, "utf8").trim()
       : ""
     : (process.env[name]?.trim() ?? "");
-  if (!raw) return "VAZIO";
+  if (!raw) return "EMPTY";
   if (/^replace_with/i.test(raw)) return "PLACEHOLDER";
-  return "definido";
+  return "set";
 };
 
-section("Identidade");
+section("Build identity");
 const id = readAppInfo();
 console.log(
-  `commit=${id.commit ?? "desconhecido"} version=${id.version ?? "desconhecido"}`,
+  `commit=${id.commit ?? "unknown"} version=${id.version ?? "unknown"}`,
 );
-if (!id.commit && envStatus("SOURCE_COMMIT") === "definido")
+if (!id.commit && envStatus("SOURCE_COMMIT") === "set")
   console.log(
-    "SOURCE_COMMIT está no ambiente mas não passou na validação (valor curto/ inválido?)",
+    "SOURCE_COMMIT is set but did not pass validation (short or invalid value).",
   );
 if (!id.commit)
   console.log(
-    "SOURCE_COMMIT ausente: o deploy ainda não injetou o SHA. Exporte SOURCE_COMMIT=$(git rev-parse HEAD).",
+    "SOURCE_COMMIT is missing: the deployment has not provided the commit SHA. Export SOURCE_COMMIT=$(git rev-parse HEAD).",
   );
 
-section("Variáveis de ambiente (presença)");
+section("Environment variables (presence)");
 console.log(
-  "Nenhuma variável é obrigatória. Token e usuários vêm do volume (`npm run setup`); o ambiente só substitui.",
+  "No variables are required. The token and allowed users come from the volume (`npm run setup`); environment variables override saved values.",
 );
 for (const name of optional)
-  console.log(`${name}=${envStatus(name)} (opcional)`);
+  console.log(`${name}=${envStatus(name)} (optional)`);
 console.log(
-  `TELEGRAM_ALLOWED_CHATS=${envStatus("TELEGRAM_ALLOWED_CHATS")} (opcional; padrão = ALLOWED_USERS)`,
+  `TELEGRAM_ALLOWED_CHATS=${envStatus("TELEGRAM_ALLOWED_CHATS")} (optional; defaults to ALLOWED_USERS)`,
 );
 console.log(
-  `SOURCE_COMMIT=${envStatus("SOURCE_COMMIT")} (runtime; o painel de deploy pode preencher)`,
+  `SOURCE_COMMIT=${envStatus("SOURCE_COMMIT")} (runtime; the deployment panel can set it)`,
 );
 
 const phoneGateway = readPhoneGateway(volumeDir());
@@ -130,7 +130,7 @@ if (phoneGateway === "whatsapp") {
   section("WhatsApp");
   for (const line of describeWhatsAppVolume(volumeDir())) console.log(line);
 } else {
-  section("Configuração Telegram + MCP (validação local)");
+  section("Telegram and MCP configuration (local validation)");
   try {
     const config = loadConfig();
     console.log("readConfig: OK");
@@ -142,22 +142,22 @@ if (phoneGateway === "whatsapp") {
       !process.env.TELEGRAM_ALLOWED_CHATS?.trim() &&
       config.chats.join(",") === config.users.join(",");
     console.log(
-      `allowlist chat IDs: ${config.chats.join(", ")}${chatsDefault ? " (padrão = users)" : ""}`,
+      `allowlist chat IDs: ${config.chats.join(", ")}${chatsDefault ? " (defaults to users)" : ""}`,
     );
     console.log(`mcp servers=${config.mcp.length}`);
     for (const server of config.mcp)
-      console.log(`  - ${server.name}: endpoint configurado (URL omitida)`);
+      console.log(`  - ${server.name}: endpoint configured (URL omitted)`);
   } catch (error) {
-    console.log(`readConfig: FALHOU — ${startupErrorMessage(error)}`);
+    console.log(`readConfig: FAILED — ${startupErrorMessage(error)}`);
   }
 }
 
 const dataDir = process.env.DATA_DIR?.trim() || "/app/data";
 
-section("Busca na web");
+section("Web search");
 for (const line of describeWebSetup(dataDir, process.env)) console.log(line);
 
-section("Provedor de modelo");
+section("Model provider");
 const volumeFacts = readVolumeSetupFacts(dataDir, process.env);
 for (const line of describeVolumeProvider(volumeFacts)) console.log(line);
 if (volumeFacts.source === "env") {
@@ -168,48 +168,48 @@ if (volumeFacts.source === "env") {
       `environmentModels: OK (${models
         .getProviders()
         .map((p) => p.id)
-        .join(", ")}) — ${catalog.length} modelo(s)`,
+        .join(", ")}) — ${catalog.length} model(s)`,
     );
     const reasoning = catalog.filter((m) => m.reasoning).map((m) => m.id);
     console.log(
-      `reasoning habilitado (${reasoning.length}): ${reasoning.join(", ") || "nenhum — /thinking fica em off; declare LLM_MODELS com reasoning=true"}`,
+      `reasoning enabled (${reasoning.length}): ${reasoning.join(", ") || "none — /thinking stays off; set LLM_MODELS with reasoning=true"}`,
     );
     for (const model of catalog.slice(0, 20))
       console.log(`  ${LLM_PROVIDER_ID}/${model.id}`);
     if (catalog.length > 20) console.log(`  … +${catalog.length - 20}`);
     console.log(
-      `padrão global: ${globalDefault() ?? "nenhum escolhido (implícito: primeiro do catálogo)"}`,
+      `global default: ${globalDefault() ?? "none selected (defaults to the first catalog entry)"}`,
     );
     console.log(
-      "Estado do registro: npm run setup -- --list. OAuth: npm run login.",
+      "Saved configuration: npm run setup -- --list. OAuth: npm run login.",
     );
   } catch (error) {
-    console.log(`environmentModels: FALHOU — ${startupErrorMessage(error)}`);
+    console.log(`environmentModels: FAILED — ${startupErrorMessage(error)}`);
   }
 } else if (volumeFacts.source === "volume") {
   console.log(
-    "environmentModels: não consultado (a chave fica no volume; diagnose não a lê nem a imprime).",
+    "environmentModels: not queried (the API key is on the volume; diagnostics do not read or print it).",
   );
   console.log(
-    `padrão global: ${globalDefault() ?? "nenhum escolhido (implícito: primeiro do catálogo)"}`,
+    `global default: ${globalDefault() ?? "none selected (defaults to the first catalog entry)"}`,
   );
   console.log(
-    "Estado do registro: npm run setup -- --list. OAuth: npm run login.",
+    "Saved configuration: npm run setup -- --list. OAuth: npm run login.",
   );
 } else {
   try {
     await environmentModels();
-    console.log("environmentModels: OK, mas nenhum registro foi encontrado.");
+    console.log("environmentModels: OK, but no entries were found.");
   } catch (error) {
-    console.log(`environmentModels: FALHOU — ${startupErrorMessage(error)}`);
+    console.log(`environmentModels: FAILED — ${startupErrorMessage(error)}`);
   }
   console.log(
-    "Sem provedor no ambiente nem no volume. Rode npm run setup ou npm run login.",
+    "No provider is configured in the environment or on the volume. Run npm run setup or npm run login.",
   );
 }
 
 if (process.argv.includes("--probe")) {
-  section("Probe ao vivo do endpoint LLM (--probe; nada de chave na saída)");
+  section("Live LLM endpoint probe (--probe; API key is not shown)");
   try {
     const raw = process.env.LLM_BASE_URL?.trim();
     if (!raw)
@@ -218,21 +218,21 @@ if (process.argv.includes("--probe")) {
     try {
       baseUrl = new URL(raw).href.replace(/\/$/, "");
     } catch {
-      throw new Error("Endpoint LLM_BASE_URL inválido");
+      throw new Error("Invalid LLM_BASE_URL endpoint");
     }
     const key = operatorSecret(process.env, "LLM_API_KEY");
-    if (!key) throw new Error("Configure LLM_API_KEY ou LLM_API_KEY_FILE.");
+    if (!key) throw new Error("Configure LLM_API_KEY or LLM_API_KEY_FILE.");
     const discovered = await discoverLlmModels(baseUrl, key);
-    console.log(`GET ${baseUrl}/models: OK — ${discovered.length} modelo(s)`);
+    console.log(`GET ${baseUrl}/models: OK — ${discovered.length} model(s)`);
     for (const model of discovered.slice(0, 20)) console.log(`  ${model.id}`);
     if (discovered.length > 20) console.log(`  … +${discovered.length - 20}`);
     console.log(
-      "Descoberta não informa reasoning: declare LLM_MODELS com reasoning=true para habilitar /thinking.",
+      "Discovery does not report reasoning support. Set LLM_MODELS with reasoning=true to enable /thinking.",
     );
   } catch (error) {
-    console.log(`probe: FALHOU — ${startupErrorMessage(error)}`);
+    console.log(`probe: FAILED — ${startupErrorMessage(error)}`);
     console.log(
-      "Confira LLM_BASE_URL (inclua o segmento de versão, ex. /v1, quando o provedor exigir) e a chave.",
+      "Check LLM_BASE_URL (include the version segment, e.g. /v1, if the provider requires it) and the API key.",
     );
   }
 }
@@ -242,24 +242,24 @@ console.log(`DATA_DIR=${dataDir}`);
 const healthPath = join(dataDir, "health.json");
 if (!existsSync(healthPath)) {
   console.log(
-    "health.json: ausente (polling ainda não saudável ou processo parado)",
+    "health.json: missing (polling is not healthy yet or the process has stopped)",
   );
 } else {
   try {
     const health = JSON.parse(readFileSync(healthPath, "utf8"));
     const ageMs = Date.now() - Number(health.at ?? 0);
     console.log(
-      `health.json: presente (idade ~${Math.round(ageMs / 1000)}s${ageMs > 90_000 ? ", possivelmente stale" : ""})`,
+      `health.json: present (age ~${Math.round(ageMs / 1000)}s${ageMs > 90_000 ? ", possibly stale" : ""})`,
     );
     const waiting = formatWaiting(health.waiting);
     if (waiting) console.log(waiting);
   } catch {
-    console.log("health.json: ilegível");
+    console.log("health.json: unreadable");
   }
 }
 
 if (phoneGateway !== "whatsapp") {
-  section("Telegram API (token ok, sem segredos)");
+  section("Telegram API (token available; secrets omitted)");
   try {
     const { token } = loadConfig();
     const call = async (method, body = {}) => {
@@ -280,15 +280,15 @@ if (phoneGateway !== "whatsapp") {
     const config = loadConfig();
     const me = await call("getMe");
     console.log(
-      `getMe: @${me.username ?? "?"} id=${me.id} (use /status@${me.username ?? "Bot"} em grupos)`,
+      `getMe: @${me.username ?? "?"} id=${me.id} (use /status@${me.username ?? "Bot"} in groups)`,
     );
     const misconfig = telegramAllowlistMisconfiguration(me.id, config);
-    if (misconfig) console.log(`ERRO CONFIG: ${misconfig}`);
+    if (misconfig) console.log(`CONFIG ERROR: ${misconfig}`);
     const hook = await call("getWebhookInfo");
     console.log(
       hook.url
-        ? `getWebhookInfo: WEBHOOK ATIVO (${hook.url}) — polling não recebe updates; deleteWebhook`
-        : "getWebhookInfo: sem webhook (ok para polling)",
+        ? `getWebhookInfo: ACTIVE WEBHOOK (${hook.url}) — polling cannot receive updates; call deleteWebhook`
+        : "getWebhookInfo: no webhook (polling can run)",
     );
     for (const chatId of config.chats) {
       try {
@@ -298,21 +298,21 @@ if (phoneGateway !== "whatsapp") {
         );
       } catch (error) {
         console.log(
-          `getChat ${chatId}: FALHOU — ${error.message}. ID errado ou bot não está neste chat.`,
+          `getChat ${chatId}: FAILED — ${error.message}. Wrong ID, or the bot is not in this chat.`,
         );
       }
     }
   } catch (error) {
-    console.log(`Telegram API: FALHOU — ${startupErrorMessage(error)}`);
+    console.log(`Telegram API: FAILED — ${startupErrorMessage(error)}`);
   }
 }
 
-section("Banco SQLite (app.sqlite, sem CLI sqlite3)");
+section("SQLite database (app.sqlite, no sqlite3 CLI)");
 {
   const dbPath = join(dataDir, "app.sqlite");
-  console.log(`caminho=${dbPath}`);
+  console.log(`path=${dbPath}`);
   if (!existsSync(dbPath)) {
-    console.log("app.sqlite: ausente (primeiro boot ou volume não montado)");
+    console.log("app.sqlite: missing (first boot or volume not mounted)");
   } else {
     try {
       const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -324,7 +324,7 @@ section("Banco SQLite (app.sqlite, sem CLI sqlite3)");
       console.log(
         deliveries.length
           ? `deliveries: ${deliveries.map((r) => `${r.state}=${r.n}`).join(", ")}`
-          : "deliveries: nenhuma (bot ainda não enfileirou resposta)",
+          : "deliveries: none (the bot has not queued a reply yet)",
       );
       const recent = db
         .prepare(
@@ -356,13 +356,13 @@ section("Banco SQLite (app.sqlite, sem CLI sqlite3)");
       console.log(
         mcpMarkup.length
           ? `mcp inline markup keys=${mcpMarkup.map((r) => r.key).join(", ")}`
-          : "mcp inline markup: nenhum (cartão não enfileirado ou já enviado)",
+          : "mcp inline markup: none (card not queued or already sent)",
       );
       const updates = db
         .prepare("SELECT COUNT(*) AS n FROM telegram_updates")
         .get();
       console.log(
-        `telegram_updates: ${updates.n} (0 = nenhum comando/mensagem aceito ainda)`,
+        `telegram_updates: ${updates.n} (0 = no commands or messages accepted yet)`,
       );
       const offset = db
         .prepare(
@@ -382,17 +382,18 @@ section("Banco SQLite (app.sqlite, sem CLI sqlite3)");
             `telegram:connection: enabled=${j.enabled} botId=${j.bot?.id ?? "?"} storedUsers=${(j.allowedUsers ?? []).length} storedChats=${(j.allowedChats ?? []).length}`,
           );
         } catch {
-          console.log("telegram:connection: JSON ilegível");
+          console.log("telegram:connection: unreadable JSON");
         }
-      } else console.log("telegram:connection: ausente (reinicie o container)");
+      } else
+        console.log("telegram:connection: missing (restart the container)");
       db.close();
     } catch (error) {
-      console.log(`app.sqlite: erro ao ler — ${error.message}`);
+      console.log(`app.sqlite: read failed — ${error.message}`);
     }
   }
 }
 
-section("Healthcheck do processo");
+section("Process health check");
 {
   const hc = spawnSync(process.execPath, ["dist/src/healthcheck.js"], {
     encoding: "utf8",
@@ -400,16 +401,16 @@ section("Healthcheck do processo");
   console.log(
     hc.status === 0
       ? "healthcheck.js: OK"
-      : "healthcheck.js: FALHOU (heartbeat ausente ou stale)",
+      : "healthcheck.js: FAILED (heartbeat missing or stale)",
   );
 }
 
-section("Lembretes");
+section("Reminders");
 console.log(`\
-- TELEGRAM_ALLOWED_CHATS é opcional: omita em DM (usa ALLOWED_USERS). Grupos: ID negativo do chat.
+- TELEGRAM_ALLOWED_CHATS is optional. Omit it for DMs (uses ALLOWED_USERS). For groups, use the negative chat ID.
 - TELEGRAM_ALLOWED_USERS deve incluir seu user ID do Telegram.
-- Grupos comuns (type group) são aceitos; canais não. Em grupos, use /status@SeuBot ou desative privacy mode.
-- EXECUTOR_MCP_URL e EXECUTOR_TOKEN vêm só do ambiente do deploy (nunca do git).
-- EXECUTOR_TOKEN é chave crua, sem prefixo Bearer.
-- Defina variáveis no .env ou na UI do deploy; não commite .env.
-- Banco: ${join(dataDir, "app.sqlite")} (não store.db). A imagem não inclui o binário sqlite3; use npm run diagnose.`);
+- Regular groups (type group) are supported; channels are not. In groups, use /status@YourBot or disable privacy mode.
+- EXECUTOR_MCP_URL and EXECUTOR_TOKEN come only from the deployment environment, never from Git.
+- EXECUTOR_TOKEN is the raw token without the Bearer prefix.
+- Set variables in .env or in the deployment UI. Do not commit .env.
+- Database: ${join(dataDir, "app.sqlite")} (not store.db). The image does not include the sqlite3 binary; use npm run diagnose.`);

@@ -177,11 +177,9 @@ test("Telegram shows scoped receipts with aggregate usage, search outcomes, timi
     const deliveries = app.store.all<{ text: string; messageThreadId: number }>(
       "SELECT text,messageThreadId FROM deliveries ORDER BY rowid",
     );
-    assert.ok(
-      deliveries.some((d) => d.text.includes("Nenhuma ferramenta chamada")),
-    );
+    assert.ok(deliveries.some((d) => d.text.includes("No tools called")));
     const older = deliveries.find((d) =>
-      d.text.includes("search-fixture/search: 2 chamada"),
+      d.text.includes("search-fixture/search: 2 call"),
     )!;
     assert.equal(older.messageThreadId, 11);
     for (const value of secrets) {
@@ -190,12 +188,12 @@ test("Telegram shows scoped receipts with aggregate usage, search outcomes, timi
     }
     assert.ok(
       deliveries.some(
-        (d) => d.messageThreadId === 12 && d.text.includes("Nenhum recibo"),
+        (d) => d.messageThreadId === 12 && d.text.includes("No receipt found"),
       ),
     );
-    assert.ok(deliveries.some((d) => d.text.includes("Uso: /receipt")));
+    assert.ok(deliveries.some((d) => d.text.includes("Usage: /receipt")));
     assert.ok(deliveries.some((d) => d.text.includes("another answer")));
-    assert.ok(deliveries.every((d) => !d.text.includes("Recibo: ")));
+    assert.ok(deliveries.every((d) => !d.text.includes("Receipt: ")));
     assert.equal(faux.state.callCount, 5);
   } finally {
     await app.close();
@@ -229,9 +227,7 @@ test("WhatsApp attaches the opt-in footer and can read the same receipt after re
     assert.ok(
       app.store
         .all<{ text: string }>("SELECT text FROM deliveries")
-        .some(({ text }) =>
-          /\n\nRecibo: 0 chamada\(s\).*\/receipt$/.test(text),
-        ),
+        .some(({ text }) => /\n\nReceipt: 0 call\(s\).*\/receipt$/.test(text)),
     );
     await app.close();
     app = await Runtime.open(options);
@@ -239,7 +235,7 @@ test("WhatsApp attaches the opt-in footer and can read the same receipt after re
     assert.ok(
       app.store
         .all<{ text: string }>("SELECT text FROM deliveries")
-        .some(({ text }) => text.startsWith("Recibo do último turno")),
+        .some(({ text }) => text.startsWith("Receipt for the latest turn")),
     );
     assert.equal(
       app.store.get<{ total: number }>("SELECT COUNT(*) AS total FROM requests")

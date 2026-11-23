@@ -291,7 +291,7 @@ export class TelegramHttp implements TelegramTransport {
     );
     const result = (await response.json()) as { ok?: boolean };
     if (!response.ok || result.ok !== true)
-      throw new Error("Falha ao atualizar menu Telegram");
+      throw new Error("Failed to update the Telegram menu");
     return result;
   }
   async answerCallback(id: string, text: string) {
@@ -307,7 +307,7 @@ export class TelegramHttp implements TelegramTransport {
     );
     const result = (await response.json()) as { ok?: boolean };
     if (!response.ok || result.ok !== true)
-      throw new Error("Falha ao responder controle Telegram");
+      throw new Error("Failed to respond to the Telegram control");
     return result;
   }
   async typing(chat: string, options: TelegramTypingOptions = {}) {
@@ -335,7 +335,7 @@ export class TelegramHttp implements TelegramTransport {
       if (!response.ok || result.ok !== true) throw new Error();
       return result;
     } catch {
-      throw new Error("Falha no indicador Telegram");
+      throw new Error("Telegram activity indicator failed");
     }
   }
   async send(
@@ -1609,13 +1609,13 @@ export class Telegram {
     try {
       queueMcpUncertainNotices(this.app);
     } catch (error) {
-      logFailure("Falha ao enfileirar avisos de MCP incerto", error);
+      logFailure("Failed to queue uncertain MCP notices", error);
     }
     if (Date.now() < this.sendAfter) return;
     try {
       await this.deliverPending();
     } catch (error) {
-      logFailure("Falha ao entregar mensagens Telegram pendentes", error);
+      logFailure("Failed to deliver pending Telegram messages", error);
     }
   }
   private async deliverPending() {

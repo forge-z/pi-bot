@@ -5,7 +5,7 @@ umask 077
 JOB_ID="${1:-}"
 
 if [[ ! "$JOB_ID" =~ ^[a-z0-9-]{8,40}$ ]]; then
-  echo '{"error":"jobId inválido"}' >&2
+  echo '{"error":"Invalid jobId"}' >&2
   exit 1
 fi
 
@@ -29,7 +29,7 @@ if [ "${JOB_READONLY:-}" = "1" ] || ! node -e '
   } catch {}
   process.exit(1);
 ' <<< "$request"; then
-  echo '{"error":"A sandbox compartilhada exige writes: true."}' >&2
+  echo '{"error":"The shared sandbox requires writes: true."}' >&2
   exit 1
 fi
 
@@ -51,7 +51,7 @@ else
 fi
 
 if [ -z "$RUNNER" ] || [ ! -f "$RUNNER" ]; then
-  echo '{"error":"run-job.sh não encontrado"}' >&2
+  echo '{"error":"run-job.sh not found"}' >&2
   exit 1
 fi
 

@@ -427,7 +427,7 @@ test("a half-configured setup waits, naming the missing piece", async () => {
         },
       ),
     (error: unknown) =>
-      error instanceof SetupRequiredError && /chave/.test(error.message),
+      error instanceof SetupRequiredError && /API key/.test(error.message),
   );
 });
 
@@ -599,7 +599,7 @@ test("telegram token from the volume is used when the env is missing", async () 
     () => readConfig({}),
     (error: unknown) =>
       error instanceof SetupRequiredError &&
-      /token do Telegram/.test(error.message),
+      /Telegram token/.test(error.message),
   );
   assert.equal(
     readConfig(
@@ -670,7 +670,8 @@ test("the setup menu routes sections, save and back, and gateway restart", () =>
   assert.equal(routeSetupMenu("s"), "restart");
   assert.equal(routeSetupMenu("1"), "gateway");
   assert.equal(routeSetupMenu("6"), "web");
-  assert.equal(routeSetupMenu("Busca na web"), "web");
+  assert.equal(routeSetupMenu("Web search"), "web");
+  assert.notEqual(routeSetupMenu("Busca na web"), "web");
   assert.equal(routeGatewayMenu("1"), "telegram");
   assert.equal(routeGatewayMenu("2"), "whatsapp");
   assert.equal(routeGatewayMenu("save and back"), "save");
@@ -699,7 +700,7 @@ test("the setup menu routes sections, save and back, and gateway restart", () =>
     { image: "gemini/gemini-3.5-flash-lite" },
   );
   assert.match(menu, /1 - Setup gateway\s+not set/);
-  assert.match(menu, /6 - Busca na web\s+configured/);
+  assert.match(menu, /6 - Web search\s+configured/);
   assert.match(menu, /Save and restart gateway/);
   assert.match(menu, /configured \(gemini\/gemini-3\.5-flash-lite\)/);
   assert.doesNotMatch(menu, /ends \.\.\./);
@@ -868,16 +869,16 @@ test("gateway restart signals the bot process and not setup", () => {
   );
 });
 
-test("a yes or no accepts s/n/y/yes/sim and not true", async () => {
-  assert.equal(parseYesNo("s"), true);
-  assert.equal(parseYesNo(" sim "), true);
+test("a yes or no accepts y/yes/n/no and rejects Portuguese answers", async () => {
+  assert.equal(parseYesNo("s"), undefined);
+  assert.equal(parseYesNo(" sim "), undefined);
   assert.equal(parseYesNo("y"), true);
   assert.equal(parseYesNo("YES"), true);
   assert.equal(parseYesNo("n"), false);
-  assert.equal(parseYesNo("nao"), false);
+  assert.equal(parseYesNo("nao"), undefined);
   assert.equal(parseYesNo("no"), false);
-  assert.equal(parseYesNo("não"), false);
-  assert.equal(parseYesNo("NÃO"), false);
+  assert.equal(parseYesNo("não"), undefined);
+  assert.equal(parseYesNo("NÃO"), undefined);
   assert.equal(parseYesNo("true"), undefined);
   assert.equal(parseYesNo(""), undefined);
   const prompts: string[] = [];
@@ -891,6 +892,6 @@ test("a yes or no accepts s/n/y/yes/sim and not true", async () => {
     true,
   );
   assert.equal(chosen, true);
-  assert.match(prompts[0] ?? "", /\(s\/n\) \[s\]/);
+  assert.match(prompts[0] ?? "", /\(y\/n\) \[y\]/);
   assert.equal(prompts.length, 3);
 });

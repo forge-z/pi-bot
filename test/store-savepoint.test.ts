@@ -45,11 +45,11 @@ test("savepoints commit or roll back atomically, alone or inside an outer transa
         store.savepoint("async_work", (async () => {
           store.run("INSERT INTO conversations VALUES ('5','async')");
         }) as () => unknown),
-      /assíncrona/,
+      /asynchronous/,
     );
     assert.throws(
       () => store.savepoint("x; DROP TABLE x", () => 1),
-      /inválido/,
+      /Invalid savepoint name/,
     );
     assert.deepEqual(titles(), ["kept", "outer"]);
   } finally {

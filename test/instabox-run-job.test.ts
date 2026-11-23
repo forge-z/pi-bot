@@ -159,7 +159,7 @@ test("run-job.sh grava RUNNING e DONE com os argumentos do node -e", async () =>
     );
     assert.match(
       status.result?.summary ?? "",
-      /stub|Tarefa concluída|sleep|agy/i,
+      /stub|Task completed|sleep|agy/i,
     );
     const args = await readFile(join(box.home, "agent-args.txt"), "utf8");
     assert.match(args, /corrija o argv/);
@@ -178,7 +178,7 @@ test("fail() grava FAILED no status.json e não perde o caminho no argv", async 
     assert.notEqual(result.code, 0);
     const status = await readStatus(box.home, jobId);
     assert.equal(status.state, "FAILED");
-    assert.match(status.error ?? "", /request\.json não encontrado/);
+    assert.match(status.error ?? "", /request\.json not found/);
     assert.doesNotMatch(result.stderr, /ERR_INVALID_ARG_TYPE|newPath/);
   } finally {
     await box.close();
@@ -302,7 +302,7 @@ for (const { name, suffix, writes, flag, marker } of readOnlyRequests) {
       if (!marker) {
         const start = await run(START, [jobId], env, request);
         assert.notEqual(start.code, 0);
-        assert.match(start.stderr, /exige writes: true/);
+        assert.match(start.stderr, /requires writes: true/);
         await assert.rejects(readStatus(box.home, jobId), { code: "ENOENT" });
       }
 
@@ -313,7 +313,7 @@ for (const { name, suffix, writes, flag, marker } of readOnlyRequests) {
       assert.notEqual(runner.code, 0);
       const status = await readStatus(box.home, jobId);
       assert.equal(status.state, "FAILED");
-      assert.match(status.error ?? "", /exige writes: true/);
+      assert.match(status.error ?? "", /requires writes: true/);
       for (const path of ["agent-env-loaded", "agent-args.txt", "work"])
         await assert.rejects(access(join(box.home, path)), { code: "ENOENT" });
     } finally {
@@ -351,13 +351,13 @@ test("os trechos node -e do run-job aceitam o primeiro argumento como caminho", 
       JSON.parse(await readFile(statusPath, "utf8")).state,
       "RUNNING",
     );
-    await execNode(failed, [statusPath, "request.json não encontrado"]);
+    await execNode(failed, [statusPath, "request.json not found"]);
     const failure = JSON.parse(await readFile(statusPath, "utf8")) as {
       state: string;
       error?: string;
     };
     assert.equal(failure.state, "FAILED");
-    assert.match(failure.error ?? "", /request\.json não encontrado/);
+    assert.match(failure.error ?? "", /request\.json not found/);
     await execNode(done, [
       statusPath,
       logPath,

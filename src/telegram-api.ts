@@ -45,12 +45,12 @@ export class TelegramApiError extends Error {
   ) {
     super(
       {
-        invalid_token: "Token Telegram inválido. Atualize a conexão.",
+        invalid_token: "Invalid Telegram token. Update the connection.",
         conflict:
-          "Outro processo ou webhook está recebendo atualizações deste bot. Desconecte-o antes de continuar.",
+          "Another process or webhook is receiving this bot's updates. Disconnect it before continuing.",
         rate_limit:
-          "Limite do Telegram atingido. A conexão será retomada após a espera.",
-        unavailable: "Telegram indisponível. A conexão será tentada novamente.",
+          "Telegram rate limit reached. The connection will retry after the wait.",
+        unavailable: "Telegram is unavailable. The connection will retry.",
       }[kind],
     );
   }

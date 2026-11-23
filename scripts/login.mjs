@@ -30,13 +30,13 @@ const MODE = "live";
 const usage = `Uso: npm run login -- [openai|openai-codex] [--device-code]
        npm run login -- --logout [openai|openai-codex]
 
-  openai          Sign in with ChatGPT (assinatura Plus/Pro) — padrão
+  openai          Sign in with ChatGPT (Plus/Pro subscription) — default
   openai-codex    OpenAI Codex (legado, modelos GPT-5.x Codex)
-  --device-code   Só para openai-codex: login por código de dispositivo (sem localhost)
+  --device-code   openai-codex only: device-code login (no localhost needed)
 
-Tokens ficam em DATA_DIR/app.sqlite (tabela credentials, provedor openai ou
-openai-codex). O bot recarrega sozinho em até ~10s. LLM_BASE_URL e LLM_API_KEY
-não são necessárias. LLM_AUTH=chatgpt é opcional: o registro no volume basta.`;
+Tokens are stored in DATA_DIR/app.sqlite (credentials table, provider openai or
+openai-codex). The bot reloads automatically within about 10 seconds. LLM_BASE_URL and LLM_API_KEY
+are not required. LLM_AUTH=chatgpt is optional; the saved sign-in is enough.`;
 
 function fail(message, code = 1) {
   console.error(message);
@@ -56,10 +56,10 @@ const positional = argv.filter(
 );
 const providerArg = positional[0] ?? "openai";
 if (!SUBSCRIPTION_PROVIDER_IDS.includes(providerArg)) {
-  fail(`Provedor inválido: ${providerArg}\n\n${usage}`, 2);
+  fail(`Invalid provider: ${providerArg}\n\n${usage}`, 2);
 }
 if (providerArg === "openai" && deviceCodeOnly) {
-  fail("--device-code só se aplica a openai-codex.\n\n" + usage, 2);
+  fail("--device-code applies only to openai-codex.\n\n" + usage, 2);
 }
 
 const dir = process.env.DATA_DIR?.trim() || "data";
@@ -92,7 +92,7 @@ const models = await loadModels().catch((error) => {
 if (logout) {
   await models.logout(providerArg);
   store.close();
-  console.log(`Logout concluído (${providerArg}).`);
+  console.log(`Signed out (${providerArg}).`);
   process.exit(0);
 }
 
@@ -155,7 +155,7 @@ function seedSetupIfEmpty(providerId) {
     db.close();
   }
   console.log(
-    `Padrão gravado: ${providerId} / ${model.id} (esforço ${effort}).`,
+    `Default saved: ${providerId} / ${model.id} (reasoning effort ${effort}).`,
   );
   return true;
 }
@@ -164,6 +164,6 @@ const seededFirstCatalogModel = seedSetupIfEmpty(providerArg);
 store.close();
 console.log(
   seededFirstCatalogModel
-    ? "Login concluído. O primeiro modelo do catálogo foi escolhido; /model troca. Tokens salvos no volume; o bot passa a usar a assinatura após o próximo ciclo de espera (~10s) ou reinício."
-    : "Login concluído. Tokens salvos no volume; o bot passa a usar a assinatura após o próximo ciclo de espera (~10s) ou reinício. O modelo já gravado permanece; /model troca.",
+    ? "Signed in. The first catalog model was selected; use /model to switch. Tokens were saved to the volume. The bot will use the subscription on its next check (about 10 seconds) or after a restart."
+    : "Signed in. Tokens were saved to the volume. The bot will use the subscription on its next check (about 10 seconds) or after a restart. The previously saved model is unchanged; use /model to switch.",
 );

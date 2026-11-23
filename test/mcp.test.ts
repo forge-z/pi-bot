@@ -227,7 +227,7 @@ test("main reports an invalid MCP configuration file without echoing its content
     child.stderr.on("data", (data) => (logs += data));
     const code = await new Promise((done) => child.on("exit", done));
     assert.notEqual(code, 0);
-    assert.match(logs, /MCP: JSON inválido|Falha ao iniciar/);
+    assert.match(logs, /MCP: invalid JSON|Startup failed/);
     assert.doesNotMatch(logs, /inline-secret-value/);
   } finally {
     await rm(dir, { recursive: true, force: true });

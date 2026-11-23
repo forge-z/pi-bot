@@ -55,7 +55,7 @@ export function resolveWebKeys(env: Env, stored: WebKeys): WebKeys {
       const override = operatorSecret(env, WEB_KEY_ENV[provider]);
       if (override) keys[provider] = override;
     } catch {
-      console.error(`Pi-Agent: ${WEB_KEY_ENV[provider]}_FILE ilegível.`);
+      console.error(`Pi-Agent: could not read ${WEB_KEY_ENV[provider]}_FILE.`);
     }
   }
   return keys;
@@ -140,9 +140,9 @@ export function describeWebSetup(dir: string, env: Env) {
   return (["search", "extract"] as const).map((operation) => {
     const providers = activeWebProviders(web[operation], keys);
     if (providers.length === 0)
-      return `web.${operation}: nativo desligado (MCP)`;
+      return `web.${operation}: native tool disabled (MCP)`;
     if (providers.length === 1)
-      return `web.${operation}: ${providers[0]} — aviso: sem fallback`;
+      return `web.${operation}: ${providers[0]} — warning: no fallback`;
     return `web.${operation}: ${providers.join(" → ")}`;
   });
 }

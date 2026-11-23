@@ -20,7 +20,7 @@ import {
 import { SCHEDULED_APPROVAL_REFUSAL } from "./guards.js";
 
 export const JOB_INDETERMINATE =
-  "A chamada foi iniciada, mas o provedor perdeu o retorno dela (erro interno do Executor). O job continua em andamento e o resultado chegará automaticamente neste tópico. Não repita o pedido nem dispare outro job.";
+  "The call started, but the provider lost its response due to an internal Executor error. The job is still running and the result will arrive automatically in this topic. Do not repeat the request or start another job.";
 
 type Env = Record<string, string | undefined>;
 type Call = (
@@ -125,7 +125,7 @@ function createJobId(prefix: string) {
 }
 
 const READONLY_PROMPT =
-  "Somente leitura: não faça push, não abra pull requests e não comente.";
+  "Read-only: do not push, open pull requests, or post comments.";
 
 function readOnly(task: Task) {
   const mode = task.readonly;
@@ -161,14 +161,14 @@ function clip(value: string) {
 
 function writePreview(task: Task, input: Record<string, unknown>) {
   const goal = task.goal ?? "";
-  const lines = ["Escrita em tarefa de código"];
+  const lines = ["Code task with write access"];
   for (const [key, value] of Object.entries(input)) {
     if (key === goal || key === "writes") continue;
     if (typeof value !== "string" || !value.trim()) continue;
     lines.push(`${key}: ${clip(value)}`);
   }
   if (!lines.some((line) => line.startsWith("branch:")))
-    lines.push("branch: (padrão do job)");
+    lines.push("branch: (job default)");
   const prompt = goal ? input[goal] : undefined;
   if (typeof prompt === "string" && prompt.trim())
     lines.push(`${goal}: ${clip(prompt)}`);
@@ -296,7 +296,7 @@ async function dispatchJob(
     return json(
       {
         error:
-          "Leitura do job inválida ou desabilitada. Tarefa não registrada.",
+          "Job status reading is invalid or disabled. The task was not registered.",
       },
       true,
     );
@@ -305,7 +305,7 @@ async function dispatchJob(
   const failed = (detail: string): DispatchText => {
     app.pendingJobs.closeKnownUnstarted(jobId, conversationId);
     return json(
-      { error: `Erro ao disparar tarefa: ${detail}`.slice(0, 800) },
+      { error: `Failed to start the task: ${detail}`.slice(0, 800) },
       true,
     );
   };
@@ -364,7 +364,7 @@ async function dispatchJob(
             status: "approval_pending",
             ...(outcome.requestId ? { requestId: outcome.requestId } : {}),
             message:
-              "A chamada pausou aguardando aprovaOção. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
+              "The call is paused for approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.",
           }),
           approvalRequested,
         };
@@ -380,13 +380,13 @@ async function dispatchJob(
           .filter((part) => typeof part === "string" && part.trim())
           .join("\n")
           .slice(0, 500);
-        return failed(detail || `o launcher terminou com exitCode ${exitCode}`);
+        return failed(detail || `the launcher exited with code ${exitCode}`);
       }
       return json({
         jobId,
         status: "dispatched",
         message:
-          "Tarefa disparada na sandbox com sucesso. O resultado chegará neste tópico assim que terminar; não é preciso acompanhar.",
+          "The task started in the sandbox. The result will arrive in this topic when it finishes; no follow-up is needed.",
       });
     } catch (error) {
       if (!rediscovered && missingMachine(error)) {
@@ -450,7 +450,7 @@ export function createSandboxCodeTaskTool(
     if (!conversationId || input?.writes !== true || !call)
       return {
         state: "failed",
-        text: "A tarefa de escrita não foi disparada.",
+        text: "The write task did not start.",
       };
     const outcome = await dispatchJob(
       app,
@@ -474,8 +474,8 @@ export function createSandboxCodeTaskTool(
     description:
       task.description ??
       (instabox
-        ? "Executa tarefas de código com permissão de escrita no Instabox. Só use writes=true com autorização do usuário; o disparo espera aprovação no chat. Não use para tarefas somente leitura."
-        : 'Para qualquer tarefa que possa passar de ~60s ou quando pedirem "avise quando terminar": chame esta ferramenta uma vez. Nunca fique em loop de leitura esperando o fim. O disparo não bloqueia a conversa; o resultado chega automaticamente quando a tarefa termina. writes=true só para push, pull request ou comentário (pede aprovação antes de disparar); sem writes a tarefa é somente leitura.'),
+        ? "Run code tasks with write access on Instabox. Use writes=true only with user authorization; starting the task requires approval in chat. Do not use for read-only tasks."
+        : 'For any task that may take more than about 60 seconds or when asked to "let me know when it finishes", call this tool once. Do not poll in a loop. Starting the task does not block the conversation; the result arrives automatically. Use writes=true only for pushing, opening a pull request, or commenting (approval is required before the task starts). Otherwise, the task is read-only.'),
     parameters: task.parameters,
     replay: "safe",
     execute: async (
@@ -493,14 +493,13 @@ export function createSandboxCodeTaskTool(
       } catch {
         /* an invalid schema in config never becomes a caller error */
       }
-      if (!valid)
-        return reply({ error: "Parâmetros inválidos para a tarefa." });
+      if (!valid) return reply({ error: "Invalid task parameters." });
       const allowedValue = task.allow
         ? String(input[task.allow.field] ?? "").trim()
         : "";
       if (task.allow && !isAllowed(allowedValue, patterns))
         return reply({
-          error: `Valor "${allowedValue}" não permitido pela política (${patterns}).`,
+          error: `Value "${allowedValue}" is not allowed by policy (${patterns}).`,
         });
 
       if (instabox && input.writes !== true)
@@ -508,7 +507,7 @@ export function createSandboxCodeTaskTool(
           output: [
             {
               type: "text" as const,
-              text: "O Instabox compartilhado não aceita tarefas somente leitura. Nenhuma tarefa foi iniciada. Não mude para writes=true sem autorização do usuário para executar com permissão de escrita.",
+              text: "The shared Instabox does not accept read-only tasks. No task started. Do not switch to writes=true without user authorization to run with write access.",
             },
           ],
           isError: true,
@@ -517,7 +516,7 @@ export function createSandboxCodeTaskTool(
       const gateway = app.options.gateway as { callDirect?: Call };
       if (!gateway?.callDirect)
         return reply({
-          error: "Gateway MCP direto indisponível para disparar o job.",
+          error: "The direct MCP gateway is unavailable to start the job.",
         });
       const conversationId = String(api.conversationId);
       if (input.writes === true) {
@@ -539,15 +538,14 @@ export function createSandboxCodeTaskTool(
         );
         if (!requestId)
           return reply({
-            error:
-              "Aprovação indisponível; a tarefa de escrita não foi disparada.",
+            error: "Approval is unavailable. The write task did not start.",
           });
         return {
           ...reply({
             status: "approval_pending",
             requestId,
             message:
-              "A escrita precisa de aprovação. A tarefa ainda não foi iniciada. Aprove o cartão nesta conversa. Não repita o pedido nem diga que o job foi disparado.",
+              "Writing requires approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.",
           }),
           details: { receiptApprovalRequested: true },
         };

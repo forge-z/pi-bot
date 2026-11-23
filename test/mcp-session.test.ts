@@ -947,7 +947,7 @@ test("direct tools are not resent after 404 and the durable call remains uncerta
     assert.equal(calls.list("conversation")[0].state, "uncertain");
     await assert.rejects(
       calls.execute("conversation", 1, "mock", "execute", {}),
-      /não será reenviada/,
+      /will not be resent/,
     );
     await mcp.discover("mock");
     assert.equal(mock.initializes, 2);
@@ -1480,7 +1480,7 @@ test("an uncertain result blocks actions but never reads", async () => {
     );
     await assert.rejects(
       calls.execute("conversation", 2, "mock", "execute", {}),
-      /resultado MCP incerto/i,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
     );
     // A name-based read stays open. It does not clear the uncertain write.
     const sandboxRead = await calls
@@ -1491,7 +1491,10 @@ test("an uncertain result blocks actions but never reads", async () => {
         (result) => text(result),
         (error: Error) => error.message,
       );
-    assert.doesNotMatch(text(sandboxRead), /resultado MCP incerto/i);
+    assert.doesNotMatch(
+      text(sandboxRead),
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
     assert.equal(calls.list("conversation")[0].state, "uncertain");
     // A resolved read alias is still a read, so the uncertain write does not block it.
     const aliasedRead = await calls
@@ -1502,13 +1505,16 @@ test("an uncertain result blocks actions but never reads", async () => {
         (result) => text(result),
         (error: Error) => error.message,
       );
-    assert.doesNotMatch(text(aliasedRead), /resultado MCP incerto/i);
+    assert.doesNotMatch(
+      text(aliasedRead),
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
     // A resolved write alias stays a write and stays blocked.
     await assert.rejects(
       calls.execute("conversation", 34, "mock", "execute", {
         code: "const g = tools.gmail; await g.sendMessage({})",
       }),
-      /resultado MCP incerto/i,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
     );
     store.run(
       `INSERT INTO mcp_calls(id,conversationId,server,tool,args,state,result,binding,updatedAt)
@@ -1521,7 +1527,10 @@ test("an uncertain result blocks actions but never reads", async () => {
         (result) => text(result),
         (error: Error) => error.message,
       );
-    assert.doesNotMatch(text(read), /resultado MCP incerto/i);
+    assert.doesNotMatch(
+      text(read),
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
     await calls.execute("conversation", 32, "mock", "search", {});
     assert.equal(
       calls.list("conversation").filter((call) => call.state === "uncertain")
@@ -1549,7 +1558,10 @@ test("an uncertain result blocks actions but never reads", async () => {
         (result) => text(result),
         (error: Error) => error.message,
       );
-    assert.doesNotMatch(text(again), /resultado MCP incerto/i);
+    assert.doesNotMatch(
+      text(again),
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
   } finally {
     await calls.close();
     await mcp.close();

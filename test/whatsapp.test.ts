@@ -1286,7 +1286,7 @@ test("pairing refuses while the gateway holds the volume", async () => {
             return socketHarness().socket;
           },
         }),
-      /o gateway já mostra o QR nos logs/,
+      /the gateway is already showing the QR code in its logs/,
     );
     assert.equal(opened, 0);
   } finally {
@@ -1880,7 +1880,7 @@ test("a failed inbound WhatsApp message asks the chat to send it again", async (
     );
     assert.match(
       notice()?.text ?? "",
-      /Não consegui processar esta mensagem; envie de novo\./,
+      /I couldn't process this message\. Please send it again\./,
     );
     assert.equal(notice()?.channel, "whatsapp");
     assert.ok(seen());
@@ -1895,7 +1895,7 @@ test("a failed inbound WhatsApp message asks the chat to send it again", async (
     );
     assert.match(
       retry?.text ?? "",
-      /Não consegui processar esta mensagem; envie de novo\./,
+      /I couldn't process this message\. Please send it again\./,
     );
     assert.equal(
       app.store.get("SELECT 1 FROM meta WHERE key=?", "whatsapp:seen:boom-2"),

@@ -1140,7 +1140,7 @@ export class Tasks {
     if (this.timer) return;
     const tick = () => {
       void this.tick().catch((error: unknown) => {
-        if (!this.closing) logFailure("Falha no agendador de tarefas", error);
+        if (!this.closing) logFailure("Task scheduler failed", error);
       });
     };
     this.timer = setInterval(tick, 1000);

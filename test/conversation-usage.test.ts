@@ -148,7 +148,7 @@ test("zero catalog rates omit USD and still return tokens", () => {
     },
     tools: {},
   });
-  assert.equal(report.scope, "conversa atual");
+  assert.equal(report.scope, "current conversation");
   assert.deepEqual(report.tokens, {
     input: 1000,
     output: 40,
@@ -160,11 +160,11 @@ test("zero catalog rates omit USD and still return tokens", () => {
     cacheWrite1h: 10,
   });
   assert.equal(report.cacheHitRate, 0.16);
-  assert.deepEqual(report.usd, { available: false, reason: "indisponível" });
+  assert.deepEqual(report.usd, { available: false, reason: "unavailable" });
   assert.equal("total" in report.usd, false);
   assert.equal(report.models[0]!.usd.available, false);
-  assert.match(report.note, /indisponível/);
-  assert.match(report.note, /não diga que a inferência foi gratuita/i);
+  assert.match(report.note, /unavailable/);
+  assert.match(report.note, /do not report \$0\.00 or say inference was free/i);
   assert.doesNotMatch(JSON.stringify(report.usd), /0\.00|"total":0/);
 });
 
@@ -268,7 +268,7 @@ test("a zero-rate bucket makes the conversation total unavailable without erasin
     },
     tools: {},
   });
-  assert.deepEqual(report.usd, { available: false, reason: "indisponível" });
+  assert.deepEqual(report.usd, { available: false, reason: "unavailable" });
   assert.equal(report.tokens.input, 90);
   assert.equal(report.tokens.output, 5);
   assert.deepEqual(
@@ -313,7 +313,7 @@ test("provider-reported zero is a real figure, and an empty ledger is zero consu
   assert.deepEqual(empty.usd, { available: true, total: 0, source: "catalog" });
   assert.deepEqual(empty.models, []);
   assert.deepEqual(empty.tools, []);
-  assert.match(empty.note, /Não há consumo/);
+  assert.match(empty.note, /No usage is recorded/);
 });
 
 test("a failed read does not echo the cause", async () => {
@@ -347,10 +347,10 @@ test("the tool is offered like the other internal tools and reads only the curre
       const usageTool = getCurrentTools(transcript.messages).find(
         (tool) => tool.name === CONVERSATION_USAGE_TOOL_NAME,
       );
-      assert.match(usageTool?.description ?? "", /consumo/);
+      assert.match(usageTool?.description ?? "", /usage/);
       assert.match(usageTool?.description ?? "", /tokens/);
-      assert.match(usageTool?.description ?? "", /custo/);
-      assert.match(usageTool?.description ?? "", /desta conversa/);
+      assert.match(usageTool?.description ?? "", /cost/);
+      assert.match(usageTool?.description ?? "", /this conversation only/);
       assert.doesNotMatch(JSON.stringify(usageTool), /conversationId/);
       return fauxAssistantMessage(
         {
@@ -482,9 +482,10 @@ test("the tool is offered like the other internal tools and reads only the curre
     assert.doesNotMatch(rendered, new RegExp(OTHER_MODEL));
     assert.doesNotMatch(rendered, new RegExp(String(OTHER_INPUT)));
     const report = JSON.parse(
-      texts.find((text) => text.includes('"scope":"conversa atual"')) ?? "{}",
+      texts.find((text) => text.includes('"scope":"current conversation"')) ??
+        "{}",
     ) as ConversationUsageReport;
-    assert.equal(report.scope, "conversa atual");
+    assert.equal(report.scope, "current conversation");
     assert.ok(report.tokens.input > 111);
     assert.equal(
       report.models.find((model) => model.id === THIS_MODEL)?.tokens.input,
@@ -494,7 +495,7 @@ test("the tool is offered like the other internal tools and reads only the curre
       report.models.find((model) => model.id === "faux/faux-1")?.usd.available,
       false,
     );
-    assert.deepEqual(report.usd, { available: false, reason: "indisponível" });
+    assert.deepEqual(report.usd, { available: false, reason: "unavailable" });
     assert.equal(report.tools[0]?.name, "search");
   } finally {
     await app.close();
@@ -579,6 +580,6 @@ test("subagent fields appear only when the conversation has children", () => {
   assert.match(tree.note, /subagents/);
   assert.equal(
     formatConversationUsageLine(tree),
-    "Usage: 120 tokens · $0.01 · subagentes: 90 tokens · $0.0040",
+    "Usage: 120 tokens · $0.01 · subagents: 90 tokens · $0.0040",
   );
 });

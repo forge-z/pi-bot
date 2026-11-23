@@ -221,7 +221,7 @@ async_jobs:
 # the manifest, not code.
 sandbox_code_task:
   tool: sandbox_code_task
-  description: "Para tarefas longas de código que o usuário autoriza a executar com permissão de escrita, chame esta ferramenta uma vez com writes=true. A ferramenta pede aprovação no chat antes de disparar e entrega o resultado automaticamente, sem polling pelo modelo. Não use para tarefas somente leitura."
+  description: "For long-running code tasks the user authorizes with write access, call this tool once with writes=true. It requests approval in chat before the task starts and delivers the result automatically without model polling. Do not use it for read-only tasks."
   job: "internal.instabox.codeTask"
   goal: prompt
   idPrefix: "cj-"
@@ -247,7 +247,7 @@ sandbox_code_task:
       repo:
         type: string
         pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
-        description: "Repositório no formato owner/name permitido na allowlist"
+        description: "Allowed repository in owner/name format"
       agent:
         type: string
         enum: [agy, pi, claude]
@@ -257,13 +257,13 @@ sandbox_code_task:
         minLength: 1
         maxLength: 32768
         pattern: "\\S"
-        description: "Instruções completas da tarefa de código"
+        description: "Complete instructions for the code task"
       branch:
         type: string
-        description: "Branch base/alvo opcional (padrão agent/<jobId>)"
+        description: "Optional base or target branch (default agent/<jobId>)"
       writes:
         type: boolean
-        description: "Informe true apenas quando o usuário autorizar execução com permissão de escrita. O bot pede aprovação antes do disparo. Omitido ou false é recusado."
+        description: "Set to true only when the user authorizes write access. The bot requests approval before starting. Omitting this field or setting it to false is rejected."
 
 # Eyes on an inbound message that starts a turn. The reaction waits this many
 # milliseconds. A reply that is sent first cancels it, so a fast chat stays

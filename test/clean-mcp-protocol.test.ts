@@ -221,7 +221,7 @@ test("a scheduled occurrence skips an approval pause instead of waiting for a cl
     // earlier steps had no effects. A second action requires verification.
     await assert.rejects(
       f.ledger.execute("1", 2, "executor", "execute", { code: "sched" }),
-      /incerto/,
+      /uncertain/,
     );
     assert.equal(f.writes, 0);
   } finally {

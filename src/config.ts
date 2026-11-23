@@ -61,7 +61,7 @@ function json(text: string, label: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`${label}: JSON inválido`);
+    throw new Error(`${label}: invalid JSON`);
   }
 }
 function endpoint(value: string) {
@@ -69,7 +69,7 @@ function endpoint(value: string) {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("Endpoint inválido");
+    throw new Error("Invalid endpoint");
   }
   if (
     !["https:", "http:"].includes(url.protocol) ||
@@ -81,7 +81,7 @@ function endpoint(value: string) {
       !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
   )
     throw new Error(
-      "Endpoint exige HTTPS sem credenciais/query (HTTP somente loopback).",
+      "The endpoint requires HTTPS without credentials or a query string (HTTP is allowed only on loopback).",
     );
   return url.href.replace(/\/$/, "");
 }
@@ -98,8 +98,7 @@ const SELF_HOSTED_SERVER_NAME = "self-hosted";
 function selfHostedTokenHeader(value: string | undefined) {
   const name = value?.trim();
   if (!name || name.toLowerCase() === "authorization") return undefined;
-  if (!validMcpHeaderName(name))
-    throw new Error("SELF_HOSTED_HEADER inválido.");
+  if (!validMcpHeaderName(name)) throw new Error("Invalid SELF_HOSTED_HEADER.");
   return name;
 }
 
@@ -190,10 +189,10 @@ export function mcpServersFromAggregators(
       const sendUser = composioSendsUserId(normalized);
       if (sendUser && !composioUser)
         throw new Error(
-          "COMPOSIO_USER_ID ausente para esta URL MCP do Composio.",
+          "COMPOSIO_USER_ID is missing for this Composio MCP URL.",
         );
       if (sendUser && composioUser && !validAggregatorUserId(composioUser))
-        throw new Error("COMPOSIO_USER_ID inválido.");
+        throw new Error("Invalid COMPOSIO_USER_ID.");
       servers.push({
         name: COMPOSIO_SERVER_NAME,
         url: normalized,
@@ -231,7 +230,7 @@ export function mcpServersFromAggregators(
 
 function parseMcpList(parsed: unknown, env: Env): McpConfig[] {
   if (!Array.isArray(parsed) || parsed.length > 20)
-    throw new Error("MCP deve ser uma lista de até 20 servidores.");
+    throw new Error("MCP must be a list of at most 20 servers.");
   return parsed.map((v: Record<string, unknown>) => {
     if (
       !v ||
@@ -240,43 +239,43 @@ function parseMcpList(parsed: unknown, env: Env): McpConfig[] {
       v.token !== undefined
     )
       throw new Error(
-        "MCP: use name/url e tokenEnv ou tokenFile; apenas modo direct ou deferred.",
+        "MCP: use name/url and tokenEnv or tokenFile; mode must be direct or deferred.",
       );
     if (v.mode !== undefined && v.mode !== "direct" && v.mode !== "deferred")
       throw new Error(
-        "MCP: use name/url e tokenEnv ou tokenFile; apenas modo direct ou deferred.",
+        "MCP: use name/url and tokenEnv or tokenFile; mode must be direct or deferred.",
       );
     let alwaysLoad: string[] | undefined;
     if (v.alwaysLoad !== undefined) {
       if (!validToolNameList(v.alwaysLoad))
-        throw new Error("MCP alwaysLoad inválido.");
+        throw new Error("Invalid MCP alwaysLoad.");
       alwaysLoad = v.alwaysLoad;
     }
     if (
       v.tokenEnv !== undefined &&
       (typeof v.tokenEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(v.tokenEnv))
     )
-      throw new Error("MCP tokenEnv inválido.");
+      throw new Error("Invalid MCP tokenEnv.");
     const tokenValue = v.tokenEnv
       ? operatorSecret(env, String(v.tokenEnv))
       : undefined;
     if (v.tokenEnv && !tokenValue)
       throw new Error(
-        `Variável de token MCP ausente (${String(v.tokenEnv)}). Use a chave crua, sem prefixo Bearer.`,
+        `Missing MCP token variable (${String(v.tokenEnv)}). Use the raw token without the Bearer prefix.`,
       );
     if (v.tokenFile !== undefined && typeof v.tokenFile !== "string")
-      throw new Error("MCP tokenFile inválido.");
+      throw new Error("Invalid MCP tokenFile.");
     if (
       v.tokenHeader !== undefined &&
       (typeof v.tokenHeader !== "string" ||
         !/^[\w-]{1,64}$/.test(v.tokenHeader))
     )
-      throw new Error("MCP tokenHeader inválido.");
+      throw new Error("Invalid MCP tokenHeader.");
     if (
       v.userId !== undefined &&
       (typeof v.userId !== "string" || !validAggregatorUserId(v.userId))
     )
-      throw new Error("MCP userId inválido.");
+      throw new Error("Invalid MCP userId.");
     return {
       name: v.name,
       url: endpoint(v.url),
@@ -338,7 +337,7 @@ export function readConfig(
     const trimmed = value?.trim();
     if (!trimmed)
       throw new Error(
-        `Configure ${name} (IDs numéricos separados por vírgula; supergrupos usam ID negativo).`,
+        `Configure ${name} (comma-separated numeric IDs; supergroups use negative IDs).`,
       );
     const rows = trimmed
       .split(",")
@@ -353,19 +352,18 @@ export function readConfig(
       )
     )
       throw new Error(
-        `${name} inválido: use IDs numéricos separados por vírgula${
+        `${name} is invalid: use comma-separated numeric IDs${
           negative ? " (supergrupos nativos com ID negativo)" : ""
         }.`,
       );
     return [...new Set(rows)];
   };
-  if (!token) throw new SetupRequiredError("token do Telegram");
+  if (!token) throw new SetupRequiredError("Telegram token");
   if (!validTelegramToken(token))
     throw new Error("Configure TELEGRAM_BOT_TOKEN ou TELEGRAM_BOT_TOKEN_FILE.");
   const usersSource =
     env.TELEGRAM_ALLOWED_USERS?.trim() || telegram?.users?.join(",");
-  if (!usersSource)
-    throw new SetupRequiredError("usuários permitidos do Telegram");
+  if (!usersSource) throw new SetupRequiredError("allowed Telegram users");
   const users = allowlist(usersSource, "TELEGRAM_ALLOWED_USERS");
   const chatsRaw = env.TELEGRAM_ALLOWED_CHATS?.trim();
   const chats = chatsRaw
@@ -388,9 +386,9 @@ export function telegramAllowlistMisconfiguration(
   const bot = String(botId);
   if (!config.chats.includes(bot)) return;
   const userHint = config.users.length
-    ? " Omita TELEGRAM_ALLOWED_CHATS (o padrão é copiar ALLOWED_USERS) ou use o user id, não o id do bot."
-    : " Em DM privada, o chat id é o user id (não o id do bot).";
-  return `TELEGRAM_ALLOWED_CHATS contém ${bot}, que é o id do bot, não do chat.${userHint}`;
+    ? " Omit TELEGRAM_ALLOWED_CHATS (it defaults to ALLOWED_USERS) or use the user ID, not the bot ID."
+    : " In a private DM, the chat ID is the user ID, not the bot ID.";
+  return `TELEGRAM_ALLOWED_CHATS contains ${bot}, which is the bot ID, not the chat ID.${userHint}`;
 }
 /** Fixed id of the single OpenAI-compatible provider described by LLM_* env vars. */
 export const LLM_PROVIDER_ID = "llm";
@@ -441,7 +439,7 @@ function parseThinkingLevels(
     )
   )
     throw new Error(
-      `LLM_MODELS inválido para ${id}: reasoning aceita false, true ou níveis separados por + (${MODEL_THINKING_LEVELS.join("+")}).`,
+      `Invalid LLM_MODELS for ${id}: reasoning accepts false, true, or levels separated by + (${MODEL_THINKING_LEVELS.join("+")}).`,
     );
   const allowed = new Set(levels);
   return Object.fromEntries(
@@ -470,7 +468,7 @@ export function parseLlmModels(
     const id = parts[0];
     if (!id || id.length > 200 || ![1, 4].includes(parts.length))
       throw new Error(
-        "LLM_MODELS inválido: use id ou id|contextWindow|maxTokens|reasoning.",
+        "Invalid LLM_MODELS: use id or id|contextWindow|maxTokens|reasoning.",
       );
     if (parts.length === 1)
       return {
@@ -489,7 +487,7 @@ export function parseLlmModels(
       maxTokens >= contextWindow
     )
       throw new Error(
-        "LLM_MODELS inválido: exige contextWindow >= 32768 e 0 < maxTokens < contextWindow.",
+        "Invalid LLM_MODELS: requires contextWindow >= 32768 and 0 < maxTokens < contextWindow.",
       );
     if (parts[3] === "false")
       return {
@@ -527,8 +525,8 @@ async function requestModels(
   } catch (error) {
     throw new Error(
       error instanceof Error && error.name === "TimeoutError"
-        ? "endpoint LLM não respondeu em 10s"
-        : "endpoint LLM inacessível",
+        ? "LLM endpoint did not respond within 10 seconds"
+        : "LLM endpoint unreachable",
     );
   }
 }
@@ -546,7 +544,7 @@ export async function discoverLlmModels(
   const rows = Array.isArray(payload)
     ? payload
     : (payload as { data?: unknown } | null)?.data;
-  if (!Array.isArray(rows)) throw new Error("catálogo inválido");
+  if (!Array.isArray(rows)) throw new Error("invalid catalog");
   const ids = rows
     .map((row) =>
       row &&
@@ -791,11 +789,11 @@ function declaredInput(env: Env) {
  * container keeps the terminal needed to fix it.
  */
 export class SetupRequiredError extends Error {
-  constructor(missing = "provedor, chave") {
+  constructor(missing = "provider, API key") {
     super(
-      missing.includes("login")
-        ? `Configuração inicial ausente (${missing}). Rode \`npm run login\` no terminal do container.`
-        : `Configuração inicial ausente (${missing}). Rode \`npm run setup\` no terminal do container.`,
+      missing === "ChatGPT sign-in"
+        ? `Initial setup is missing (${missing}). Run \`npm run login\` in the container terminal.`
+        : `Initial setup is missing (${missing}). Run \`npm run setup\` in the container terminal.`,
     );
   }
 }
@@ -817,8 +815,8 @@ async function registerLlmApiKeyProvider(
   // Half a configuration is still "not configured": waiting is recoverable, exiting
   // leaves a container that the platform restarts forever.
   if (!rawBase && !key) throw new SetupRequiredError();
-  if (!rawBase) throw new SetupRequiredError("endpoint do provedor");
-  if (!key) throw new SetupRequiredError("chave de API");
+  if (!rawBase) throw new SetupRequiredError("provider endpoint");
+  if (!key) throw new SetupRequiredError("API key");
   const baseUrl = endpoint(rawBase);
   let catalog = parseLlmModels(env.LLM_MODELS);
   if (!catalog) {
@@ -827,7 +825,7 @@ async function registerLlmApiKeyProvider(
     } catch (error) {
       const reason = error instanceof Error ? ` (${error.message})` : "";
       throw new Error(
-        `Catálogo de modelos indisponível em LLM_BASE_URL${reason}; defina LLM_MODELS explicitamente.`,
+        `Model catalog unavailable at LLM_BASE_URL${reason}; set LLM_MODELS explicitly.`,
       );
     }
     // Discovery reports ids only, so every model would claim no reasoning and offer
@@ -846,7 +844,7 @@ async function registerLlmApiKeyProvider(
   }
   if (!catalog.length)
     throw new Error(
-      "Nenhum modelo disponível. Verifique LLM_BASE_URL ou defina LLM_MODELS.",
+      "No models available. Check LLM_BASE_URL or set LLM_MODELS.",
     );
   catalog = await applyOllamaThinking(
     baseUrl,
@@ -1025,7 +1023,7 @@ export async function bootstrapModels(
     );
   if (credentials && wantsSubscription) {
     if (await anySubscriptionAuthenticated(models)) return models;
-    throw new SetupRequiredError("login ChatGPT");
+    throw new SetupRequiredError("ChatGPT sign-in");
   }
   if (credentials && (await anySubscriptionAuthenticated(models)))
     return models;
@@ -1112,7 +1110,7 @@ const startupSecret =
 /** Operator-safe startup errors only; never echo transport bodies or secrets. */
 export function startupErrorMessage(error: unknown) {
   const fallback =
-    "Falha ao iniciar. Verifique configuração, volume e conectividade; detalhes privados omitidos.";
+    "Startup failed. Check configuration, the volume, and connectivity. Private details were omitted.";
   if (!(error instanceof Error)) return fallback;
   const message = error.message.trim();
   if (!message || message.length > 320 || startupSecret.test(message))

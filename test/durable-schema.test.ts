@@ -62,7 +62,7 @@ test("Pi 1.4 migrates durable SQLite to schema 2 and purge accepts a sleeping ta
       () => assertDurablePurgeSafe(fixture.database, SLEEPING_CONVERSATION),
       (error: unknown) => {
         assert.ok(error instanceof TrashBlockedError);
-        assert.match(error.message, /execução pendente/);
+        assert.match(error.message, /pending run/);
         return true;
       },
     );
@@ -74,7 +74,7 @@ test("Pi 1.4 migrates durable SQLite to schema 2 and purge accepts a sleeping ta
       () => assertDurablePurgeSafe(fixture.database, IDLE_CONVERSATION),
       (error: unknown) => {
         assert.ok(error instanceof TrashBlockedError);
-        assert.match(error.message, /incompatível/);
+        assert.match(error.message, /does not match/);
         return true;
       },
     );

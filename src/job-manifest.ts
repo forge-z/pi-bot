@@ -209,7 +209,7 @@ export function buildReadInput(
   if (!accountId || accountId.includes("${"))
     return {
       ok: false,
-      error: "accountId ausente na leitura",
+      error: "missing accountId in the read",
     };
   if (!input)
     return {

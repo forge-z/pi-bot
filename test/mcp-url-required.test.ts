@@ -166,11 +166,11 @@ test("URL-required errors publish every card atomically, persist decisions after
     );
     await assert.rejects(
       app.mcpCalls.decide(other, cards[0].id, "accept"),
-      /não encontrada/,
+      /not found/,
     );
     assert.throws(
       () => app.mcpCalls.reconcile(id, call.id, "Verified local result"),
-      /pendentes/,
+      /pending/,
     );
     await app.close();
     await gateway.close();
@@ -189,17 +189,17 @@ test("URL-required errors publish every card atomically, persist decisions after
     assert.equal(call.state, "uncertain");
     assert.throws(
       () => app.mcpCalls.reconcile(id, call.id, "Verified local result"),
-      /pendentes/,
+      /pending/,
     );
     await app.mcpCalls.decide(id, cards[1].id, "cancel");
     assert.equal(app.mcpCalls.list(id)[0].state, "uncertain");
     await assert.rejects(
       app.mcpCalls.execute(id, 100, "mock", "write", {}),
-      /não será reenviada/,
+      /will not be resent/,
     );
     await assert.rejects(
       app.mcpCalls.execute(id, 101, "mock", "write", {}),
-      /incerto/,
+      /uncertain/,
     );
     assert.equal(f.counts.writes, 1);
     assert.equal(f.counts.resumes, 0);
@@ -243,7 +243,7 @@ test("a scheduled occurrence skips URL-required cards instead of publishing them
       true,
     );
     assert.equal(result.isError, true);
-    assert.match(JSON.stringify(result.content), /Passo pulado/);
+    assert.match(JSON.stringify(result.content), /Step skipped/);
     assert.doesNotMatch(
       JSON.stringify(result.content),
       /mock-private-upstream/,
@@ -275,7 +275,7 @@ test("URL-required decisions enforce credential binding and allow local cancella
     gateway.config[0].token = "mock-rotated-private-token";
     await assert.rejects(
       app.mcpCalls.decide(id, first.id, "accept"),
-      /mudaram/,
+      /changed/,
     );
     await app.mcpCalls.decide(id, first.id, "decline");
     await app.mcpCalls.decide(id, second.id, "cancel");
@@ -362,7 +362,7 @@ test("card publication failure rolls back all URL cards and leaves the dispatche
     assert.equal(app.mcpCalls.list(id)[0].state, "uncertain");
     await assert.rejects(
       app.mcpCalls.execute(id, 400, "mock", "write", {}),
-      /não será reenviada/,
+      /will not be resent/,
     );
     assert.equal(f.counts.writes, 1);
   } finally {
@@ -488,7 +488,10 @@ test("queued same-conversation writes recheck URL cards and uncertainty after th
       assert.equal(results[0].status, "rejected");
       assert.equal(results[1].status, "rejected");
       if (results[1].status === "rejected")
-        assert.match(results[1].reason.message, valid ? /pendente/ : /incerto/);
+        assert.match(
+          results[1].reason.message,
+          valid ? /pending/ : /uncertain/,
+        );
       assert.equal(f.counts.writes, 1);
       assert.equal(f.counts.resumes, 0);
       assert.equal(app.mcpCalls.list(id).length, 1);
@@ -590,7 +593,7 @@ test("closing settles a claimed resume queued behind active work as failed witho
     assert.equal(f.counts.resumes, 0);
     const paused = app.mcpCalls.list(id).find((call) => call.id === pausedId)!;
     assert.equal(paused.state, "failed");
-    assert.match(paused.result!, /nenhuma chamada MCP foi enviada/);
+    assert.match(paused.result!, /No MCP call was sent/);
   } finally {
     release();
     await app.close();

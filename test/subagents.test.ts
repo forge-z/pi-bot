@@ -317,10 +317,10 @@ test("tasks run in parallel, come back in order, and one failure keeps the other
       },
       async (ctx) => {
         const result = lastToolResultText(ctx.messages);
-        const one = result.indexOf("## Tarefa 1\nresposta alfa");
-        const two = result.indexOf("## Tarefa 2\nresposta beta");
+        const one = result.indexOf("## Task 1\nresposta alfa");
+        const two = result.indexOf("## Task 2\nresposta beta");
         const three = result.indexOf(
-          "## Tarefa 3\n[tarefa 3 sem resposta: turn_limit]",
+          "## Task 3\n[task 3 returned no answer: turn_limit]",
         );
         assert.ok(one >= 0 && one < two && two < three, result);
         return fauxAssistantMessage("feito");
@@ -436,7 +436,7 @@ test("stopSubagents aborts a running child and the parent closes its turn", asyn
     parent: [
       async () => call("subagent", { task: "Leia tudo devagar" }, "slow"),
       async (ctx) => {
-        assert.match(lastToolResultText(ctx.messages), /tarefa 1 interrompida/);
+        assert.match(lastToolResultText(ctx.messages), /task 1 interrupted/);
         return fauxAssistantMessage("Parei.");
       },
     ],
@@ -513,7 +513,7 @@ test("usage reports children apart, sums to the harness total, and never counts 
     assert.match(
       line,
       new RegExp(
-        `^Usage: ${report.tokens.totalTokens.toLocaleString("en-US")} tokens · subagentes: ${report.subagents!.tokens.totalTokens.toLocaleString("en-US")} tokens$`,
+        `^Usage: ${report.tokens.totalTokens.toLocaleString("en-US")} tokens · subagents: ${report.subagents!.tokens.totalTokens.toLocaleString("en-US")} tokens$`,
       ),
     );
   } finally {

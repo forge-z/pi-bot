@@ -9,9 +9,9 @@ export interface VisionConfig {
 
 /** Why describe instead of attach: the main model cannot read images at all. */
 const PROMPT = [
-  "Transcreva todo o texto visível na imagem, preservando a ordem de leitura.",
-  "Depois descreva em uma frase o que a imagem mostra e qualquer dado numérico,",
-  "tabela, gráfico ou mensagem de erro relevante. Não invente o que não está visível.",
+  "Transcribe all visible text in the image in reading order.",
+  "Then describe in one sentence what the image shows and any relevant numbers,",
+  "tables, charts, or error messages. Do not invent anything that is not visible.",
 ].join(" ");
 
 /**
@@ -71,7 +71,7 @@ export async function describeImage(
             .join("")
         : "";
   const trimmed = text.trim();
-  if (!trimmed) throw new Error("vision: resposta vazia");
+  if (!trimmed) throw new Error("vision: empty response");
   return trimmed;
 }
 

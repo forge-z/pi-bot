@@ -197,7 +197,7 @@ export class Store {
     // mapping/grant/connection is re-established before the sender next runs.
     const cancel = (
       condition: string,
-    ) => `UPDATE deliveries SET state='cancelled',result='Vínculo Telegram revogado antes do envio.'
+    ) => `UPDATE deliveries SET state='cancelled',result='Telegram binding revoked before delivery.'
       WHERE state='pending' AND id IN (
         SELECT p.deliveryId FROM task_notification_parts p JOIN task_notifications n ON n.id=p.notificationId WHERE ${condition}
       );`;
@@ -212,7 +212,7 @@ export class Store {
     const grantRevoked = `n.chat=OLD.chat AND n.user=OLD.user AND n.conversationId=OLD.conversationId`;
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS telegram_control_revoke AFTER DELETE ON telegram_grants BEGIN
-        UPDATE deliveries SET state='cancelled',result='Vínculo Telegram revogado antes do envio.' WHERE state='pending' AND id IN (SELECT deliveryId FROM telegram_control_parts WHERE conversationId=OLD.conversationId);
+        UPDATE deliveries SET state='cancelled',result='Telegram binding revoked before delivery.' WHERE state='pending' AND id IN (SELECT deliveryId FROM telegram_control_parts WHERE conversationId=OLD.conversationId);
       END;
       DROP TRIGGER IF EXISTS task_telegram_unlink;
       DROP TRIGGER IF EXISTS task_telegram_remap;
@@ -257,7 +257,7 @@ export class Store {
       CREATE TRIGGER IF NOT EXISTS request_telegram_thread_update AFTER UPDATE ON telegram_topic_conversations BEGIN ${revokeRequestRoutes("r.conversationId=OLD.conversationId AND (r.conversationId IS NOT NEW.conversationId OR r.messageThreadId IS NOT NEW.messageThreadId)")} END;
       CREATE TRIGGER IF NOT EXISTS request_telegram_thread_delete AFTER DELETE ON telegram_topic_conversations BEGIN ${revokeRequestRoutes("r.conversationId=OLD.conversationId")} END;
       CREATE TRIGGER IF NOT EXISTS conversation_telegram_revoke AFTER DELETE ON telegram_grants BEGIN
-        UPDATE deliveries SET state='cancelled',result='Vínculo Telegram revogado antes do envio.'
+        UPDATE deliveries SET state='cancelled',result='Telegram binding revoked before delivery.'
         WHERE state='pending' AND chat=OLD.chat AND id IN (SELECT deliveryId FROM delivery_conversations WHERE conversationId=OLD.conversationId);
       END;
     `);
@@ -334,7 +334,7 @@ export class Store {
           : undefined);
       if (owner?.source === "web")
         this.run(
-          "UPDATE deliveries SET state='cancelled',result='Canais separados; cópia web não enviada.' WHERE id=? AND state='pending'",
+          "UPDATE deliveries SET state='cancelled',result='Channels separated; web copy not sent.' WHERE id=? AND state='pending'",
           part.id,
         );
     }
@@ -344,12 +344,12 @@ export class Store {
   }
   /** Atomic both on its own and nested in a caller's transaction; `run` must stay synchronous. */
   savepoint<T>(name: string, run: () => T): T {
-    if (!/^[a-z_]+$/.test(name)) throw new Error("Nome de savepoint inválido");
+    if (!/^[a-z_]+$/.test(name)) throw new Error("Invalid savepoint name");
     this.db.exec(`SAVEPOINT ${name}`);
     try {
       const result = run();
       if (result instanceof Promise)
-        throw new Error("Savepoint não aceita operação assíncrona");
+        throw new Error("Savepoints do not accept asynchronous operations");
       this.db.exec(`RELEASE SAVEPOINT ${name}`);
       return result;
     } catch (error) {

@@ -164,7 +164,7 @@ export function assertAppPurgeSafe(store: Store, id: string) {
     )
   )
     throw new TrashBlockedError(
-      "Metadados do histórico inconsistentes. A exclusão permanente foi bloqueada.",
+      "Inconsistent history metadata. Permanent deletion was blocked.",
     );
   const queries = [
     "SELECT 1 FROM requests WHERE conversationId=? AND COALESCE(status,'') NOT IN ('done','unanswered','failed','revoked')",
@@ -174,7 +174,7 @@ export function assertAppPurgeSafe(store: Store, id: string) {
   for (const query of queries)
     if (store.get(query, id))
       throw new TrashBlockedError(
-        "Há operação pendente ou resultado externo sem resolução. Resolva antes de excluir.",
+        "Resolve any pending operations or uncertain external outcomes before deleting this conversation.",
       );
   for (const [table, states] of [
     ["mcp_calls", "'done','failed','reconciled','abandoned'"],
@@ -191,7 +191,7 @@ export function assertAppPurgeSafe(store: Store, id: string) {
       )
     )
       throw new TrashBlockedError(
-        "Há operação pendente ou resultado externo sem resolução. Resolva antes de excluir.",
+        "Resolve any pending operations or uncertain external outcomes before deleting this conversation.",
       );
   const deliveries = conversationDeliveries(store, id);
   if (
@@ -201,7 +201,7 @@ export function assertAppPurgeSafe(store: Store, id: string) {
     )
   )
     throw new TrashBlockedError(
-      "Há entrega em execução ou sem resolução. Verifique antes de excluir.",
+      "Check in-progress or unresolved deliveries before deleting this conversation.",
     );
 }
 
@@ -209,14 +209,14 @@ export function assertAppPurgeSafe(store: Store, id: string) {
 export async function assertDurablePurgeSafe(tx: SqliteExecutor, id: number) {
   if (id === 1)
     throw new TrashBlockedError(
-      "A conversa raiz não pode ser excluída permanentemente.",
+      "The root conversation cannot be permanently deleted.",
     );
   const schema = await tx.get<{ version: number }>(
     "SELECT version FROM durable_schema WHERE singleton=1",
   );
   if (!DURABLE_PURGE_SCHEMA_VERSIONS.has(schema?.version ?? -1))
     throw new TrashBlockedError(
-      "Versão do histórico incompatível com exclusão permanente.",
+      "History version does not match the deletion request.",
     );
   // SQL indexes are denormalized copies of record identities. Never trust them
   // for destructive scope selection when stored JSON disagrees (even at v1).
@@ -255,14 +255,14 @@ export async function assertDurablePurgeSafe(tx: SqliteExecutor, id: number) {
       )
     )
       throw new TrashBlockedError(
-        "Metadados do histórico inconsistentes. A exclusão permanente foi bloqueada.",
+        "Inconsistent history metadata. Permanent deletion was blocked.",
       );
     for (const row of await tx.all<{ record: string }>(
       `SELECT record FROM ${candidate.table}`,
     ))
       if (!supportedRecord(JSON.parse(row.record), candidate.type))
         throw new TrashBlockedError(
-          "Metadados do histórico inconsistentes. A exclusão permanente foi bloqueada.",
+          "Inconsistent history metadata. Permanent deletion was blocked.",
         );
   }
   if (
@@ -276,7 +276,7 @@ export async function assertDurablePurgeSafe(tx: SqliteExecutor, id: number) {
     ))
   )
     throw new TrashBlockedError(
-      "Há execução pendente. Aguarde sua conclusão antes de excluir.",
+      "Wait for the pending run to finish before deleting this conversation.",
     );
   const ownTasks = "SELECT id FROM tasks WHERE conversation_id=?";
   const ownEntries = "SELECT id FROM entries WHERE conversation_id=?";
@@ -301,7 +301,7 @@ export async function assertDurablePurgeSafe(tx: SqliteExecutor, id: number) {
   for (const reference of references)
     if (await tx.get(reference.sql, ...reference.args))
       throw new TrashBlockedError(
-        "Outra conversa depende deste histórico. A exclusão permanente foi bloqueada.",
+        "Another conversation depends on this history. Permanent deletion was blocked.",
       );
 }
 
@@ -326,7 +326,7 @@ export async function removeOwnedConversations(tx: SqliteExecutor, id: number) {
       ))
     )
       throw new TrashBlockedError(
-        "Há subagente em execução. Aguarde sua conclusão antes de excluir.",
+        "Wait for the subagent to finish before deleting this conversation.",
       );
     await removeDurableHistory(tx, child.id);
   }

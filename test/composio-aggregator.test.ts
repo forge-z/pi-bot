@@ -69,7 +69,8 @@ test("setup stores the aggregator choice and keeps the key out of meta", async (
   assert.equal(parseAggregatorChoice("self hosted"), "self-hosted");
   assert.equal(parseAggregatorChoice("5"), "both");
   assert.equal(parseAggregatorChoice("6"), "none");
-  assert.equal(parseAggregatorChoice("nenhum"), "none");
+  assert.equal(parseAggregatorChoice("nenhum"), undefined);
+  assert.equal(parseAggregatorChoice("ambos"), undefined);
   const db = new DatabaseSync(join(dir, "app.sqlite"), { readOnly: true });
   try {
     const row = db
@@ -607,7 +608,7 @@ test("a needs_auth tool result opens one URL card and does not replay the call",
     );
     await assert.rejects(
       app.mcpCalls.execute(id, 7, "composio", "connect_app", {}),
-      /não será reenviada/,
+      /will not be resent/,
     );
     assert.equal(calls, 1);
   } finally {

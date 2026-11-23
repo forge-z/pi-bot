@@ -153,7 +153,7 @@ test("the media kind follows the mime type, and only files become attachments", 
     mimeType: "audio/mpeg",
     data: mp3,
   });
-  assert.match(described, /^\[anexo enviado ao chat: audio\/mpeg/);
+  assert.match(described, /^\[attachment sent to chat: audio\/mpeg/);
   assert.doesNotMatch(described, /ID3/);
 });
 
@@ -277,6 +277,6 @@ test("the model can ask for a file, and only a public URL is accepted", () => {
       assert.equal(attachmentMedia({ url }).kind, "document");
       continue;
     }
-    assert.throws(() => attachmentMedia({ url }), /URL pública/);
+    assert.throws(() => attachmentMedia({ url }), /public HTTP\(S\) URL/);
   }
 });

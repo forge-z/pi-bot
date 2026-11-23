@@ -163,7 +163,7 @@ test("invalid yaml is logged and the defaults stay", async () => {
   };
   try {
     const config = loadHarnessConfig({ CONFIG_FILE: path });
-    assert.match(lines.join("\n"), /inválido/);
+    assert.match(lines.join("\n"), /invalid/);
     assert.match(lines.join("\n"), /config\.default\.yaml/);
     assert.equal(
       mcpCallIsReadOnly("tools.instabox.machines.list", undefined, { config }),

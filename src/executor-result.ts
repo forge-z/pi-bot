@@ -170,7 +170,7 @@ export function authRedirects(value: unknown): AuthRedirect[] {
     const text =
       typeof body.message === "string" && body.message.trim()
         ? body.message.trim()
-        : "Conecte a conta para continuar.";
+        : "Connect the account to continue.";
     found.push({
       url: address.href,
       message: text
@@ -217,7 +217,11 @@ export function isInputInvalid(error: unknown): boolean {
   if (/\b404\b/.test(text) || /not[\s_-]*found/i.test(text)) return false;
   if (/\b422\b/.test(text)) return true;
   if (/InputInvalid|InvalidToolInput/i.test(text)) return true;
-  if (/Input failed validation|Expected object|accountId ausente/i.test(text))
+  if (
+    /Input failed validation|Expected object|accountId ausente|missing accountId/i.test(
+      text,
+    )
+  )
     return true;
   if (
     /"retryable"\s*:\s*false/i.test(text) &&

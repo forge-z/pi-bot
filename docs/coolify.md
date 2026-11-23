@@ -1,267 +1,145 @@
-# Deploy no Coolify — Pi-Agent
+# Deploy Pi Bot on Coolify
 
-Checklist do lado do painel. O repositório não contém credenciais: tudo é variável de
-runtime, nunca argumento de build.
+Keep credentials in runtime environment variables or the data volume, never in the repository or build arguments.
 
-## Pré-requisitos
+## Prerequisites
 
-- Repositório `https://github.com/forge-z/pi-bot`, branch `main`.
-- Docker Engine + Compose v2.24+ (amd64 ou arm64).
-- Um gateway de telefone por instalação. Se for Telegram: um bot dedicado, sem webhook ativo e sem segundo consumidor de polling. WhatsApp é a alternativa no `npm run setup` (QR no terminal do container); os dois não sobem juntos.
+- Repository: `https://github.com/forge-z/pi-bot`, branch `main`.
+- Docker Engine and Compose v2.24+ (amd64 or arm64).
+- One phone gateway per installation. For Telegram, use a dedicated bot with no active webhook or second polling consumer. To use WhatsApp instead, select it in `npm run setup` and pair it from the container terminal.
 
-## 0. Checklist antes do primeiro deploy
+## 0. Before the first deployment
 
-O caminho oficial é `npm run setup` (chave de API de um provedor pi-ai) ou `npm run login`
-(assinatura ChatGPT/Codex), no terminal do container, depois que ele sobe. `LLM_BASE_URL`
-e `LLM_API_KEY` não são obrigatórias. Os itens abaixo só valem para o caminho compatível
-opcional (menu "Outro").
+After the container starts, run `npm run setup` in its terminal to configure a model provider or `npm run login` to sign in with a ChatGPT/Codex subscription. `LLM_BASE_URL` and `LLM_API_KEY` are only for the optional compatible provider (**Other** in setup).
 
-Faça isso uma vez, fora do Coolify, para não descobrir erro de configuração no boot.
+If you use a compatible provider, check it before deployment:
 
-1. **A raiz da URL está exata?** A URL é usada literalmente: o adapter concatena
-   `/chat/completions` e a descoberta concatena `/models`. Copie a raiz da documentação do
-   provedor — `https://api.openai.com/v1`, `https://api.deepseek.com` (na DeepSeek o
-   `/v1` também funciona).
-2. **Valide URL e chave de verdade**, não só a presença:
-
+1. Use the exact base URL from the provider's docs. The adapter appends `/chat/completions`, and discovery appends `/models`. Examples: `https://api.openai.com/v1` and `https://api.deepseek.com` (DeepSeek also accepts `/v1`).
+2. Validate the URL and key, not just their presence:
    ```sh
    npm run build
    LLM_BASE_URL=... LLM_API_KEY=... node scripts/diagnose-tg-runtime.mjs --probe
    ```
+   The probe calls `GET {LLM_BASE_URL}/models` and lists model IDs. Correct any catalog failure before deploying.
+3. Set `LLM_MODELS` if the discovered catalog cannot supply the model limits or reasoning levels you need. See [Model catalog and reasoning](#model-catalog-and-reasoning).
 
-   O `--probe` chama `GET {LLM_BASE_URL}/models` e lista os ids. O container não sobe com
-   catálogo inválido, então corrija aqui antes de subir.
+Use a fresh Telegram bot and volume. Pi Bot refuses a volume associated with a different bot and does not poll with a webhook or a second consumer. Have the Telegram token and numeric user IDs ready for setup, along with any model and MCP credentials.
 
-3. **Decida sobre `LLM_MODELS`.** Sem ele o `/thinking` fica só em `off`. Declare o
-   catálogo com os limites e **os níveis que o modelo aceita**:
-   `LLM_MODELS=deepseek-flash|1000000|384000|off+low+high+max`. `true` liga os níveis
-   padrão (`off minimal low medium high`), mas a DeepSeek recusa `minimal` e `medium` e
-   aceita `max` — nela, use a lista explícita.
-4. **Use um bot novo** e confirme que não há webhook ativo nem outro processo consumindo
-   o mesmo token (o app falha fechado se detectar webhook ou segundo consumidor).
-5. **Volume novo.** Não reuse um `pi_bot_data` de outro bot: o app recusa subir com
-   "Volume pertence a outro bot".
-6. Tenha em mãos o token do bot e os user IDs. Os dois entram no `npm run setup`,
-   junto da chave do modelo (ou `npm run login`) e, se houver, Executor ou Composio.
+## 1. Create the resource
 
-## 1. Criar o recurso
+- In Coolify, choose **New Resource → Docker Compose**, then select `forge-z/pi-bot` on `main`.
+- Set **Docker Compose Location** to `docker-compose.yml` in the repository root. The service is `pi-bot`.
+- Do not configure a domain, publish a port, or add a reverse proxy. The bot uses long polling.
 
-- **New Resource → Docker Compose**, apontando para `forge-z/pi-bot` na branch `main`.
-- **Docker Compose Location**: `docker-compose.yml` (raiz do repositório).
-- O serviço se chama `pi-bot`.
-- **Não** configure domínio, porta ou proxy reverso. O processo usa long polling e o
-  compose não declara `ports:`. Expor algo não é necessário e só aumenta a superfície.
+## 2. Runtime variables
 
-## 2. Variáveis de runtime
+No environment variables are required to start the container. `npm run setup` saves the bot token, user IDs, model keys, and MCP settings in the volume's SQLite database. Token entry is hidden; Enter keeps the existing value. If the token has not been set, the process reports it and stays up so setup can run.
 
-Nenhuma variável de ambiente é obrigatória para o container subir. O token do bot e os user IDs entram no `npm run setup` (token em entrada oculta; Enter mantém o valor já gravado, mostrado mascarado) e ficam no volume, na mesma base `credentials` / `meta` da chave do modelo e dos agregadores. Sem token no ambiente nem no volume, o processo registra o aviso e permanece no ar, saudável, em vez de cair em restart loop.
+### Optional variables
 
-O `docker-compose.yml` não declara variáveis em `environment:`. Nada fica travado no painel do Coolify.
+- `TELEGRAM_BOT_TOKEN` or `TELEGRAM_BOT_TOKEN_FILE`, and `TELEGRAM_ALLOWED_USERS`: override the corresponding saved values.
+- `TELEGRAM_ALLOWED_CHATS`: optional environment-only override. Chat IDs for groups and supergroups are negative. By default it uses the allowed user IDs for DMs.
+- `LLM_BASE_URL` and `LLM_API_KEY`: configure the compatible `llm` provider. They do not override a complete official provider setup.
+- `EXECUTOR_MCP_URL` and `EXECUTOR_TOKEN`: use together to override the saved Executor configuration. Setup offers Composio, Executor, Upsy, Self-hosted, Both, and None. `COMPOSIO_MCP_URL`, `COMPOSIO_API_KEY`, and `COMPOSIO_USER_ID` override saved Composio values. `SELF_HOSTED_MCP_URL` configures a generic gateway, with optional `SELF_HOSTED_TOKEN` and `SELF_HOSTED_HEADER`. Upsy credentials come from its OAuth setup flow, not environment variables.
+- `EXA_API_KEY` and `FIRECRAWL_API_KEY`: override keys saved through **Web search**. `npm run doctor` shows active providers and warns when there is no fallback.
+- `TZ`: container clock timezone for logs, for example `America/Sao_Paulo`. The container defaults to UTC. Schedules store their own IANA zones, and setup does not write `TZ`.
+- `LLM_MODELS`, `LLM_INPUT`, `VISION_*`, `AUDIO_*`, `ASYNC_JOB_*`, and `INSTABOX_*`: see [the example environment file](../.env.example) for details.
 
-### Opcionais (adicionadas manualmente no painel do Coolify)
+The assistant has no local shell, file, patch, or browser tools and cannot see the host, volume, or source tree. Use an authenticated MCP gateway for external integrations, such as [Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs), or a self-hosted gateway. Executor uses `Authorization: Bearer`. Composio Connect (`https://connect.composio.dev/mcp`) uses `x-consumer-api-key`; other Composio MCP URLs use `x-api-key` and the `user_id` query parameter. Upsy (`https://upsy.ai/connect`) uses OAuth 2.1 with PKCE. Setup prints the authorization link, and the operator pastes the final browser URL (`http://127.0.0.1:33418/callback`; nothing listens there). The bot sends and refreshes the bearer token automatically. Self-hosted uses bearer authentication or the header set in `SELF_HOSTED_HEADER`. Without an MCP gateway, the bot starts without external MCP tools.
 
-Todas as variáveis são opcionais. Quando definidas, vencem o valor gravado no volume:
+`MODEL_PROVIDER`, `MODEL_ID`, and the older per-provider environment variables are no longer used. Use setup for official providers or `LLM_*` for the compatible provider.
 
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_FILE` e `TELEGRAM_ALLOWED_USERS`: override do que o `npm run setup` gravou. Sem elas, vale o volume.
-- `LLM_BASE_URL` e `LLM_API_KEY`: não fazem parte do caminho oficial. Use `npm run setup` ou `npm run login`. Essas duas variáveis só ligam o provedor compatível `llm` (menu "Outro") e não substituem um setup oficial já gravado no volume.
-- `EXECUTOR_MCP_URL` e `EXECUTOR_TOKEN`: opcionais (em par). O caminho normal é `npm run setup`, que pergunta Composio, Executor, Upsy, Self-hosted, ambos ou nenhum e grava URL, chave e user id no volume. `COMPOSIO_MCP_URL`, `COMPOSIO_API_KEY` e `COMPOSIO_USER_ID` só substituem esse registro. `SELF_HOSTED_MCP_URL` liga um gateway genérico (token opcional em `SELF_HOSTED_TOKEN`, header opcional em `SELF_HOSTED_HEADER`). Upsy não tem variável: o menu faz o login OAuth (PKCE) e grava os tokens em `credentials` (`mcp-upsy`). Sem agregador, o bot sobe normalmente, apenas sem ferramentas externas MCP.
-- `TELEGRAM_ALLOWED_CHATS`: opcional (IDs negativos de grupos/supergrupos; por padrão copia os usuários permitidos para DMs). Continua só no ambiente.
-- `TZ`: opcional (fuso do relógio do container para logs, ex.: `America/Sao_Paulo`; omitido usa UTC). Agendamentos gravam seu próprio timezone IANA. O setup não grava `TZ`.
-- `LLM_MODELS`, `LLM_INPUT`, `VISION_*`, `AUDIO_*`, `ASYNC_JOB_*`, `INSTABOX_*`: opcionais para recursos específicos. A referência completa com exemplos está em [.env.example](.env.example).
+### How Coolify passes variables to the container
 
-A única forma de o assistente alcançar algo fora da conversa é MCP: ele não tem shell,
-arquivo, patch nem browser, e não enxerga o host, o volume ou o código-fonte.
-[Executor](https://executor.sh), [Composio](https://composio.dev), [Upsy](https://upsy.ai/docs)
-ou um gateway self-hosted expõem os MCPs num endpoint autenticado. Executor continua
-`Authorization: Bearer`. Composio Connect (`https://connect.composio.dev/mcp`)
-usa `x-consumer-api-key`; as outras URLs MCP da Composio usam `x-api-key` e o
-query `user_id`. Upsy (`https://upsy.ai/connect`) usa OAuth 2.1 com PKCE: o setup
-imprime o link, o operador cola a URL final do navegador
-(`http://127.0.0.1:33418/callback`; nada escuta nessa porta), e o bot manda
-`Authorization: Bearer` com o access token (renovado sozinho). Self-hosted usa
-`Authorization: Bearer` ou o header nomeado em
-`SELF_HOSTED_HEADER`. `NODE_ENV`, `DATA_DIR` e o SHA do commit não são
-configuração: dois são fixados pela imagem (`Dockerfile`) e o SHA é injetado pela plataforma.
+Coolify locks variables declared in `docker-compose.yml` in the dashboard. To keep optional values editable, Compose does not list any under `environment:`. Instead it loads Coolify's generated `.env`:
 
-Não existem mais variáveis de modelo: `MODEL_PROVIDER` e `MODEL_ID` saíram, e as chaves
-por provedor (`OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*`, `AI_PROVIDERS_JSON`) foram
-substituídas pelo par `LLM_*`.
-
-### Como as opcionais chegam ao container (`env_file`)
-
-No Coolify, **qualquer variável declarada no `docker-compose.yml` fica travada no painel e não pode ser apagada pela interface** (gerando o erro _"Please remove it from the Docker Compose file first"_).
-
-Para resolver isso e manter o painel limpo:
-
-1. O `docker-compose.yml` não lista variáveis em `environment:`.
-2. O Compose inclui:
-   ```yaml
-   env_file:
-     - path: .env
-       required: false
-   ```
-3. O Coolify gera automaticamente um arquivo `.env` no diretório de deploy contendo todas as variáveis configuradas na aba **Environment Variables** (inclusive as criadas manualmente).
-4. O Compose repassa esse `.env` ao container via `env_file`. Portanto, para usar qualquer opcional (como `TZ`, `EXECUTOR_MCP_URL` ou `LLM_BASE_URL`), basta criá-la manualmente na aba **Environment Variables** do Coolify — ela será gravada no `.env` e carregada pelo container sem precisar estar declarada no Compose.
-
-### Passo de limpeza pós-migração
-
-Se o seu deploy no Coolify foi criado antes desta alteração, o painel manteve cadastradas variáveis que antes constavam no Compose (`ASYNC_JOB_TOOLS`, `EXECUTOR_MCP_URL`, `EXECUTOR_TOKEN`, `TZ`, `ASYNC_JOB_TIMEOUT_MIN`, `ASYNC_JOB_POLL_SECONDS`).
-
-Depois de atualizar o repositório e fazer o deploy desta versão:
-
-- O Coolify destrava a remoção dessas variáveis no painel porque elas não constam mais no `docker-compose.yml`.
-- **Apague no painel** as variáveis que o bot não lê mais: `ASYNC_JOB_TOOLS` e `EXECUTOR_ACCOUNT_ID`. A conta da leitura vem da chamada que criou o job. Não há migração manual; a coluna `pending_jobs.account_id` é criada no boot.
-- Variáveis opcionais que você realmente usa (ex.: `TZ`) podem permanecer no painel: elas continuarão chegando ao container normalmente via `.env`.
-- Depois de rodar `npm run setup` neste container, `TELEGRAM_BOT_TOKEN` e `TELEGRAM_ALLOWED_USERS` podem sair do painel: o volume guarda os dois. Se continuarem definidas, vencem o volume.
-
-### Variáveis fixas da imagem
-
-`NODE_ENV=production` e `DATA_DIR=/app/data` são fixadas na imagem pelo `Dockerfile` (instrução `ENV`). Não precisam e não devem ser configuradas no painel. O `SOURCE_COMMIT` é injetado pelo próprio Coolify em runtime.
-
-### Catálogo de modelos e reasoning
-
-Sem `LLM_MODELS`, o catálogo vem de `GET {LLM_BASE_URL}/models`. Como essa listagem não
-informa capacidades, os modelos descobertos ficam com limites conservadores e
-`reasoning=false` — ou seja, `/thinking` oferece apenas `off`. Ollama é a exceção:
-host `ollama.com`, porta `11434` ou caminho com `/api` dispara um `POST /api/show`
-por modelo (timeout curto, em cache). Se `capabilities` inclui `thinking`, os níveis
-passam a ser `off`/`low`/`medium`/`high` ou os nomes em `thinking.values`. Um campo
-`reasoning` explícito em `LLM_MODELS` continua vencendo, e falha na consulta não muda
-o catálogo. A chamada manda `reasoning_effort` (`none` desliga o raciocínio).
-
-Cada entrada de `LLM_MODELS` é `id` ou `id|contextWindow|maxTokens|reasoning`, com
-`contextWindow >= 32768` e `0 < maxTokens < contextWindow`. O campo `reasoning` aceita:
-
-- `false` — sem raciocínio (`/thinking` só `off`);
-- `true` — níveis padrão (`off minimal low medium high`);
-- uma lista separada por `+` — exatamente os níveis que o modelo aceita.
-
-Limites e níveis precisam vir do provedor: a descoberta não os informa, e escolher um
-nível que o modelo recusa gera erro na chamada. A DeepSeek, por exemplo, recusa `minimal`
-e `medium` e aceita `max`:
-
-```sh
-LLM_MODELS=deepseek-flash|1000000|384000|off+low+high+max
+```yaml
+env_file:
+  - path: .env
+    required: false
 ```
 
-Esses valores vêm do catálogo do `pi-ai` 1.6.0 que embute `deepseek-flash` com
-`contextWindow=1000000`, `maxTokens=384000` e esse mapa de níveis (`off/low/high/max`).
+Add optional values under **Environment Variables**. Coolify writes them into the deployment directory's `.env`, and Compose passes them to the container.
 
-### Nunca use build args para segredos
+### Clean up an older deployment
 
-O Dockerfile não aceita nenhum argumento de build. Chaves de API passadas como build
-arg ficam gravadas nas camadas da imagem.
+Coolify may retain variables previously declared in Compose. After redeploying, remove obsolete `ASYNC_JOB_TOOLS` and `EXECUTOR_ACCOUNT_ID`. The poller gets the read account from the invocation that started the job, and the `pending_jobs.account_id` column is created on startup. Keep optional values you still use. Once setup saves the Telegram token and allowed user IDs on the volume, you can remove their environment overrides.
 
-## 3. SHA do commit em `/status`
+### Image defaults
 
-Nada a configurar no painel: o Coolify injeta `SOURCE_COMMIT` em runtime e o processo o
-lê direto para `/status` e `npm run diagnose`. Também são aceitos `GIT_COMMIT`,
-`COMMIT_SHA`, `COOLIFY_COMMIT` e `COOLIFY_SOURCE_COMMIT`, com fallback para
-`git rev-parse HEAD` quando existe `.git` (fora do container). Não há mais argumento de
-build nem necessidade de **Source commit availability → Available during build**.
+The Dockerfile sets `NODE_ENV=production` and `DATA_DIR=/app/data`. Leave these out of the Coolify panel. Coolify injects `SOURCE_COMMIT` at runtime.
 
-## 4. Volume e persistência
+### Model catalog and reasoning
 
-- Volume nomeado `pi_bot_data` montado em `/app/data`.
-- Banco: `/app/data/app.sqlite` (SQLite embutido do Node 24; a imagem não traz o
-  binário `sqlite3`).
-- **Um único processo por volume.** Não aponte para o volume de outro deploy e não
-  rode duas instâncias contra o mesmo volume.
-- Antes de trocar de versão, faça backup do volume. Tópicos e conversas só são criados
-  no primeiro uso — nada é criado no startup.
+Without `LLM_MODELS`, the catalog comes from `GET {LLM_BASE_URL}/models`. Discovery uses conservative limits and offers only `off` in `/thinking` because listing models does not report their capabilities. Ollama is an exception: host `ollama.com`, port `11434`, or an `/api` path triggers a cached `POST /api/show` per model with a short timeout. If `capabilities` includes `thinking`, standard Ollama levels (`off`, `low`, `medium`, `high`) or `thinking.values` are available. Explicit `LLM_MODELS` reasoning overrides discovery, and discovery failures do not change the catalog. Requests use `reasoning_effort`; `none` disables it.
 
-## 5. Hardening e possíveis atritos
+Supply each entry as `id` or `id|contextWindow|maxTokens|reasoning`. Set `contextWindow >= 32768` and `0 < maxTokens < contextWindow`. Reasoning accepts `false` (off only), `true` (standard levels: `off minimal low medium high`), or levels separated by `+`. Use provider-supported limits and levels. For example, DeepSeek's `deepseek-flash` rejects `minimal` and `medium` and supports `max`; the pi-ai 1.6.0 catalog records it as:
 
-O compose roda com `read_only: true`, `tmpfs` de 16 MB em `/tmp`, `cap_drop: ALL`,
-`no-new-privileges`, `init: true`, `restart: unless-stopped`,
-`stop_grace_period: 45s` e healthcheck a cada 30 s (`node dist/src/healthcheck.js`,
-`start_period` 40 s, 3 tentativas).
+```sh
+LLM_MODELS='deepseek-flash|1000000|384000|off+low+high+max'
+```
 
-Os únicos caminhos de escrita esperados são `/app/data` (volume) e `/tmp` (tmpfs). Se o
-Coolify reclamar de escrita negada, verifique se o volume foi realmente montado — não
-relaxe o `read_only` por padrão.
+### Never pass secrets as build arguments
 
-O `start_period` de 40 s é intencional: o primeiro ciclo de polling precisa concluir
-antes do healthcheck ficar verde. Um `unhealthy` logo após o deploy, com logs normais,
-costuma ser só isso.
+The Dockerfile does not accept build arguments. Passing secrets as build arguments can leave them in image layers.
 
-## 6. Verificação pós-deploy
+## 3. Commit SHA in `/status`
 
-- `docker compose ps` e `docker compose logs --tail=100 pi-bot`.
-- No terminal do serviço (Coolify): `node scripts/diagnose-tg-runtime.mjs` ou
-  `npm run diagnose`.
-- Para busca e extração nativas, defina `EXA_API_KEY` e/ou `FIRECRAWL_API_KEY`
-  nas variáveis do serviço. Elas sobrescrevem as chaves gravadas no volume
-  por **Busca na web** no `npm run setup`. O `npm run doctor` mostra quais
-  provedores estão ativos e avisa se não houver fallback.
-- Defina o modelo padrão (opcional, mas recomendado para quem não vai usar `/model`):
-  `npm run setup -- --list`. `npm run setup` é o assistente completo (visão e áudio inclusive);
-  `npm run login` é só OAuth. Os dois gravam no volume. Um setup oficial não é trocado por
-  `LLM_BASE_URL`/`LLM_API_KEY` (isso só vale no caminho compatível). Sem modelo escolhido, o
-  primeiro item do catálogo é usado e o bot avisa uma vez por conversa. `/model` troca.
-- No host, via SSH, a partir do checkout: `bash scripts/diagnose-tg-deploy.sh .`. Esse script não entra na imagem.
-- No Telegram: envie `/status` dentro de um tópico existente.
+Coolify injects `SOURCE_COMMIT`, which `/status` and `npm run diagnose` show. Pi Bot also accepts `GIT_COMMIT`, `COMMIT_SHA`, `COOLIFY_COMMIT`, and `COOLIFY_SOURCE_COMMIT`. Where `.git` exists, it can fall back to `git rev-parse HEAD`. No build argument or **Available during build** setting is needed.
 
-O diagnóstico imprime apenas a presença das variáveis (`definido`, `VAZIO`,
-`PLACEHOLDER`), nunca os valores.
+## 4. Volume and persistence
 
-## 7. BuildKit secret `npm_ca` (opcional)
+The named volume `pi_bot_data` mounts at `/app/data`. Data is stored in `/app/data/app.sqlite` using Node 24's SQLite support; the image has no `sqlite3` CLI. Run only one process per volume, keep a separate volume for each deploy, and make a backup before changing versions. Topics and conversations are created on first use, not at startup.
 
-O Dockerfile aceita `--mount=type=secret,id=npm_ca` para `npm ci` atrás de um proxy com
-CA própria. Em build normal, ignore: o secret é opcional e nunca é copiado para a
-imagem.
+## 5. Container hardening
 
-## 8. Atualização e rollback
+Compose sets `read_only: true`, a 16 MB tmpfs at `/tmp`, `cap_drop: ALL`, `no-new-privileges`, `init: true`, `restart: unless-stopped`, and a 45-second shutdown grace period. The health check runs `node dist/src/healthcheck.js` every 30 seconds after a 40-second start period, with three attempts.
+
+The only writable locations should be `/app/data` and `/tmp`. If writes are denied, verify the volume mount before changing `read_only`. The first poll must finish before the service reports healthy, so an initial `unhealthy` with normal logs can be temporary.
+
+## 6. Verify deployment
+
+- Run `docker compose ps` and `docker compose logs --tail=100 pi-bot`.
+- In the Coolify service terminal, run `npm run diagnose` or `node scripts/diagnose-tg-runtime.mjs`. It reports whether environment values are set, empty, or placeholders without printing values.
+- Run `npm run setup -- --list` to set a global default model. With no selection, the first catalog entry is used and the bot reports the choice once per conversation. Use `/model` to switch in chat. `npm run login` only handles OAuth; both setup and login use the volume.
+- From the host checkout, run `bash scripts/diagnose-tg-deploy.sh .` over SSH. This script is not part of the image.
+- Send `/status` in an existing Telegram topic.
+
+## 7. Optional BuildKit secret `npm_ca`
+
+The Dockerfile supports `--mount=type=secret,id=npm_ca` for `npm ci` behind a proxy that uses its own CA. Normal builds do not need it. The secret is not copied into the image.
+
+## 8. Update or roll back
 
 ### Upgrading from pi-agent-tg
 
-O serviço do Compose é `pi-bot` e o volume nomeado é `pi_bot_data`, ainda montado em `/app/data`. Um volume renomeado é um volume novo e vazio. Para manter os dados, pare o container, copie o volume antigo para o novo, faça o deploy e confira `/status`. Guarde o volume antigo como backup por alguns dias.
+The Compose service is now `pi-bot` and the volume is `pi_bot_data`, still mounted at `/app/data`. Docker creates an empty volume under a new name. Stop the container, copy the old volume to the new one, deploy, and verify `/status`. Keep the old volume as a backup.
 
 ```sh
 docker run --rm -v old:/from -v new:/to alpine cp -a /from/. /to/
 ```
 
-`old` é o volume existente `pi_agent_tg_data` e `new` é `pi_bot_data`. Use os nomes de `docker volume ls` quando o Compose tiver acrescentado o prefixo do projeto.
+Use the actual names from `docker volume ls`: `old` is the existing `pi_agent_tg_data` volume and `new` is the new `pi_bot_data` volume. Compose may prepend the project name.
 
-- Push na `main` dispara o workflow **Verify pi-bot Telegram agent**, que roda
-  `check`, `lint`, `format:check`, `build`, a suíte offline, `docker compose config` e o
-  smoke do container.
-- Rebuild local: `npm run compose:up`, ou
-  `SOURCE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build`.
-- Rollback: selecione um commit anterior no Coolify e redeploy. Restaure o backup do
-  volume junto — o ledger SQLite é a única fonte de verdade das conversas.
+- A push to `main` runs type checking, linting, format checking, the build, offline tests, Compose validation, and a container smoke test.
+- To rebuild locally, use `npm run compose:up` or `SOURCE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build`.
+- To roll back, deploy the earlier commit and restore the corresponding volume backup. The SQLite ledger is the source of truth for conversations.
 
-## 9. Quando algo falha
+## 9. Troubleshooting
 
-O processo falha fechado e imprime uma mensagem segura (sem segredos). Localize a linha:
+| Symptom                                        | Check                                                                                                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Invalid LLM endpoint                           | Use the provider's HTTPS base URL with no credentials or query. HTTP is allowed only on loopback.                                                |
+| Missing LLM API key                            | For the compatible provider, set `LLM_API_KEY` or `LLM_API_KEY_FILE`.                                                                            |
+| Model catalog returns HTTP 401                 | Check the key.                                                                                                                                   |
+| Model catalog returns HTTP 404                 | Check the base URL, including a version segment such as `/v1` if required.                                                                       |
+| Model catalog unreachable or times out         | Run the host `--probe` and check network, DNS, TLS, and hostname.                                                                                |
+| Catalog invalid or empty                       | Verify the response shape or set `LLM_MODELS` explicitly.                                                                                        |
+| Invalid `LLM_MODELS`                           | Use one of the formats under [Model catalog and reasoning](#model-catalog-and-reasoning).                                                        |
+| Missing or invalid Telegram token or allowlist | Run `npm run setup`, or correct the matching environment override. Use numeric user IDs, not the bot ID. For DMs, omit `TELEGRAM_ALLOWED_CHATS`. |
+| Volume belongs to another bot                  | Use a separate volume.                                                                                                                           |
+| Telegram update ignored                        | Check the allowlisted users and chats and whether the chat type is supported.                                                                    |
+| No commit shown in `/status`                   | Check runtime injection of `SOURCE_COMMIT`; export it yourself outside Coolify.                                                                  |
+| Container is initially unhealthy               | Allow about a minute for the first polling cycle before investigating.                                                                           |
 
-| Mensagem no log                                                                         | Causa                                                             | Correção                                                  |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------- |
-| `Configure LLM_BASE_URL (endpoint OpenAI-compatible).`                                  | variável ausente/vazia                                            | preencha no painel                                        |
-| `Endpoint exige HTTPS sem credenciais/query (HTTP somente loopback).`                   | URL com `user:pass@`, query ou `http://` fora de loopback         | use HTTPS limpo                                           |
-| `Endpoint inválido`                                                                     | URL não parseável                                                 | corrija o valor                                           |
-| `Configure LLM_API_KEY ou LLM_API_KEY_FILE.`                                            | chave ausente ou ainda `replace_with…`                            | preencha a chave crua                                     |
-| `Catálogo de modelos indisponível em LLM_BASE_URL (endpoint LLM respondeu HTTP 401)…`   | chave inválida/ausente no provedor                                | corrija `LLM_API_KEY`                                     |
-| `Catálogo de modelos indisponível em LLM_BASE_URL (endpoint LLM respondeu HTTP 404)…`   | `LLM_BASE_URL` sem o segmento de versão                           | acrescente `/v1`                                          |
-| `Catálogo de modelos indisponível em LLM_BASE_URL (endpoint LLM inacessível)…`          | rede, DNS, TLS ou host errado                                     | teste do host com `--probe`                               |
-| `Catálogo de modelos indisponível em LLM_BASE_URL (endpoint LLM não respondeu em 10s)…` | timeout de 10s no `GET /models`                                   | teste do host com `--probe`                               |
-| `Catálogo de modelos indisponível em LLM_BASE_URL (catálogo inválido)…`                 | resposta fora de `{data:[{id}]}` ou lista                         | declare `LLM_MODELS`                                      |
-| `Nenhum modelo disponível. Verifique LLM_BASE_URL ou defina LLM_MODELS.`                | endpoint respondeu sem modelos                                    | declare `LLM_MODELS`                                      |
-| `LLM_MODELS inválido: …`                                                                | formato fora de `id` ou `id\|contextWindow\|maxTokens\|reasoning` | ajuste o formato                                          |
-| `Sem token do Telegram no ambiente nem no volume. Rode npm run setup…`                  | token ausente no ambiente e no volume                             | `npm run setup` no terminal do container                  |
-| `Configure TELEGRAM_BOT_TOKEN ou TELEGRAM_BOT_TOKEN_FILE.`                              | token fora de `123456:ABC…`                                       | corrija o token (ambiente ou setup)                       |
-| `Sem usuários permitidos do Telegram no ambiente nem no volume…`                        | allowlist ausente                                                 | `npm run setup` ou `TELEGRAM_ALLOWED_USERS`               |
-| `TELEGRAM_ALLOWED_USERS inválido: use IDs numéricos …`                                  | allowlist não numérica                                            | informe user IDs                                          |
-| `TELEGRAM_ALLOWED_CHATS contém <id>, que é o id do bot, não do chat.`                   | allowlist usando o id do bot                                      | omita `TELEGRAM_ALLOWED_CHATS` em DM                      |
-| `Volume pertence a outro bot. Use um volume separado.`                                  | volume reaproveitado                                              | aponte um volume novo                                     |
-| `Comando Telegram ignorado (allowlist ou tipo de chat): …` (warn)                       | update fora da allowlist ou tipo de chat não suportado            | revise `TELEGRAM_ALLOWED_USERS`/`_CHATS`                  |
-| `/status` mostra `(sem SHA)`                                                            | `SOURCE_COMMIT` não chegou em runtime                             | confirme a injeção da variável; fora do Coolify exporte-a |
-| container `unhealthy` logo após o deploy                                                | `start_period` de 40 s do primeiro ciclo de polling               | aguarde ~1 min antes de investigar                        |
-
-Com o container no ar, `npm run diagnose` (ou `node scripts/diagnose-tg-runtime.mjs`)
-mostra presença das variáveis, catálogo, quantos modelos têm reasoning e o padrão global.
-
-## Limites
-
-Sem porta pública, domínio, webhook, chat web ou login de assinatura. As credenciais de
-IA são apenas API keys. Não rode dois processos contra um volume.
+There is no public port, domain, webhook, or web chat in this deployment. Do not run two processes against one volume.

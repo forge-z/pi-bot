@@ -240,7 +240,7 @@ function literalReview(text: string) {
   return `${fence}\n${text}\n${fence}`;
 }
 function formatExpiresAt(ms: number) {
-  return new Date(ms).toLocaleString("pt-BR", {
+  return new Date(ms).toLocaleString("en-US", {
     timeZone: "UTC",
     dateStyle: "short",
     timeStyle: "short",
@@ -812,7 +812,7 @@ export function formatUncertainCallReview(
     } else
       for (const [index, entry] of calls.entries()) {
         lines.push(`  Call ${index + 1}:`);
-        if (!entry.params.length) lines.push("    (nenhum)");
+        if (!entry.params.length) lines.push("    (none)");
         else
           lines.push(
             ...reviewLines(Object.fromEntries(entry.params), 4, scrub),
@@ -927,13 +927,13 @@ export function formatUncertainNotice(
   redact?: (text: string) => string,
 ) {
   const server = plainLabel(value.server, "MCP");
-  const tool = plainLabel(value.tool, "chamada");
-  let text = `Não sei se a chamada ao ${server} (${tool}) terminou. Confira no serviço e marque abaixo.`;
+  const tool = plainLabel(value.tool, "call");
+  let text = `Could not verify whether the call to ${server} (${tool}) completed. Check the service and record the result below.`;
   const hint = clipHint(uncertainHint(value.input));
-  if (hint) text += `\nSobre: ${hint}`;
+  if (hint) text += `\nAbout: ${hint}`;
   return redact ? redact(text) : text;
 }
-/** Truncated, redacted parameters for the Detalhes button. Empty input is omitted. */
+/** Truncated, redacted parameters for the Details button. Empty input is omitted. */
 export function formatUncertainDetails(
   value: { server: string; tool: string; input: unknown },
   redact?: (text: string) => string,
@@ -961,7 +961,7 @@ export function formatUncertainDetails(
   if (!body || body === "{}" || body === "[]") return;
   if (redact) body = redact(body);
   return clipText(
-    `${plainLabel(value.server, "MCP")} / ${plainLabel(value.tool, "chamada")} ${body}`,
+    `${plainLabel(value.server, "MCP")} / ${plainLabel(value.tool, "call")} ${body}`,
     detailsLimit,
   );
 }
@@ -999,7 +999,7 @@ function uncertainCallMenu(
   const keyboard: TelegramReplyMarkup["inline_keyboard"] = [
     [
       {
-        text: "Registrar verificação",
+        text: "Record verification",
         callback_data: button(app, { ...base, verification: "review" }),
       },
     ],
@@ -1007,7 +1007,7 @@ function uncertainCallMenu(
   if (details)
     keyboard.push([
       {
-        text: "Detalhes",
+        text: "Details",
         callback_data: button(app, { ...base, verification: "details" }),
       },
     ]);
@@ -1076,7 +1076,7 @@ function approvalReview(app: Runtime, item: McpInteraction, call: McpCall) {
 }
 
 /**
- * The narrow rule "Sempre permitir isto" would store, or undefined when the item is
+ * The narrow rule "Always allow this" would store, or undefined when the item is
  * not a reviewable read. Sends, deletions, payments and any write never get one.
  */
 function rememberTarget(
@@ -1153,7 +1153,7 @@ export function rememberedApprovalTarget(
   );
 }
 
-/** Stores "Sempre permitir isto" for a pending read, then approves it once. */
+/** Stores "Always allow this" for a pending read, then approves it once. */
 export async function rememberAndAccept(
   app: Runtime,
   item: McpInteraction,
@@ -1304,11 +1304,11 @@ function card(app: Runtime, item: McpInteraction) {
     const rows = [controls];
     if (canAccept && rememberTarget(app, item, call, review)) {
       controls.unshift({
-        text: "Aprovar uma vez",
+        text: "Approve once",
         callback_data: make("accept"),
       });
       rows.push([
-        { text: "Sempre permitir isto", callback_data: make("remember") },
+        { text: "Always allow this", callback_data: make("remember") },
       ]);
     } else if (canAccept)
       controls.unshift({
@@ -1343,8 +1343,8 @@ export function mcpApprovalPrompt(app: Runtime, item: McpInteraction) {
     ? [{ label: "Decline", action: "decline" }]
     : rememberTarget(app, item, call, review)
       ? [
-          { label: "Aprovar uma vez", action: "accept" },
-          { label: "Sempre permitir isto", action: "remember" },
+          { label: "Approve once", action: "accept" },
+          { label: "Always allow this", action: "remember" },
           { label: "Decline", action: "decline" },
         ]
       : [
@@ -1604,13 +1604,13 @@ export async function verifyMcp(
       data.owner,
       data.conversationId,
       view.complete
-        ? "Confira no serviço se deu certo antes de confirmar."
-        : "Não dá para confirmar daqui. Use /resume para liberar sem repetir a chamada.",
+        ? "Check the result in the service before confirming."
+        : "This cannot be verified here. Use /resume to clear the hold without retrying the call.",
       {
         inline_keyboard: view.complete
           ? [
-              [{ text: "Deu certo", callback_data: make("done") }],
-              [{ text: "Não rodou", callback_data: make("not-executed") }],
+              [{ text: "Succeeded", callback_data: make("done") }],
+              [{ text: "Did not run", callback_data: make("not-executed") }],
             ]
           : [],
       },
@@ -1644,6 +1644,6 @@ export async function verifyMcp(
     `telegram:mcp-verified:${call.id}`,
     data.owner,
     data.conversationId,
-    "Verificação registrada. Nada foi reenviado.",
+    "Verification recorded. Nothing was resent.",
   );
 }
