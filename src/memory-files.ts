@@ -18,6 +18,8 @@ import { hash } from "./store.js";
 
 export const MEMORY_FILE = "MEMORY.md";
 export const MEMORY_LIMIT = 8_000;
+const DAILY_CONTEXT_LIMIT = 2_000;
+const DAILY_TRUNCATED = "[Earlier daily notes truncated]\n";
 const FILE_LIMIT = 64_000;
 const DAILY = /^\d{4}-\d{2}-\d{2}\.md$/;
 
@@ -70,7 +72,7 @@ export class MemoryFiles {
     return join(this.dir, name);
   }
 
-  read(name: string, limit = FILE_LIMIT) {
+  read(name: string, limit = FILE_LIMIT, fromEnd = false) {
     const path = this.path(name);
     if (!this.directory(false)) return "";
     let fd: number;
@@ -89,17 +91,37 @@ export class MemoryFiles {
         throw new Error("Unsafe memory file");
       if (limit === FILE_LIMIT && stat.size > FILE_LIMIT)
         throw new Error("Memory file too large");
-      const data = Buffer.alloc(Math.min(stat.size, limit));
+      const truncated = fromEnd && stat.size > limit;
+      const budget = truncated ? limit - DAILY_TRUNCATED.length : limit;
+      const data = Buffer.alloc(Math.min(stat.size, budget));
+      const offset = fromEnd ? stat.size - data.length : 0;
       let length = 0;
       while (length < data.length) {
-        const count = readSync(fd, data, length, data.length - length, null);
+        const count = readSync(
+          fd,
+          data,
+          length,
+          data.length - length,
+          offset + length,
+        );
         if (!count) break;
         length += count;
       }
-      return data.toString("utf8", 0, length);
+      let start = 0;
+      if (truncated) {
+        while (start < length && (data[start] & 0xc0) === 0x80) start++;
+      }
+      return (
+        (truncated ? DAILY_TRUNCATED : "") +
+        data.toString("utf8", start, length)
+      );
     } finally {
       closeSync(fd);
     }
+  }
+
+  readDailyContext(name: string) {
+    return this.read(name, DAILY_CONTEXT_LIMIT, true);
   }
 
   private dailyNames() {

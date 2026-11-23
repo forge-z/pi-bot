@@ -122,7 +122,7 @@ The system prompt lists each name and description, in that order, after the base
 
 ### Long-term memory
 
-The bot reads up to 8 KB from `$DATA_DIR/memory/MEMORY.md` on each turn. It can look up daily notes (`YYYY-MM-DD.md`, UTC) using `memory_search`. Both files are plain Markdown you can edit. Memory is shared across all authorized chats and topics for the installation, including scheduled turns. Only direct user messages count toward curation: after 30 idle minutes and at least three new user messages, the background curator reviews the new messages once. It uses the conversation's configured model by default, with no shell, MCP, or extra model required.
+The bot adds up to 8 KB from `$DATA_DIR/memory/MEMORY.md` and the newest 2 KB each from today's and yesterday's daily notes (`YYYY-MM-DD.md`) to every turn, including scheduled turns. Daily dates use `TZ` if configured, otherwise UTC. The bot can look up older notes using `memory_search`. These files are plain Markdown you can edit, and memory is shared across all authorized chats and topics for the installation. Only direct user messages count toward curation: after 30 idle minutes and at least three new user messages, the background curator reviews the new messages once. It uses the conversation's configured model by default, with no shell, MCP, or extra model required.
 
 On Telegram or WhatsApp, `/memory` shows `MEMORY.md` and `/forget <text>` removes matching lines from both durable and daily notes (case-insensitive literal text). These commands do not rewrite conversation history or prior replies.
 

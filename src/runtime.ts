@@ -601,6 +601,7 @@ export class Runtime {
           this.taskTurnAnswer(await this.conversation(id), id, requestId),
         (id) => this.isTurnBusy(id),
         () => this.now(),
+        (options.env ?? process.env).TZ?.trim() || "UTC",
       );
     if (options.gateway instanceof McpGateway) {
       this.mcpCalls = new McpCalls(
