@@ -81,8 +81,9 @@ const getPublicPage: LocalGet = (url, signal) =>
       {
         agent: false,
         headers: {
-          Accept: "text/html, application/xhtml+xml, text/plain",
+          Accept: "text/html, application/xhtml+xml",
           "Accept-Encoding": "identity",
+          "User-Agent": "Mozilla/5.0 (compatible; pi-web-extract/1.0)",
         },
         lookup(host, options, done) {
           lookup(
@@ -121,49 +122,55 @@ const getPublicPage: LocalGet = (url, signal) =>
     req.end();
   });
 
-const ENTITIES: Record<string, string> = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  nbsp: " ",
-  quot: '"',
-  mdash: "—",
-  ndash: "–",
-  hellip: "…",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-};
-
-function htmlText(html: string) {
-  return html
-    .replace(
-      /<\/?(?:address|article|blockquote|div|h[1-6]|li|main|p|pre|section|tr|br|hr)\b[^>]*>/gi,
-      "\n",
-    )
-    .replace(/<(?:[^"'<>]|"[^"]*"|'[^']*')*>/g, "")
-    .replace(
-      /&(#x[\da-f]+|#\d+|[a-z]+);/gi,
-      (match: string, entity: string) => {
-        if (!entity.startsWith("#"))
-          return ENTITIES[entity.toLowerCase()] ?? match;
-        const value =
-          entity[1]?.toLowerCase() === "x"
-            ? parseInt(entity.slice(2), 16)
-            : Number(entity.slice(1));
-        return value > 0 &&
-          value <= 0x10ffff &&
-          !(value >= 0xd800 && value <= 0xdfff)
-          ? String.fromCodePoint(value)
-          : match;
-      },
-    )
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/ *\n */g, "\n")
+function readableText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+async function extractHtml(
+  html: string,
+  url: URL,
+  maxChars: number,
+  signal: AbortSignal,
+) {
+  const [{ Readability }, { JSDOM }, { NodeHtmlMarkdown }] = await Promise.all([
+    import("@mozilla/readability"),
+    import("jsdom"),
+    import("node-html-markdown"),
+  ]);
+  signal.throwIfAborted();
+  const dom = new JSDOM(html, { url: url.href });
+  try {
+    const { document } = dom.window;
+    const article = new Readability(
+      document.cloneNode(true) as Document,
+    ).parse();
+    const title = article?.title || document.title.trim() || "Untitled page";
+    let content: string;
+    if (article) {
+      content = NodeHtmlMarkdown.translate(article.content ?? "");
+    } else {
+      document
+        .querySelectorAll(
+          "script, style, noscript, svg, iframe, nav, footer, header",
+        )
+        .forEach((node) => node.remove());
+      content =
+        document.body?.textContent ||
+        document.documentElement.textContent ||
+        "";
+    }
+    signal.throwIfAborted();
+    return {
+      url: url.href,
+      title: title.slice(0, 300),
+      text: readableText(content).slice(0, maxChars),
+    };
+  } finally {
+    dom.window.close();
+  }
 }
 
 export async function extractLocalPage(
@@ -193,9 +200,7 @@ export async function extractLocalPage(
       const contentType = response.headers["content-type"] ?? "";
       const encoding = response.headers["content-encoding"] ?? "identity";
       if (
-        !/^(?:text\/(?:html|plain)|application\/xhtml\+xml)(?:;|$)/i.test(
-          contentType,
-        ) ||
+        (contentType && !contentType.toLowerCase().includes("html")) ||
         encoding !== "identity"
       )
         throw new LocalPageError("unsupported page content type or encoding");
@@ -209,23 +214,7 @@ export async function extractLocalPage(
         text += decoder.decode(chunk, { stream: true });
       }
       text += decoder.decode();
-      if (/^text\/plain\b/i.test(contentType))
-        return { url: url.href, title: "", text: text.slice(0, maxChars) };
-      const html = text
-        .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
-        .replace(
-          /<(script|style|template|noscript)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi,
-          "",
-        );
-      const title = htmlText(
-        html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1] ?? "",
-      ).slice(0, 300);
-      const body =
-        html.match(/<body\b[^>]*>([\s\S]*?)(?:<\/body\s*>|$)/i)?.[1] ??
-        html.replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, "");
-      const main =
-        body.match(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1\s*>/i)?.[2] ?? body;
-      return { url: url.href, title, text: htmlText(main).slice(0, maxChars) };
+      return await extractHtml(text, url, maxChars, signal);
     } finally {
       response.close();
     }

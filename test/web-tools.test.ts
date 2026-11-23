@@ -571,7 +571,7 @@ test("Local alone registers extraction without any key and reads text without re
     return localResponse(
       200,
       { "content-type": "text/html; charset=utf-8" },
-      "<title>Title &amp; things</title><body><nav>menu</nav><main><p>Read &#x1f600; this</p><script>ignore me</script><img src='/file'></main></body>",
+      "<title>Title &amp; things</title><body><nav>menu</nav><main><h2>Details</h2><p>Read &#x1f600; this <strong>article</strong> and see <a href='related'>the source</a>.</p><script src='/file'>ignore me</script></main></body>",
     );
   };
   const tools = createWebTools(
@@ -588,7 +588,12 @@ test("Local alone registers extraction without any key and reads text without re
   });
   assert.equal(result.isError, false);
   assert.match(result.text, /"provider":"local"/);
-  assert.match(result.text, /"title":"Title & things","text":"Read 😀 this"/);
+  assert.match(result.text, /"title":"Title & things"/);
+  assert.match(result.text, /## Details/);
+  assert.match(
+    result.text,
+    /Read 😀 this \*\*article\*\* and see \[the source\]\(https:\/\/example\.org\/related\)/,
+  );
   assert.doesNotMatch(result.text, /ignore me|menu|\/file/);
   assert.deepEqual(urls, [pageUrl, "https://example.org/real"]);
 });
@@ -602,12 +607,24 @@ test("Local refuses nonpublic redirect targets, enforces size, and accepts empty
     [
       localResponse(
         200,
-        { "content-type": "text/plain" },
+        { "content-type": "text/html" },
         "x".repeat(512 * 1024 + 1),
       ),
       /response too large/,
     ],
+    [
+      localResponse(200, { "content-type": "text/plain" }, "Plain text"),
+      /unsupported page content type/,
+    ],
     [localResponse(204, {}), undefined],
+    [
+      localResponse(
+        200,
+        { "content-type": "text/html" },
+        "<body><script>ignore me</script></body>",
+      ),
+      undefined,
+    ],
   ] as const) {
     let localCalls = 0;
     let fallbackCalls = 0;
@@ -641,7 +658,11 @@ test("a hosted error can fall back to Local without a second API key", async () 
       fetch: async () =>
         Response.json({ markdown: { success: false, message: apiKey } }),
       localGet: async () =>
-        localResponse(200, { "content-type": "text/plain" }, "Fallback text"),
+        localResponse(
+          200,
+          { "content-type": "text/html" },
+          "<p>Fallback text</p>",
+        ),
     },
   );
   const result = await execute(tools, "web_extract", { url: pageUrl });

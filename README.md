@@ -76,7 +76,7 @@ web:
 | TinyFish  | Yes    | Yes     | `TINYFISH_API_KEY`    |
 | Local     | —      | Yes     | None                  |
 
-Brave's LLM Context API returns excerpts from search results, not arbitrary-URL extraction. Local extracts text directly from public HTML and plain-text pages without an API key. It does not run JavaScript or load embedded resources; choose a hosted extractor for pages that require rendering.
+Brave's LLM Context API returns excerpts from search results, not arbitrary-URL extraction. Local needs no API key. Like [Piko](https://github.com/dandkong/piko/blob/8e9f4405fa1c87e1bbdc7a73a41938442284b9aa/server/tools/web-extract.ts), it uses Mozilla Readability to extract the main article from public HTML, converts it to Markdown, and falls back to cleaned page text if it cannot identify an article. It does not run JavaScript or load embedded resources; choose a hosted extractor for pages that require rendering. Local checks every redirect and blocks non-public destinations.
 
 A keyed provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, an error, rate limit or timeout tries the next provider; an empty result does not. An empty list disables that operation. Local is available only when explicitly selected. If no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
 
