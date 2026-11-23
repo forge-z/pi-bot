@@ -24,11 +24,14 @@ import { Runtime } from "../src/runtime.js";
 const IDLE = 30 * 60_000;
 const DAY = "2026-11-23.md";
 
-async function fixture() {
+async function fixture({
+  timeZone,
+  date = "2026-11-23T12:00:00Z",
+}: { timeZone?: string; date?: string } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "pi-memory-"));
   const memoryDir = join(dir, "memory");
   const config = join(dir, "config.yaml");
-  let now = Date.parse("2026-11-23T12:00:00Z");
+  let now = Date.parse(date);
   const faux = fauxProvider({ models: [{ id: "base" }, { id: "cheap" }] });
   const models = createModels();
   models.setProvider(faux.provider);
@@ -68,7 +71,7 @@ async function fixture() {
     now: () => now,
     provider: "faux",
     modelId: "base",
-    env: { DATA_DIR: dir, CONFIG_FILE: config },
+    env: { DATA_DIR: dir, CONFIG_FILE: config, TZ: timeZone },
   };
   let app = await Runtime.open(options);
   const id = await app.create("test memory");
@@ -110,8 +113,58 @@ async function fixture() {
   };
 }
 
-test("curates once after three new direct inputs and 30 idle minutes, with only its own tool and no operational state", async (t) => {
+test("recent daily notes enter interactive and scheduled prompts using the configured local date", async (t) => {
+  const f = await fixture({
+    timeZone: "America/New_York",
+    date: "2026-12-01T02:00:00Z",
+  });
+  t.after(() => f.close());
+  await mkdir(f.memoryDir);
+  for (const [file, contents] of [
+    ["MEMORY.md", "A durable fact"],
+    ["2026-11-30.md", "Today's launch decision"],
+    ["2026-11-29.md", "Yesterday's launch notes"],
+    ["2026-11-28.md", "An older note"],
+    ["2026-12-01.md", "A future local note"],
+  ])
+    await writeFile(join(f.memoryDir, file), contents);
+  await f.send(1, "What was the decision?");
+  await f.send(2, "Summarize the launch", "task");
+  assert.equal(f.chat.length, 2);
+  for (const wire of f.chat) {
+    assert.match(wire, /MEMORY\.md:.*A durable fact/);
+    assert.match(wire, /2026-11-30\.md:.*Today's launch decision/);
+    assert.match(wire, /2026-11-29\.md:.*Yesterday's launch notes/);
+    assert.doesNotMatch(wire, /An older note|A future local note/);
+  }
+});
+
+test("missing files are omitted and a large daily note contributes only its newest text", async (t) => {
   const f = await fixture();
+  t.after(() => f.close());
+  await f.send(1, "No memory directory yet");
+  assert.doesNotMatch(f.chat.at(-1)!, /Saved memory/);
+  await mkdir(f.memoryDir);
+  const today = join(f.memoryDir, DAY);
+  const original = `old detail\n${"€".repeat(2_000)}\nnewest detail\n`;
+  await writeFile(today, original);
+  await f.send(2, "The newest note only");
+  const wire = f.chat.at(-1)!;
+  assert.match(
+    wire,
+    /2026-11-23\.md:.*Earlier daily notes truncated.*newest detail/,
+  );
+  assert.doesNotMatch(wire, /MEMORY\.md:|2026-11-22\.md:|old detail|�/);
+  const tail = new MemoryFiles(f.dir).readDailyContext(DAY);
+  assert.ok(Buffer.byteLength(tail) <= 2_000);
+  assert.equal(await readFile(today, "utf8"), original);
+});
+
+test("curates once after three new direct inputs and 30 idle minutes, with only its own tool and no operational state", async (t) => {
+  const f = await fixture({
+    timeZone: "America/Los_Angeles",
+    date: "2026-11-24T01:00:00Z",
+  });
   t.after(() => f.close());
   await f.send(1, "I prefer tea.\nBalance: $100");
   await f.send(2, "I met Alice about the launch.");
@@ -211,10 +264,14 @@ test("memory can be disabled, and file names cannot escape the memory directory"
   await writeFile(f.config, "memory:\n  enabled: false\n");
   await mkdir(f.memoryDir);
   await writeFile(join(f.memoryDir, "MEMORY.md"), "Private remembered text");
+  await writeFile(join(f.memoryDir, DAY), "Private daily text");
   await f.restart();
   assert.equal(f.app.memory, undefined);
   await f.send(1, "test disabled");
-  assert.doesNotMatch(f.chat.at(-1)!, /Private remembered text|memory_search/);
+  assert.doesNotMatch(
+    f.chat.at(-1)!,
+    /Private remembered text|Private daily text|memory_search/,
+  );
   assert.throws(
     () => new MemoryFiles(f.dir).read("../config.yaml"),
     /Invalid memory file name/,
