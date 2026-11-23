@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -17,6 +18,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 
 async function fixture(legacySse = false) {
   let session = "";
+  let clientInfo: unknown;
   let initializes = 0;
   let writes = 0;
   let reads = 0;
@@ -74,6 +76,7 @@ async function fixture(legacySse = false) {
     let result: unknown;
     if (body.method === "initialize") {
       if (!legacySse) assert.equal(sid, undefined);
+      clientInfo = body.params.clientInfo;
       session = `session-${++initializes}`;
       if (!legacySse) res.setHeader("Mcp-Session-Id", session);
       result = {
@@ -204,6 +207,9 @@ async function fixture(legacySse = false) {
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     requests,
+    get clientInfo() {
+      return clientInfo;
+    },
     get initializes() {
       return initializes;
     },
@@ -331,6 +337,10 @@ test("sequential hops on a live session do not re-list the catalog", async () =>
       "tools/call",
     ]);
     assert.equal(mock.initializes, 1);
+    const { name, version } = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    );
+    assert.deepEqual(mock.clientInfo, { name, version });
     assert.equal(mock.reads, 2);
     assert.equal(mock.writes, 1);
   } finally {
