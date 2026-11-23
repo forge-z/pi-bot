@@ -22,7 +22,7 @@ export interface TelegramButton {
   reviewVersion?: number;
   reviewHash?: string;
   authorizationVersion?: string;
-  decision?: "accept" | "decline";
+  decision?: "accept" | "decline" | "remember";
   modelMenu?: ModelMenuAction;
   cronMenu?: CronMenuAction;
   credentialBinding: string;

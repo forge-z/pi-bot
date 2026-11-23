@@ -19,7 +19,11 @@ import {
 } from "./mcp-oauth.js";
 import { isRetryableError, type Runtime } from "./runtime.js";
 import { childIds, queueWhatsApp } from "./store.js";
-import { mcpApprovalPrompt } from "./telegram-approvals.js";
+import type { McpInteraction } from "./mcp-calls.js";
+import {
+  mcpApprovalPrompt,
+  rememberAndAccept,
+} from "./telegram-approvals.js";
 import { transcribeAudio } from "./transcribe.js";
 import { describeImage } from "./vision.js";
 import { chatSeesImages } from "./commands.js";
@@ -330,7 +334,8 @@ export async function takeNumberedApproval(
   const index = parseNumberedReply(text, open.choices.length);
   if (!index) return false;
   const action = open.choices[index - 1];
-  if (action !== "accept" && action !== "decline") return false;
+  if (action !== "accept" && action !== "decline" && action !== "remember")
+    return false;
   const parts = app.store.all<{
     state: string;
     chat: string;
@@ -354,18 +359,29 @@ export async function takeNumberedApproval(
   )
     return false;
   try {
-    await app.mcpCalls.decide(
-      conversationId,
-      open.interactionId,
-      action,
-      action === "accept" ? {} : undefined,
-    );
+    let text = action === "accept" ? "Approved." : "Declined.";
+    if (action === "remember") {
+      const item = app.store.get<McpInteraction>(
+        "SELECT * FROM mcp_interactions WHERE id=? AND conversationId=?",
+        open.interactionId,
+        conversationId,
+      );
+      if (!item) return false;
+      const { rule } = await rememberAndAccept(app, item, "whatsapp");
+      text = `Approved. This read is always allowed now (/approvals ${rule.id}).`;
+    } else
+      await app.mcpCalls.decide(
+        conversationId,
+        open.interactionId,
+        action,
+        action === "accept" ? {} : undefined,
+      );
     app.store.run("DELETE FROM meta WHERE key=?", approvalKey(conversationId));
     queueWhatsApp(
       app.store,
       `whatsapp:approval-result:${open.interactionId}`,
       chatId,
-      action === "accept" ? "Approved." : "Declined.",
+      text,
       conversationId,
     );
   } catch {

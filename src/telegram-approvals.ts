@@ -1,5 +1,14 @@
-import { channelChat, whatsappApprovalKey } from "./channel.js";
+import {
+  channelChat,
+  whatsappApprovalKey,
+  type ApprovalChoice,
+} from "./channel.js";
 import type { Runtime } from "./runtime.js";
+import {
+  approvalResource,
+  rememberableToolName,
+  type ApprovalTarget,
+} from "./remembered-approvals.js";
 import {
   executorUsesExecutionIdResume,
   mcpUncertainNeedsNotice,
@@ -1066,6 +1075,109 @@ function approvalReview(app: Runtime, item: McpInteraction, call: McpCall) {
   return { view, canAccept, opaque, executorExecutionPause };
 }
 
+/**
+ * The narrow rule "Sempre permitir isto" would store, or undefined when the item is
+ * not a reviewable read. Sends, deletions, payments and any write never get one.
+ */
+function rememberTarget(
+  app: Runtime,
+  item: McpInteraction,
+  call: McpCall,
+  review = approvalReview(app, item, call),
+): ApprovalTarget | undefined {
+  if (item.kind === "url" || !review.canAccept || review.opaque) return;
+  let args: unknown;
+  let payload: unknown;
+  try {
+    args = JSON.parse(call.args);
+    payload = JSON.parse(item.payload);
+  } catch {
+    return;
+  }
+  if (!object(args) || !object(payload)) return;
+  if (!app.mcpCalls?.callIsRead(call.server, call.tool, args)) return;
+  if (looksLikeMailSend(call.server, call.tool, args)) return;
+  const invocation =
+    item.kind === "resume" && object(payload.invocation)
+      ? payload.invocation
+      : undefined;
+  if (item.kind === "resume") {
+    if (
+      !invocation ||
+      typeof invocation.tool !== "string" ||
+      payload.deferred !== undefined ||
+      looksLikeMailSend(invocation.app, invocation.tool, invocation.input)
+    )
+      return;
+  }
+  const tool = invocation
+    ? [invocation.app, invocation.tool]
+        .filter((part) => typeof part === "string" && part)
+        .join(".")
+    : call.tool;
+  if (!rememberableToolName(tool)) return;
+  if (invocation && !rememberableToolName(call.tool) && call.tool !== "execute")
+    return;
+  return {
+    server: call.server,
+    tool,
+    resource: approvalResource(invocation ? invocation.input : args),
+    binding: call.binding,
+  };
+}
+
+/** Same rule for a pause before it becomes a card, so a remembered read skips it. */
+export function rememberedApprovalTarget(
+  app: Runtime,
+  call: McpCall,
+  kind: "form" | "resume",
+  payload: Record<string, unknown>,
+) {
+  return rememberTarget(
+    app,
+    {
+      id: "",
+      callId: call.id,
+      conversationId: call.conversationId,
+      server: call.server,
+      kind,
+      payload: JSON.stringify(payload),
+      state: "pending",
+      response: null,
+    },
+    call,
+  );
+}
+
+/** Stores "Sempre permitir isto" for a pending read, then approves it once. */
+export async function rememberAndAccept(
+  app: Runtime,
+  item: McpInteraction,
+  origin: "telegram" | "whatsapp",
+) {
+  const call = app.store.get<McpCall>(
+    "SELECT * FROM mcp_calls WHERE id=?",
+    item.callId,
+  );
+  const target = call && rememberTarget(app, item, call);
+  if (!target)
+    throw new PolicyError(
+      "Only a reviewable read can be always allowed. Approve once or decline.",
+    );
+  const result = await app.mcpCalls.decide(
+    item.conversationId,
+    item.id,
+    "accept",
+    {},
+  );
+  const rule = app.mcpCalls.rememberedApprovals.remember(
+    target,
+    origin,
+    item.conversationId,
+  );
+  return { result, rule };
+}
+
 function card(app: Runtime, item: McpInteraction) {
   const payload = JSON.parse(item.payload) as Record<string, unknown>;
   const call = app.store.get<McpCall>(
@@ -1161,7 +1273,7 @@ function card(app: Runtime, item: McpInteraction) {
     clearTelegramDeliveryPrefix(app.store, prefix);
   }
   app.store.savepoint("telegram_mcp_card", () => {
-    const make = (action: "accept" | "decline") => {
+    const make = (action: "accept" | "decline" | "remember") => {
       const token = button(app, {
         kind: "mcp",
         owner,
@@ -1185,7 +1297,16 @@ function card(app: Runtime, item: McpInteraction) {
       return token;
     };
     const controls = [{ text: "Decline", callback_data: make("decline") }];
-    if (canAccept)
+    const rows = [controls];
+    if (canAccept && rememberTarget(app, item, call, review)) {
+      controls.unshift({
+        text: "Aprovar uma vez",
+        callback_data: make("accept"),
+      });
+      rows.push([
+        { text: "Sempre permitir isto", callback_data: make("remember") },
+      ]);
+    } else if (canAccept)
       controls.unshift({
         text: "Approve",
         callback_data: make("accept"),
@@ -1196,7 +1317,7 @@ function card(app: Runtime, item: McpInteraction) {
       owner,
       item.conversationId,
       `**MCP approval pending**\n\n${display}\n\n${guidance}\n\nValid until: ${formatExpiresAt(expiresAt)} UTC`,
-      { inline_keyboard: [controls] },
+      { inline_keyboard: rows },
     );
     app.store.run(
       "INSERT OR IGNORE INTO meta VALUES (?,?)",
@@ -1214,13 +1335,18 @@ export function mcpApprovalPrompt(app: Runtime, item: McpInteraction) {
   );
   if (!call) return;
   const review = approvalReview(app, item, call);
-  const choices: { label: string; action: "accept" | "decline" }[] =
-    review.canAccept
+  const choices: ApprovalChoice[] = !review.canAccept
+    ? [{ label: "Decline", action: "decline" }]
+    : rememberTarget(app, item, call, review)
       ? [
-          { label: "Approve", action: "accept" },
+          { label: "Aprovar uma vez", action: "accept" },
+          { label: "Sempre permitir isto", action: "remember" },
           { label: "Decline", action: "decline" },
         ]
-      : [{ label: "Decline", action: "decline" }];
+      : [
+          { label: "Approve", action: "accept" },
+          { label: "Decline", action: "decline" },
+        ];
   return { display: formatMcpApprovalDisplay(item, call, review), choices };
 }
 
@@ -1325,7 +1451,9 @@ export async function decideMcp(
     hash(item.payload) !== data.interactionHash ||
     data.authorizationVersion !==
       app.store.authorizationVersion(data.owner, data.conversationId) ||
-    (data.decision !== "accept" && data.decision !== "decline")
+    (data.decision !== "accept" &&
+      data.decision !== "decline" &&
+      data.decision !== "remember")
   )
     throw new PolicyError("Pending item closed, changed, or not authorized.");
   const currentCall = app.store.get<McpCall>(
@@ -1334,7 +1462,7 @@ export async function decideMcp(
   );
   if (!currentCall) throw new PolicyError("Pending call unavailable.");
   const review = approvalReview(app, item, currentCall);
-  if (data.decision === "accept" && !review.canAccept)
+  if (data.decision !== "decline" && !review.canAccept)
     throw new PolicyError(
       review.opaque
         ? "Recipients or content cannot be reviewed. Review it in the external service; the bot does not look up drafts, read mail, or decode opaque content."
@@ -1363,12 +1491,26 @@ export async function decideMcp(
     throw new PolicyError(
       "Review is incomplete or the button is outside the original message.",
     );
-  const result = await app.mcpCalls.decide(
-    data.conversationId,
-    item.id,
-    data.decision,
-    data.decision === "accept" ? {} : undefined,
-  );
+  const remembered =
+    data.decision === "remember"
+      ? await rememberAndAccept(app, item, "telegram")
+      : undefined;
+  const result =
+    remembered?.result ??
+    (await app.mcpCalls.decide(
+      data.conversationId,
+      item.id,
+      data.decision === "accept" ? "accept" : "decline",
+      data.decision === "accept" ? {} : undefined,
+    ));
+  if (remembered && item.kind !== "resume")
+    queueControl(
+      app,
+      `telegram:mcp-result:${item.id}`,
+      data.owner,
+      data.conversationId,
+      `**Decision recorded:** always allow (/approvals ${remembered.rule.id})`,
+    );
   clearApprovalMeta(app, item.id);
   const call = app.mcpCalls
     .list(data.conversationId)
@@ -1380,7 +1522,7 @@ export async function decideMcp(
       `telegram:mcp-result:${item.id}`,
       data.owner,
       data.conversationId,
-      `**Decision recorded:** ${data.decision === "accept" ? "approve" : "decline"}\nMCP state: ${call.state}${call.state === "paused" ? "\nThere is a new pending item; review the next card." : ""}${(() => {
+      `**Decision recorded:** ${remembered ? `always allow (/approvals ${remembered.rule.id})` : data.decision === "accept" ? "approve" : "decline"}\nMCP state: ${call.state}${call.state === "paused" ? "\nThere is a new pending item; review the next card." : ""}${(() => {
         const detail = formatMcpOutcomeMessage(call);
         return detail ? `\n\n${detail}` : "";
       })()}`,
