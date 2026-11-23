@@ -17,6 +17,7 @@ pt-BR: `/receipt` mostra o último turno e `/receipt <n>` consulta os anteriores
 
 - Telegram and WhatsApp approval cards for a reviewable read offer "Sempre permitir isto". The rule is one MCP server, one held tool, the resource the arguments name (calendar, folder, repository, ...) and the credential binding, stored in SQLite with date and origin. A matching read is resumed without a card, also in scheduled runs, and counts as remembered in `/receipt`. `/approvals` lists rules and `/revoke <n>` removes one. Writes, sends, deletions and payments never get the button.
 - Telegram and WhatsApp can show per-turn tool, approval, search, token, and model-cost metadata with `/receipt [n]`. The SQLite receipt does not copy conversation text, arguments, page content, or keys. The reply footer is off by default.
+- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Busca na web** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With neither provider configured, the assistant keeps using its MCP tools.
 
 ### Security
 

@@ -190,6 +190,10 @@ costuma ser só isso.
 - `docker compose ps` e `docker compose logs --tail=100 pi-bot`.
 - No terminal do serviço (Coolify): `node scripts/diagnose-tg-runtime.mjs` ou
   `npm run diagnose`.
+- Para busca e extração nativas, defina `EXA_API_KEY` e/ou `FIRECRAWL_API_KEY`
+  nas variáveis do serviço. Elas sobrescrevem as chaves gravadas no volume
+  por **Busca na web** no `npm run setup`. O `npm run doctor` mostra quais
+  provedores estão ativos e avisa se não houver fallback.
 - Defina o modelo padrão (opcional, mas recomendado para quem não vai usar `/model`):
   `npm run setup -- --list`. `npm run setup` é o assistente completo (visão e áudio inclusive);
   `npm run login` é só OAuth. Os dois gravam no volume. Um setup oficial não é trocado por

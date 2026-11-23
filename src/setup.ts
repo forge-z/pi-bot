@@ -749,7 +749,7 @@ export function secretPrompt(label: string, saved: boolean): string {
     : `${name} (hidden): `;
 }
 
-type SetupMenuSection = "gateway" | "text" | "image" | "audio" | "mcp";
+type SetupMenuSection = "gateway" | "text" | "image" | "audio" | "mcp" | "web";
 
 type SetupMenuCommand = SetupMenuSection | "restart" | "exit";
 
@@ -774,6 +774,9 @@ const MAIN_MENU: Record<string, SetupMenuCommand> = {
   "5": "mcp",
   mcp: "mcp",
   "mcp platform": "mcp",
+  "6": "web",
+  web: "web",
+  "busca na web": "web",
   s: "restart",
   save: "restart",
   "save and restart": "restart",
@@ -796,6 +799,7 @@ interface SetupMenuStatus {
   image: SectionStatus;
   audio: SectionStatus;
   mcp: SectionStatus;
+  web: SectionStatus;
 }
 
 export function setupMenuStatus(input: {
@@ -804,6 +808,7 @@ export function setupMenuStatus(input: {
   image: boolean;
   audio: boolean;
   mcp: boolean;
+  web: boolean;
 }): SetupMenuStatus {
   const state = (on: boolean): SectionStatus => (on ? "configured" : "not set");
   return {
@@ -812,6 +817,7 @@ export function setupMenuStatus(input: {
     image: state(input.image),
     audio: state(input.audio),
     mcp: state(input.mcp),
+    web: state(input.web),
   };
 }
 
@@ -821,6 +827,7 @@ const MENU_LABELS: Record<keyof SetupMenuStatus, string> = {
   image: "Image model",
   audio: "Audio model",
   mcp: "MCP platform",
+  web: "Busca na web",
 };
 
 /** Main menu text. `detail` is a short parenthetical after configured / not set. */
@@ -840,6 +847,7 @@ export function formatSetupMenu(
     line(3, "image"),
     line(4, "audio"),
     line(5, "mcp"),
+    line(6, "web"),
     "",
     `s - ${SAVE_AND_RESTART}`,
     "q - Exit without saving",

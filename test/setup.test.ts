@@ -669,6 +669,8 @@ test("secret prompts do not reveal any part of a saved secret", () => {
 test("the setup menu routes sections, save and back, and gateway restart", () => {
   assert.equal(routeSetupMenu("s"), "restart");
   assert.equal(routeSetupMenu("1"), "gateway");
+  assert.equal(routeSetupMenu("6"), "web");
+  assert.equal(routeSetupMenu("Busca na web"), "web");
   assert.equal(routeGatewayMenu("1"), "telegram");
   assert.equal(routeGatewayMenu("2"), "whatsapp");
   assert.equal(routeGatewayMenu("save and back"), "save");
@@ -692,10 +694,12 @@ test("the setup menu routes sections, save and back, and gateway restart", () =>
       image: true,
       audio: false,
       mcp: false,
+      web: true,
     }),
     { image: "gemini/gemini-3.5-flash-lite" },
   );
   assert.match(menu, /1 - Setup gateway\s+not set/);
+  assert.match(menu, /6 - Busca na web\s+configured/);
   assert.match(menu, /Save and restart gateway/);
   assert.match(menu, /configured \(gemini\/gemini-3\.5-flash-lite\)/);
   assert.doesNotMatch(menu, /ends \.\.\./);

@@ -1,6 +1,6 @@
 /**
  * Delimit one external result so text inside it cannot look like instructions.
- * Job settlement is the only caller. Turn-wide wrapping is not wired here.
+ * Used by job settlement and native web tools; this is not a turn-wide wrapper.
  */
 
 const TAG_NAME = /untrusted[\s_-]*tool[\s_-]*result/gi;
