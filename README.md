@@ -40,6 +40,7 @@ The menu edits one section at a time. **Save and back** writes that section. **S
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, both (Executor plus Composio), or none.
+6. **Busca na web** — native web search and page extraction providers and keys.
 
 Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram or WhatsApp for the bound chat. On WhatsApp the sign-in notice goes to that chat. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
 
@@ -50,6 +51,20 @@ There is no `/login` command. ChatGPT/Codex OAuth needs a localhost callback or 
 Environment variables are optional overrides. When one is set, it wins over the value stored on the volume. `TZ` is the container clock (log timestamps). Schedules keep their own IANA timezone. Setup does not store `TZ`. Omit it for UTC. `WHATSAPP_ALLOWED_USERS` overrides the numbers saved for WhatsApp. No new variable is required to boot.
 
 Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat reserve (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) is ignored when an official setup is already on the volume.
+
+### Native web search and extraction
+
+`web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
+
+In `npm run setup`, select **Busca na web** to choose a primary and fallback for each tool and save the keys on the volume. Set `EXA_API_KEY` and/or `FIRECRAWL_API_KEY` to override the saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations is:
+
+```yaml
+web:
+  search: [exa, firecrawl]
+  extract: [exa, firecrawl]
+```
+
+A provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, an error, rate limit or timeout tries the next provider; an empty result does not. An empty list disables that operation. When no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
 
 ### Sandbox
 
@@ -197,18 +212,20 @@ Replies are plain text, cut at 3800 characters. A Markdown heading becomes `*tit
 
 There is no BotFather menu. Type the command in the chat. `/help` and `/start` send this list:
 
-| Command     | What WhatsApp does                                                                                                                                                     |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/status`   | Status, tokens, and cost for this chat                                                                                                                                 |
-| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                                                                                             |
-| `/stop`     | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
-| `/new`      | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
-| `/resume`   | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
-| `/compact`  | Compact this chat. Text after the command is optional focus                                                                                                            |
-| `/model`    | Numbered model list. Reply with the number. Words after `/model` do not select a model; they still open the list                                                       |
-| `/thinking` | Numbered effort list. Reply with the number                                                                                                                            |
-| `/crons`    | Schedules in this chat. Reply with the number to turn one on or off. This command does not create a schedule                                                           |
-| `/help`     | The list above                                                                                                                                                         |
+| Command      | What WhatsApp does                                                                                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/status`    | Status, tokens, and cost for this chat                                                                                                                                 |
+| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                                                                                            |
+| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                                                                                                  |
+| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                                                                                        |
+| `/stop`      | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
+| `/new`       | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
+| `/resume`    | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
+| `/compact`   | Compact this chat. Text after the command is optional focus                                                                                                            |
+| `/model`     | Numbered model list. Reply with the number. Words after `/model` do not select a model; they still open the list                                                       |
+| `/thinking`  | Numbered effort list. Reply with the number                                                                                                                            |
+| `/crons`     | Schedules in this chat. Reply with the number to turn one on or off. This command does not create a schedule                                                           |
+| `/help`      | The list above                                                                                                                                                         |
 
 A message that starts with `//` is text, not a command. One slash is removed before the model sees it, so `//status` arrives as `/status`. An unknown command gets the help list and does not start a turn. A photo or a voice note is not a command, except when the caption is `/stop`.
 
@@ -236,18 +253,20 @@ Setup prints the Upsy sign-in link. Paste the final browser URL into the bound W
 
 On Telegram the app registers this menu on start. There is nothing to set in BotFather. On WhatsApp the names are text in the chat. [WhatsApp](#whatsapp) is the list `/help` sends there: `/crons` only turns a schedule in that chat on or off.
 
-| Command     | What it does                                                                                      |
-| ----------- | ------------------------------------------------------------------------------------------------- |
-| `/model`    | Provider and model for this topic                                                                 |
-| `/thinking` | Effort for this topic                                                                             |
-| `/crons`    | Create and manage schedules                                                                       |
-| `/new`      | Another conversation in this topic. The previous one stays on the volume                          |
-| `/resume`   | Resume a stuck task: a crash-parked task, or an uncertain MCP result                              |
-| `/stop`     | Stop this topic                                                                                   |
-| `/compact`  | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
-| `/status`   | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
-| `/recibo`   | Receipt for the latest turn. `/recibo <n>` counts back from the latest (1)                        |
-| `/help`     | This list                                                                                         |
+| Command      | What it does                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| `/model`     | Provider and model for this topic                                                                 |
+| `/thinking`  | Effort for this topic                                                                             |
+| `/crons`     | Create and manage schedules                                                                       |
+| `/new`       | Another conversation in this topic. The previous one stays on the volume                          |
+| `/resume`    | Resume a stuck task: a crash-parked task, or an uncertain MCP result                              |
+| `/stop`      | Stop this topic                                                                                   |
+| `/compact`   | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
+| `/status`    | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
+| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                       |
+| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                             |
+| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                   |
+| `/help`      | This list                                                                                         |
 
 `/resume` dismisses an uncertain MCP result without repeating the call (the call may already have run) and continues a task that was parked after a crash. `/new` does not clear an uncertain result.
 

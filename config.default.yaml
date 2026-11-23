@@ -33,6 +33,13 @@
 # 'search', 'describe', and 'skills' stay hardcoded reads in code; the model cannot call 'resume'.
 # A server with its own `tools` list must list them to make them declared reads.
 
+# Native read tools. Each list is ordered: primary, then fallback. Set [] to
+# disable the operation. Providers without a key are skipped. Keys are not
+# stored here: use npm run setup or EXA_API_KEY / FIRECRAWL_API_KEY.
+web:
+  search: [exa, firecrawl]
+  extract: [exa, firecrawl]
+
 mcp_servers:
   # Map of MCP server names to their trust level and tool lists.
   # Servers without their own 'tools' list inherit executor's lists and its approval.
@@ -264,7 +271,7 @@ sandbox_code_task:
 # $DATA_DIR/config.yaml. There is no environment variable for this.
 reaction_delay_ms: 4000
 
-# /recibo always works. Enable this to append a short line to final chat replies.
+# /receipt always works. Enable this to append a short line to final chat replies.
 turn_receipt:
   footer: false
 

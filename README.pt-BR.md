@@ -32,6 +32,7 @@ O menu edita uma seção de cada vez. **Save and back** grava essa seção. **Sa
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, os dois (Executor e Composio), ou nenhum.
+6. **Busca na web** — provedores e chaves para busca e extração nativas.
 
 O Upsy (`https://upsy.ai/connect`) não tem chave de API. O setup imprime o link de login. Cole a URL final do navegador de volta, mesmo se a página não carregar. O redirect é `http://127.0.0.1:33418/callback` e nada escuta nessa porta. Os tokens ficam na credencial `mcp-upsy` do volume e são renovados sozinhos. A mesma cola funciona no Telegram ou no WhatsApp, no chat vinculado. No WhatsApp o aviso de login vai para esse chat. `--aggregators upsy` não inicia o login; só seleciona o Upsy quando já existe um refresh token. `npm run login` continua sendo ChatGPT/Codex e não é esse fluxo.
 
@@ -46,6 +47,20 @@ Não existe comando `/login`. O OAuth precisa de callback em localhost ou da URL
 Variáveis de ambiente são overrides opcionais. Quando uma está definida, ela vence o valor gravado no volume. `TZ` é o relógio do container (o horário dos logs). Cada agendamento guarda o próprio fuso IANA. O setup não grava `TZ`. Sem ela, o relógio fica em UTC. `WHATSAPP_ALLOWED_USERS` substitui os números gravados para o WhatsApp. Nenhuma variável nova é obrigatória para o container subir.
 
 Ids de grupo e tópico (`TELEGRAM_ALLOWED_CHATS`) ficam só no ambiente. A reserva compatível (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) é ignorada quando já existe um setup oficial no volume.
+
+### Busca e extração nativas
+
+`web_search` encontra links e aceita o filtro de período `freshness` (`day`, `week`, `month`, `year`) e uma lista de domínios em `domains`. `web_extract` lê o texto principal de uma página HTTP(S). As duas ferramentas são de leitura, funcionam em execuções agendadas sem aprovação e tratam a resposta externa como dados não confiáveis.
+
+Em `npm run setup`, abra **Busca na web** para escolher o provedor oficial e o fallback de cada função e gravar as chaves no volume. No Coolify ou em outro ambiente, `EXA_API_KEY` e `FIRECRAWL_API_KEY` sobrescrevem as chaves gravadas. A ordem fica em `$DATA_DIR/config.yaml` (ou `CONFIG_FILE`):
+
+```yaml
+web:
+  search: [exa, firecrawl]
+  extract: [exa, firecrawl]
+```
+
+Sem chave, o provedor é pulado. Com apenas um disponível, o `npm run doctor` avisa que não há fallback. Com dois, erro, timeout ou limite de taxa aciona o fallback; resultado vazio não aciona. Uma lista vazia desliga a função. Quando não há provedor disponível, a ferramenta nativa não é registrada e o assistente pode usar o MCP configurado do Composio ou Executor, como antes. Reinicie o bot para aplicar as mudanças.
 
 ### Sandbox
 
@@ -149,7 +164,7 @@ Não há menu no BotFather. O comando é texto no chat. `/help` e `/start` envia
 | Comando     | O que o WhatsApp faz                                                                                                                                             |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/status`   | Estado, tokens e custo deste chat                                                                                                                                |
-| `/recibo`   | Recibo do último turno. `/recibo <n>` conta do mais recente (1) para trás                                                                                        |
+| `/receipt`  | Recibo do último turno. `/receipt <n>` conta do mais recente (1) para trás                                                                                       |
 | `/stop`     | Cancela o trabalho pendente neste chat, e o texto ainda segue para o modelo. A legenda de uma foto ou nota de voz conta. `/cancel` não é comando                 |
 | `/new`      | Nova conversa neste chat. A anterior permanece no volume. Resultados MCP incertos permanecem; `/resume` é que os dispensa. Este chat fica ligado à conversa nova |
 | `/resume`   | Retoma uma tarefa presa, ou dispensa um resultado MCP incerto                                                                                                    |
@@ -195,7 +210,7 @@ No Telegram o app registra este menu ao subir. Não há o que configurar no BotF
 | `/stop`     | Para este tópico                                                                                                |
 | `/compact`  | Compacta este tópico agora. O texto depois do comando é um foco opcional. Recusa enquanto o tópico está ocupado |
 | `/status`   | Modelo, tokens e custo deste tópico, MCPs, a execução atual e a versão                                          |
-| `/recibo`   | Recibo do último turno. `/recibo <n>` conta do mais recente (1) para trás                                       |
+| `/receipt`  | Recibo do último turno. `/receipt <n>` conta do mais recente (1) para trás                                      |
 | `/help`     | Esta lista                                                                                                      |
 
 `/resume` dispensa um resultado MCP incerto sem repetir a chamada (a chamada pode já ter ocorrido) e continua uma tarefa que ficou estacionada depois de um crash. `/new` não limpa um resultado incerto.

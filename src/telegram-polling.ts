@@ -29,7 +29,9 @@ export const cleanCommands = [
   { command: "memory", description: "Show saved memory" },
   { command: "forget", description: "Remove matching lines from memory" },
   { command: "status", description: "Model, usage, MCPs, run, and version" },
-  { command: "recibo", description: "Show the turn receipt" },
+  { command: "receipt", description: "Show the turn receipt" },
+  { command: "approvals", description: "Reads that are always allowed" },
+  { command: "revoke", description: "Remove an always-allowed read" },
   { command: "help", description: "Help" },
 ];
 /**

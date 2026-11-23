@@ -12,7 +12,9 @@ import {
   CommandError,
   COMPACTION_STATUS,
   commandStatus,
+  commandApprovals,
   commandReceipt,
+  commandRevoke,
   resumeReport,
   type CommandAccess,
 } from "./commands.js";
@@ -25,7 +27,9 @@ const MENU_CAP = 30;
 
 const HELP = [
   "/status — status, tokens and cost",
-  "/recibo [n] — turn receipt",
+  "/receipt [n] — turn receipt",
+  "/approvals — reads that are always allowed",
+  "/revoke <n> — remove one; that read asks again",
   "/stop — stop this chat",
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
@@ -234,7 +238,8 @@ async function runCommand(
     name === "model" ||
     name === "thinking" ||
     name === "forget" ||
-    name === "recibo";
+    name === "receipt" ||
+    name === "revoke";
   if (name && args && !takesArgs) {
     reply(app, message, conversationId, `Unknown command.\n${HELP}`);
     return;
@@ -252,12 +257,30 @@ async function runCommand(
     );
     return;
   }
-  if (name === "recibo") {
+  if (name === "receipt") {
     reply(
       app,
       message,
       conversationId,
       commandReceipt(app, conversationId, access, args),
+    );
+    return;
+  }
+  if (name === "approvals") {
+    reply(
+      app,
+      message,
+      conversationId,
+      commandApprovals(app, conversationId, access),
+    );
+    return;
+  }
+  if (name === "revoke") {
+    reply(
+      app,
+      message,
+      conversationId,
+      commandRevoke(app, conversationId, access, args),
     );
     return;
   }

@@ -27,6 +27,7 @@ import {
   readVolumeSetupFacts,
 } from "../dist/src/diagnose-volume.js";
 import { readAppInfo } from "../dist/src/app-info.js";
+import { describeWebSetup } from "../dist/src/web-config.js";
 import { spawnSync } from "node:child_process";
 
 const optional = [
@@ -152,6 +153,9 @@ if (phoneGateway === "whatsapp") {
 }
 
 const dataDir = process.env.DATA_DIR?.trim() || "/app/data";
+
+section("Busca na web");
+for (const line of describeWebSetup(dataDir, process.env)) console.log(line);
 
 section("Provedor de modelo");
 const volumeFacts = readVolumeSetupFacts(dataDir, process.env);

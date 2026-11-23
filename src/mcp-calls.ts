@@ -1,4 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  RememberedApprovals,
+  type ApprovalTarget,
+  type RememberedApproval,
+} from "./remembered-approvals.js";
 import type {
   ElicitRequest,
   ElicitResult,
@@ -825,6 +830,9 @@ type DeferredDispatch = {
   text: string;
 };
 
+/** A call that keeps pausing stops being answered from memory and shows a card. */
+const REMEMBERED_RESUMES_PER_CALL = 10;
+
 export class McpCalls {
   private tails = new Map<string, Promise<unknown>>();
   private deferredDispatch?: (
@@ -835,6 +843,13 @@ export class McpCalls {
   private callControllers = new Map<string, AbortController>();
   private inflight = new Set<Promise<CallToolResult>>();
   private closed = false;
+  private rememberedTarget?: (
+    call: McpCall,
+    kind: "form" | "resume",
+    payload: Record<string, unknown>,
+  ) => ApprovalTarget | undefined;
+  /** Reads the user chose to always allow, on the volume. */
+  readonly rememberedApprovals: RememberedApprovals;
   constructor(
     private store: Store,
     private gateway: McpGateway,
@@ -849,6 +864,7 @@ export class McpCalls {
       UPDATE mcp_interactions SET state='expired' WHERE state='pending' AND kind!='resume'
         AND NOT (kind='url' AND json_valid(payload) AND json_extract(payload,'$.source')='url_required_error');
       DELETE FROM mcp_calls WHERE id LIKE 'mcp-stage:%';`);
+    this.rememberedApprovals = new RememberedApprovals(store);
     for (const call of store.all<McpCall>(
       "SELECT * FROM mcp_calls WHERE state='running'",
     )) {
@@ -917,6 +933,53 @@ export class McpCalls {
     );
     notifyPending(this.onPending);
     return requestId;
+  }
+  /** The card's review decides which pauses a remembered read may answer. */
+  setRememberedTarget(
+    target: (
+      call: McpCall,
+      kind: "form" | "resume",
+      payload: Record<string, unknown>,
+    ) => ApprovalTarget | undefined,
+  ) {
+    this.rememberedTarget = target;
+  }
+  /** The read classifier the approval sweep already uses, with the server's read-only hint. */
+  callIsRead(server: string, tool: string, args?: Record<string, unknown>) {
+    return this.isRead(server, tool, args);
+  }
+  private rememberedFor(
+    call: McpCall,
+    kind: "form" | "resume",
+    payload: Record<string, unknown>,
+  ): RememberedApproval | undefined {
+    let target: ApprovalTarget | undefined;
+    try {
+      target = this.rememberedTarget?.(call, kind, payload);
+    } catch {
+      return undefined;
+    }
+    return target ? this.rememberedApprovals.match(target) : undefined;
+  }
+  /** An interaction a remembered read answered: no card, already accepted. */
+  private recordRemembered(
+    call: McpCall,
+    kind: "form" | "resume",
+    payload: Record<string, unknown>,
+    rule: RememberedApproval,
+  ) {
+    const response = { action: "accept" as const, content: {} };
+    this.store.run(
+      "INSERT INTO mcp_interactions VALUES (?,?,?,?,?,?,'responded',?)",
+      randomUUID(),
+      call.id,
+      call.conversationId,
+      call.server,
+      kind,
+      JSON.stringify(payload),
+      JSON.stringify({ ...response, remembered: rule.id }),
+    );
+    return response;
   }
   setDeferredDispatch(
     handler: (spec: Record<string, unknown>) => Promise<DeferredDispatch>,
@@ -1326,7 +1389,7 @@ export class McpCalls {
     args: Record<string, unknown>,
     signal?: AbortSignal,
     scheduled = false,
-  ) {
+  ): Promise<CallToolResult> {
     const call = this.store.get<McpCall>(
       "SELECT * FROM mcp_calls WHERE id=?",
       id,
@@ -1394,6 +1457,43 @@ export class McpCalls {
       let unsupportedPause =
         browserMode ||
         (!result.isError && !paused && this.hasPauseMarker(result));
+      // A remembered read answers its own approval, scheduled or not; the same
+      // resume a click sends goes out and nothing is shown.
+      const rememberedRule =
+        paused?.status === "approval-required" &&
+        (this.store.get<{ total: number }>(
+          "SELECT COUNT(*) AS total FROM mcp_interactions WHERE callId=? AND json_valid(response) AND json_extract(response,'$.remembered') IS NOT NULL",
+          id,
+        )?.total ?? 0) < REMEMBERED_RESUMES_PER_CALL
+          ? this.rememberedFor(call, "resume", paused)
+          : undefined;
+      if (paused && rememberedRule) {
+        const resumeArgs = buildExecutorResumeArgs(
+          paused,
+          this.store.savepoint("mcp_remembered", () => {
+            const response = this.recordRemembered(
+              call,
+              "resume",
+              paused!,
+              rememberedRule,
+            );
+            this.store.run(
+              "UPDATE mcp_calls SET state='running',result=?,updatedAt=? WHERE id=?",
+              JSON.stringify(result),
+              Date.now(),
+              id,
+            );
+            return response;
+          }),
+        );
+        return await this.performRun(
+          id,
+          "resume",
+          resumeArgs,
+          signal,
+          scheduled,
+        );
+      }
       // A scheduled run cannot wait for a human click. Executor's own
       // approval-required pause is refused with the tool path: no card, no resume.
       // Any other scheduled pause keeps the existing skip instruction.
@@ -1706,6 +1806,10 @@ export class McpCalls {
       kind === "url"
         ? validateMcpUrlElicitation(params)
         : { ...params, source: undefined };
+    if (kind === "form") {
+      const rule = this.rememberedFor(call, "form", payload);
+      if (rule) return this.recordRemembered(call, "form", payload, rule);
+    }
     const id = randomUUID();
     this.store.run(
       "INSERT INTO mcp_interactions VALUES (?,?,?,?,?,?,'pending',NULL)",

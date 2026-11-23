@@ -47,6 +47,7 @@ export interface HarnessConfig {
   asyncJob: { timeoutMin?: number; pollSeconds?: number };
   /** Raw `sandbox_code_task` block; the tool validates it before registering. */
   sandboxTask?: unknown;
+  web: WebConfig;
   /** Folder names under `$DATA_DIR/skills`, in prompt order. */
   skillsAlways: string[];
   /**
@@ -60,6 +61,36 @@ export interface HarnessConfig {
   memory: MemoryConfig;
   /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
   whatsappAttachmentUrls: AttachmentUrlPolicy;
+}
+
+export const WEB_PROVIDERS = ["exa", "firecrawl"] as const;
+export type WebProvider = (typeof WEB_PROVIDERS)[number];
+export type WebConfig = Record<"search" | "extract", readonly WebProvider[]>;
+
+const WEB_DEFAULTS: WebConfig = {
+  search: WEB_PROVIDERS,
+  extract: WEB_PROVIDERS,
+};
+
+export function isWebProvider(value: unknown): value is WebProvider {
+  return value === "exa" || value === "firecrawl";
+}
+
+function webFrom(value: unknown): WebConfig {
+  if (!isRecord(value)) return WEB_DEFAULTS;
+  const order = (operation: keyof WebConfig) => {
+    const list = value[operation];
+    if (list === undefined) return WEB_DEFAULTS[operation];
+    if (
+      Array.isArray(list) &&
+      list.every(isWebProvider) &&
+      new Set(list).size === list.length
+    )
+      return list;
+    console.error(`Pi-Agent: web.${operation} inválido. Usando o padrão.`);
+    return WEB_DEFAULTS[operation];
+  };
+  return { search: order("search"), extract: order("extract") };
 }
 
 export interface AttachmentUrlPolicy {
@@ -79,6 +110,7 @@ const EMPTY: HarnessConfig = {
   mcpServers: {},
   asyncJobs: [],
   asyncJob: {},
+  web: WEB_DEFAULTS,
   skillsAlways: [],
   reactionDelayMs: DEFAULT_REACTION_DELAY_MS,
   turnReceiptFooter: false,
@@ -280,6 +312,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
       pollSeconds: positiveNumber(timing.poll_seconds),
     },
     sandboxTask: raw.sandbox_code_task,
+    web: webFrom(raw.web),
     skillsAlways: stringList(
       isRecord(raw.skills) ? raw.skills.always : undefined,
     ),
@@ -316,7 +349,7 @@ function defaultsPath() {
   return candidates.find((path) => existsSync(path)) ?? candidates[0];
 }
 
-function userConfigPath(env: Env = process.env) {
+export function userConfigPath(env: Env = process.env) {
   const override = env.CONFIG_FILE?.trim();
   if (override) return override;
   return join(env.DATA_DIR?.trim() || "data", "config.yaml");

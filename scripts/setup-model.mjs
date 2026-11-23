@@ -79,6 +79,18 @@ import {
 } from "../dist/src/settings.js";
 import { Store, SqlCredentials } from "../dist/src/store.js";
 import {
+  isWebProvider,
+  loadHarnessConfig,
+  WEB_PROVIDERS,
+} from "../dist/src/harness-config.js";
+import {
+  activeWebProviders,
+  readVolumeWebKeys,
+  resolveWebKeys,
+  saveWebSetup,
+  WEB_KEY_ENV,
+} from "../dist/src/web-config.js";
+import {
   oauthInteractionFromReadline,
   runSubscriptionLogin,
   subscriptionChatCatalog,
@@ -97,7 +109,7 @@ const MODE = "live";
 const usage = `Usage: npm run setup -- [options]
 
   With no arguments, in a terminal, a menu edits one section at a time:
-  Setup gateway, text model, image model, audio model, MCP platform.
+  Setup gateway, text model, image model, audio model, MCP platform, Busca na web.
   Save & exit writes the volume. Exit without saving leaves it unchanged.
 
   --list                      show the current state
@@ -509,6 +521,9 @@ function closeDb() {
   db.close();
 }
 db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
+db.exec(
+  "CREATE TABLE IF NOT EXISTS credentials(provider TEXT PRIMARY KEY, value TEXT)",
+);
 const migrated = migrateLegacyOfficialSetup(db, process.env, MODE);
 if (migrated)
   console.log(
@@ -944,6 +959,8 @@ function sessionStatus(session, summary) {
       session.text.newKey),
   );
   const mcpOn = Boolean(session.mcp.choice && session.mcp.choice !== "none");
+  const { web } = loadHarnessConfig(process.env);
+  const webKeys = resolveWebKeys(process.env, readVolumeWebKeys(dir));
   return setupMenuStatus({
     gateway:
       session.phone === "whatsapp"
@@ -956,6 +973,9 @@ function sessionStatus(session, summary) {
     image: summary.imageOn && session.image.choice !== "off",
     audio: summary.audioOn && !session.audio.off,
     mcp: mcpOn,
+    web: Object.values(web).some(
+      (order) => activeWebProviders(order, webKeys).length > 0,
+    ),
   });
 }
 
@@ -2325,6 +2345,69 @@ async function mcpMenu(readline, session) {
   }
 }
 
+async function webMenu(readline) {
+  console.log("\nBusca na web");
+  console.log("Providers: exa, firecrawl, or none. Enter b to go back.");
+  const { web } = loadHarnessConfig(process.env);
+  const draft = {};
+  for (const [operation, label] of [
+    ["search", "Search"],
+    ["extract", "Extraction"],
+  ]) {
+    const order = [];
+    for (const [index, role] of ["primary", "fallback"].entries()) {
+      const current = web[operation][index] ?? "none";
+      for (;;) {
+        const input = (
+          await readline.question(`${label} ${role} [${current}]: `)
+        )
+          .trim()
+          .toLowerCase();
+        const provider = input || current;
+        if (provider === "b" || provider === "back") return;
+        if (provider === "none") break;
+        if (isWebProvider(provider) && !order.includes(provider)) {
+          order.push(provider);
+          break;
+        }
+        console.log("Choose a different provider: exa, firecrawl, or none.");
+      }
+    }
+    draft[operation] = order;
+  }
+  const stored = readVolumeWebKeys(dir);
+  const keys = {};
+  for (const provider of WEB_PROVIDERS) {
+    if (!Object.values(draft).some((order) => order.includes(provider)))
+      continue;
+    console.log(
+      `${WEB_KEY_ENV[provider]} in the environment takes precedence. Enter keeps the saved key; - removes it.`,
+    );
+    const value = await askSecret(
+      readline,
+      `${provider} API key`,
+      Boolean(stored[provider]),
+    );
+    if (value) keys[provider] = value === "-" ? null : value;
+  }
+  if (
+    !(await askYesNo(
+      (prompt) => readline.question(prompt),
+      "Save web settings?",
+      true,
+    ))
+  )
+    return;
+  try {
+    saveWebSetup(db, process.env, draft, keys);
+    console.log("Web settings saved. Restart the bot to apply.");
+  } catch {
+    console.log(
+      "Could not save web settings. Check config.yaml and the volume.",
+    );
+  }
+}
+
 function processRows() {
   let entries = [];
   try {
@@ -2418,7 +2501,8 @@ async function interactive() {
       else if (action === "text") await textMenu(readline, session);
       else if (action === "image") await imageMenu(readline, session);
       else if (action === "audio") await audioMenu(readline, session);
-      else await mcpMenu(readline, session);
+      else if (action === "mcp") await mcpMenu(readline, session);
+      else if (action === "web") await webMenu(readline);
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {

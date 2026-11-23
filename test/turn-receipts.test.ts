@@ -170,10 +170,10 @@ test("Telegram shows scoped receipts with aggregate usage, search outcomes, timi
     );
     await send(2, "next");
     await waitForReceipt(app, 2);
-    await send(3, "/recibo");
-    await send(4, "/recibo 2");
-    await send(5, "/recibo", 12);
-    await send(6, "/recibo 0");
+    await send(3, "/receipt");
+    await send(4, "/receipt 2");
+    await send(5, "/receipt", 12);
+    await send(6, "/receipt 0");
     const deliveries = app.store.all<{ text: string; messageThreadId: number }>(
       "SELECT text,messageThreadId FROM deliveries ORDER BY rowid",
     );
@@ -193,7 +193,7 @@ test("Telegram shows scoped receipts with aggregate usage, search outcomes, timi
         (d) => d.messageThreadId === 12 && d.text.includes("Nenhum recibo"),
       ),
     );
-    assert.ok(deliveries.some((d) => d.text.includes("Uso: /recibo")));
+    assert.ok(deliveries.some((d) => d.text.includes("Uso: /receipt")));
     assert.ok(deliveries.some((d) => d.text.includes("another answer")));
     assert.ok(deliveries.every((d) => !d.text.includes("Recibo: ")));
     assert.equal(faux.state.callCount, 5);
@@ -229,11 +229,13 @@ test("WhatsApp attaches the opt-in footer and can read the same receipt after re
     assert.ok(
       app.store
         .all<{ text: string }>("SELECT text FROM deliveries")
-        .some(({ text }) => /\n\nRecibo: 0 chamada\(s\).*\/recibo$/.test(text)),
+        .some(({ text }) =>
+          /\n\nRecibo: 0 chamada\(s\).*\/receipt$/.test(text),
+        ),
     );
     await app.close();
     app = await Runtime.open(options);
-    await send("inspect", "/recibo 1");
+    await send("inspect", "/receipt 1");
     assert.ok(
       app.store
         .all<{ text: string }>("SELECT text FROM deliveries")
