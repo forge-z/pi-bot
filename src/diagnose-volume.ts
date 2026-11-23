@@ -112,24 +112,24 @@ export function readVolumeSetupFacts(
 }
 
 const SETUP_VERSUS_LOGIN =
-  "npm run setup é o assistente completo (provedor oficial, chave ou ChatGPT, modelo, esforço, visão e áudio). npm run login é só OAuth do ChatGPT/Codex, inclusive o device-code sem TTY. O login OAuth do Upsy fica no menu MCP do npm run setup, não no npm run login. Os dois gravam no volume. Um setup oficial não é trocado por LLM_BASE_URL/LLM_API_KEY; essas variáveis só valem no caminho compatível llm (menu Outro). Não há terceiro comando.";
+  "npm run setup is the full wizard (provider, API key or ChatGPT, model, reasoning, vision, and audio). npm run login is only for ChatGPT/Codex OAuth, including device-code login without a TTY. Upsy OAuth is in the MCP menu in npm run setup, not npm run login. Both commands save to the volume. LLM_BASE_URL and LLM_API_KEY do not override an official setup; they apply only to the compatible llm provider (Other in setup).";
 
 /** Lines for diagnose. Never includes secrets, endpoints, or credential values. */
 export function describeVolumeProvider(facts: VolumeProviderFacts): string[] {
   const lines = [
     facts.recordPresent
-      ? `volume: registro presente (authMode=${facts.authMode ?? "api_key"}, provider=${facts.providerId ?? "?"}, model=${facts.modelId ?? "?"})`
-      : "volume: registro ausente",
-    `credentials: llm=${facts.credentials.llm ? "presente" : "ausente"} openai=${facts.credentials.openai ? "presente" : "ausente"} openai-codex=${facts.credentials["openai-codex"] ? "presente" : "ausente"}`,
+      ? `volume: saved configuration present (authMode=${facts.authMode ?? "api_key"}, provider=${facts.providerId ?? "?"}, model=${facts.modelId ?? "?"})`
+      : "volume: saved configuration missing",
+    `credentials: llm=${facts.credentials.llm ? "present" : "missing"} openai=${facts.credentials.openai ? "present" : "missing"} openai-codex=${facts.credentials["openai-codex"] ? "present" : "missing"}`,
     facts.source === "env"
-      ? "fonte em uso: ambiente (caminho compatível llm; não há setup oficial completo no volume)"
+      ? "source: environment (compatible llm provider; no complete official setup on the volume)"
       : facts.source === "volume"
-        ? "fonte em uso: volume (setup do CLI; LLM_BASE_URL/LLM_API_KEY não substituem um setup oficial)"
-        : "fonte em uso: nenhuma (sem LLM_* e sem registro no volume)",
+        ? "source: volume (CLI setup; LLM_BASE_URL/LLM_API_KEY do not override an official setup)"
+        : "source: none (no LLM_* variables or saved configuration)",
   ];
   if (facts.recordPresent)
     lines.push(
-      `modelo no volume: ${facts.providerId ?? "?"}/${facts.modelId ?? "?"}. /model troca. npm run login grava o primeiro modelo do catálogo só quando o volume ainda não tinha modelo.`,
+      `model on volume: ${facts.providerId ?? "?"}/${facts.modelId ?? "?"}. Use /model to switch. npm run login saves the first catalog model only when the volume has no saved model.`,
     );
   lines.push(SETUP_VERSUS_LOGIN);
   return lines;
@@ -143,21 +143,21 @@ export function describeWhatsAppVolume(
   dir: string,
   env: Env = process.env,
 ): string[] {
-  let numbers = "nenhum";
+  let numbers = "none";
   try {
     const users = resolveWhatsappUsers(env, readStoredWhatsapp(dir)) ?? [];
-    numbers = users.map((user) => maskLogText(user)).join(", ") || "nenhum";
+    numbers = users.map((user) => maskLogText(user)).join(", ") || "none";
   } catch {
-    numbers = "override inválido";
+    numbers = "invalid override";
   }
   const paired = existsSync(join(dir, "whatsapp-auth", "creds.json"));
   const lines = [
-    `números: ${numbers}`,
-    `sessão pareada: ${paired ? "sim" : "não"}`,
+    `numbers: ${numbers}`,
+    `paired session: ${paired ? "yes" : "no"}`,
   ];
   const file = join(dir, "app.sqlite");
   if (!existsSync(file)) {
-    lines.push("entregas pendentes: banco ausente");
+    lines.push("pending deliveries: database missing");
     return lines;
   }
   let db: DatabaseSync | undefined;
@@ -168,9 +168,9 @@ export function describeWhatsAppVolume(
         "SELECT COUNT(*) AS n FROM deliveries WHERE state='pending' AND channel='whatsapp'",
       )
       .get() as { n: number } | undefined;
-    lines.push(`entregas pendentes: ${row?.n ?? 0}`);
+    lines.push(`pending deliveries: ${row?.n ?? 0}`);
   } catch {
-    lines.push("entregas pendentes: indisponível");
+    lines.push("pending deliveries: unavailable");
   } finally {
     db?.close();
   }
@@ -180,8 +180,8 @@ export function describeWhatsAppVolume(
 /** health.json `waiting` from the idle process. Unknown values are omitted. */
 export function formatWaiting(waiting: unknown): string | undefined {
   if (waiting === "setup")
-    return "waiting=setup — processo no ar, sem provedor. Rode npm run setup.";
+    return "waiting=setup — process running without a provider. Run npm run setup.";
   if (waiting === "login")
-    return "waiting=login — processo no ar, aguardando OAuth. Rode npm run login.";
+    return "waiting=login — process running and waiting for OAuth. Run npm run login.";
   return undefined;
 }

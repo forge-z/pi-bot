@@ -4,7 +4,7 @@ set -euo pipefail
 JOB_ID="${1:-}"
 
 if [[ ! "$JOB_ID" =~ ^[a-z0-9-]{8,40}$ ]]; then
-  echo "jobId inválido" >&2
+  echo "Invalid jobId" >&2
   exit 1
 fi
 
@@ -27,7 +27,7 @@ fail() {
 }
 
 if [ ! -f "$JOB_DIR/request.json" ]; then
-  fail "request.json não encontrado no diretório do job"
+  fail "request.json not found in the job directory"
 fi
 
 # Não execute o modo legado na mesma conta que tem credenciais de escrita.
@@ -37,7 +37,7 @@ if [ "${JOB_READONLY:-}" = "1" ] || [ -f "$JOB_DIR/readonly" ] || ! node -e '
   } catch {}
   process.exit(1);
 ' "$JOB_DIR/request.json"; then
-  fail "A sandbox compartilhada exige writes: true."
+  fail "The shared sandbox requires writes: true."
 fi
 
 if [ -f "$HOME/.agents-env.sh" ]; then
@@ -61,7 +61,7 @@ BRANCH=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],
 PROMPT=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.prompt||"");' "$JOB_DIR/request.json")
 
 if [ -z "$REPO" ]; then
-  fail "Campo repo não fornecido em request.json"
+  fail "Missing repo field in request.json"
 fi
 
 if [ -z "$BRANCH" ]; then
@@ -72,18 +72,18 @@ WORK_DIR="$HOME/work/$REPO"
 mkdir -p "$(dirname "$WORK_DIR")"
 
 if [ ! -d "$WORK_DIR/.git" ]; then
-  gh repo clone "$REPO" "$WORK_DIR" > "$JOB_DIR/clone.log" 2>&1 || fail "Falha ao clonar repositório $REPO"
+  gh repo clone "$REPO" "$WORK_DIR" > "$JOB_DIR/clone.log" 2>&1 || fail "Failed to clone repository $REPO"
 else
-  git -C "$WORK_DIR" fetch origin > "$JOB_DIR/fetch.log" 2>&1 || fail "Falha no git fetch do repositório $REPO"
+  git -C "$WORK_DIR" fetch origin > "$JOB_DIR/fetch.log" 2>&1 || fail "Git fetch failed for repository $REPO"
 fi
 
 # Cria/reseta branch a partir de origin/HEAD
 git -C "$WORK_DIR" checkout -B "$BRANCH" origin/HEAD > "$JOB_DIR/checkout.log" 2>&1 || \
 git -C "$WORK_DIR" checkout -B "$BRANCH" HEAD > "$JOB_DIR/checkout.log" 2>&1 || \
-fail "Falha ao criar branch $BRANCH no repositório $REPO"
+fail "Failed to create branch $BRANCH in repository $REPO"
 
 if [ -f "$WORK_DIR/package-lock.json" ]; then
-  (cd "$WORK_DIR" && npm ci) > "$JOB_DIR/npm-ci.log" 2>&1 || fail "Falha no npm ci em $REPO"
+  (cd "$WORK_DIR" && npm ci) > "$JOB_DIR/npm-ci.log" 2>&1 || fail "npm ci failed in $REPO"
 fi
 
 # Executa agente pedido com timeout de 20 min (1200 segundos) e stdin de /dev/null
@@ -102,22 +102,22 @@ case "$AGENT" in
     AGENT_EXIT=$?
     ;;
   *)
-    fail "Agente $AGENT desconhecido"
+    fail "Agente $AGENT unknown"
     ;;
 esac
 set -e
 
 if [ "$AGENT_EXIT" -eq 124 ]; then
-  fail "Agente excedeu o tempo limite de 20 minutos (timeout)"
+  fail "Agent exceeded the 20-minute time limit"
 elif [ "$AGENT_EXIT" -ne 0 ]; then
-  fail "Agente $AGENT finalizou com erro (código $AGENT_EXIT)"
+  fail "Agent $AGENT exited with error code $AGENT_EXIT"
 fi
 
 PR_URL=""
 # Verifica se há alterações para commitar e criar PR
 if [ -n "$(git -C "$WORK_DIR" status --porcelain)" ]; then
   git -C "$WORK_DIR" add -A > "$JOB_DIR/git.log" 2>&1
-  COMMIT_MSG="feat(agent): tarefa $JOB_ID"
+  COMMIT_MSG="feat(agent): task $JOB_ID"
   git -C "$WORK_DIR" commit -m "$COMMIT_MSG" >> "$JOB_DIR/git.log" 2>&1 || true
 fi
 
@@ -126,7 +126,7 @@ LOCAL_REV=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || true)
 REMOTE_REV=$(git -C "$WORK_DIR" rev-parse "origin/$BRANCH" 2>/dev/null || true)
 
 if [ "$LOCAL_REV" != "$REMOTE_REV" ] && [ -n "$LOCAL_REV" ]; then
-  git -C "$WORK_DIR" push -u origin "$BRANCH" >> "$JOB_DIR/git.log" 2>&1 || fail "Falha ao enviar branch $BRANCH para origin"
+  git -C "$WORK_DIR" push -u origin "$BRANCH" >> "$JOB_DIR/git.log" 2>&1 || fail "Failed to push branch $BRANCH to origin"
   PR_URL=$(cd "$WORK_DIR" && gh pr create --fill --head "$BRANCH" 2>> "$JOB_DIR/git.log" || gh pr view --json url -q .url 2>> "$JOB_DIR/git.log" || true)
 fi
 
@@ -143,7 +143,7 @@ node -e '
   } catch {}
   const result = {
     pr: prUrl ? prUrl.trim() : undefined,
-    summary: summary || "Tarefa concluída com sucesso.",
+    summary: summary || "Task completed successfully.",
   };
   if (branch) result.branch = branch;
   const res = {

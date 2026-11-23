@@ -37,7 +37,7 @@ interface ReceiptRow {
   summary: string;
 }
 
-const count = new Intl.NumberFormat("pt-BR");
+const count = new Intl.NumberFormat("en-US");
 const dollars = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
 
 export class TurnReceipts {
@@ -155,7 +155,7 @@ export class TurnReceipts {
       const name =
         label && /^[\w./-]{1,120}$/.test(label)
           ? redactSecretPatterns(redact(label))
-          : "(ferramenta não identificada)";
+          : "(unidentified tool)";
       const tally = recorded.get(name) ?? {
         name,
         calls: 0,
@@ -257,39 +257,39 @@ export class TurnReceipts {
       (argument && !/^[1-9]\d*$/.test(argument)) ||
       !Number.isSafeInteger(ordinal)
     )
-      return "Uso: /receipt ou /receipt <n> (1 = último turno).";
+      return "Usage: /receipt or /receipt <n> (1 = most recent turn).";
     const row = this.store.get<ReceiptRow>(
       `SELECT status,summary FROM turn_receipts WHERE conversationId=?
        ORDER BY rowid DESC LIMIT 1 OFFSET ?`,
       conversationId,
       ordinal - 1,
     );
-    if (!row) return "Nenhum recibo encontrado para esse turno.";
+    if (!row) return "No receipt found for that turn.";
     const data = JSON.parse(row.summary) as ReceiptSummary;
     return [
       ordinal === 1
-        ? "Recibo do último turno"
-        : `Recibo — ${ordinal}º turno mais recente`,
-      row.status === "done" ? "Turno concluído." : "Turno sem resposta.",
-      data.tools.length ? "Ferramentas:" : "Nenhuma ferramenta chamada.",
+        ? "Receipt for the latest turn"
+        : `Receipt — turn ${ordinal} counting back from the latest`,
+      row.status === "done" ? "Turn complete." : "Turn ended without a reply.",
+      data.tools.length ? "Tools:" : "No tools called.",
       ...data.tools.map(
         (item) =>
-          `• ${item.name}: ${item.calls} chamada(s), ${item.ok} ok, ${item.errors} erro(s), ${item.unverified} sem verificar · ${item.durationMs === null ? "tempo indisponível" : `${count.format(item.durationMs)} ms`}`,
+          `• ${item.name}: ${item.calls} call(s), ${item.ok} ok, ${item.errors} error(s), ${item.unverified} unverified · ${item.durationMs === null ? "timing unavailable" : `${count.format(item.durationMs)} ms`}`,
       ),
-      `Aprovações: ${data.approvals.requested} pedida(s), ${data.approvals.remembered} lembrada(s).`,
-      `Buscas: ${data.searches}.`,
-      `Modelo: ${count.format(data.inputTokens)} tokens de entrada, ${count.format(data.outputTokens)} de saída · ${cost(data)}.`,
+      `Approvals: ${data.approvals.requested} requested, ${data.approvals.remembered} remembered.`,
+      `Searches: ${data.searches}.`,
+      `Model: ${count.format(data.inputTokens)} input tokens, ${count.format(data.outputTokens)} output tokens · ${cost(data)}.`,
     ].join("\n");
   }
 }
 
 function cost(summary: ReceiptSummary) {
   return summary.usd === null
-    ? "custo indisponível"
-    : `US$ ${dollars.format(summary.usd)}`;
+    ? "cost unavailable"
+    : `${dollars.format(summary.usd)}`;
 }
 
 export function receiptFooter(summary: ReceiptSummary) {
   const calls = summary.tools.reduce((total, tool) => total + tool.calls, 0);
-  return `Recibo: ${calls} chamada(s) · ${count.format(summary.inputTokens + summary.outputTokens)} tokens · ${cost(summary)} · /receipt`;
+  return `Receipt: ${calls} call(s) · ${count.format(summary.inputTokens + summary.outputTokens)} tokens · ${cost(summary)} · /receipt`;
 }

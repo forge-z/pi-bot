@@ -293,8 +293,10 @@ test("consecutive deepseek turns keep the previous request as a prefix", async (
     assert.ok(users[3]![2]!.endsWith(nextDay));
     const task = users[4]!.at(-1)!;
     const promptAt = task.indexOf("digest the inbox");
-    const deliveryAt = task.indexOf("O texto final deste run não é entregue");
-    const seenAt = task.indexOf("#77 usuário: pode olhar isso");
+    const deliveryAt = task.indexOf(
+      "The final text from this run is not delivered",
+    );
+    const seenAt = task.indexOf("#77 user: pode olhar isso");
     const dateAt = task.lastIndexOf(nextDay);
     assert.ok(promptAt >= 0 && promptAt < deliveryAt);
     assert.ok(deliveryAt < seenAt);

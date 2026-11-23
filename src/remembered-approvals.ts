@@ -200,7 +200,7 @@ export class RememberedApprovals {
 /** `/approvals` body: one line per rule, numbered by its id for `/revoke <n>`. */
 export function formatRememberedApprovals(rules: RememberedApproval[]) {
   if (!rules.length)
-    return "No remembered approvals. A read approval card offers “Sempre permitir isto”.";
+    return "No remembered approvals. A read approval card offers “Always allow this”.";
   const lines = rules.map((rule) => {
     const resource = rule.resource
       ? ` · ${Object.entries(

@@ -35,12 +35,12 @@ docker exec -it <container> npm run setup
 
 The menu edits one section at a time. **Save and back** writes that section. **Save and restart gateway** reloads the running bot from the volume.
 
-1. **Setup gateway** — Telegram or WhatsApp, one per install. Saving one turns the other off. An install with no choice stays on Telegram. Yes/no questions prompt `(s/n)` and also accept sim, não, y, yes, and no. Telegram asks for the bot token (hidden; Enter keeps the saved value) and allowed numeric user ids. WhatsApp asks for the owner's number with country code and then a QR or a pairing code. The full path is in [WhatsApp](#whatsapp).
+1. **Setup gateway** — Telegram or WhatsApp, one per install. Saving one turns the other off. An install with no choice stays on Telegram. Yes/no questions prompt `(y/n)` and also accept `yes` and `no`. Telegram asks for the bot token (hidden; Enter keeps the saved value) and allowed numeric user ids. WhatsApp asks for the owner's number with country code and then a QR or a pairing code. The full path is in [WhatsApp](#whatsapp).
 2. **Text model** — an official pi-ai provider, or `[0]` ChatGPT (Plus/Pro OAuth, no API key). `npm run login` is ChatGPT/Codex OAuth only.
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, both (Executor plus Composio), or none.
-6. **Busca na web** — native web search and page extraction providers and keys.
+6. **Web search** — native web search and page extraction providers and keys.
 
 Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram or WhatsApp for the bound chat. On WhatsApp the sign-in notice goes to that chat. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
 
@@ -56,7 +56,7 @@ Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat
 
 `web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
 
-In `npm run setup`, select **Busca na web** to choose a primary and fallback for each tool and save the keys on the volume. Set `EXA_API_KEY` and/or `FIRECRAWL_API_KEY` to override the saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations is:
+In `npm run setup`, select **Web search** to choose a primary and fallback for each tool and save the keys on the volume. Set `EXA_API_KEY` and/or `FIRECRAWL_API_KEY` to override the saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations is:
 
 ```yaml
 web:
@@ -182,7 +182,7 @@ docker exec -it <container> npm run setup
 
 Open **Setup gateway**, then **2 - WhatsApp**.
 
-Yes/no questions prompt `(s/n) [s]` or `(s/n) [n]`. `s`, `sim`, `y`, and `yes` are yes. `n`, `no`, `nao`, and `não` are no. Enter keeps the suggestion in brackets. Any other text is asked again.
+Yes/no questions prompt `(y/n) [y]` or `(y/n) [n]`. Enter keeps the suggestion in brackets. Use `y` or `yes` to accept and `n` or `no` to decline. Any other text is asked again.
 
 **1 - Allowed numbers** asks for digits and a country code. The first number is the owner. Extra numbers are optional and comma-separated, for example `15550001111,5500900000001`. Each number must be 8 to 15 digits. **Save and back** writes that list and selects WhatsApp. The owner number is required before the save, and before pairing.
 
@@ -297,7 +297,6 @@ Rolling the image back without restoring the backup leaves the ledger on a shape
 - The assistant has no shell, file, patch, or browser of its own. MCP results are untrusted data.
 - `ask_user` posts one question in the same chat and topic and ends the turn. Up to six choices become buttons (`ask:<32 hex>:<index>`). A tap is the next message (`Answer to: … -> …`). Typing is a normal message and clears the buttons. A repeated or stale tap does nothing. Scheduled runs cannot ask. These buttons are not approval cards.
 - Ollama is the compat exception. A base URL on `ollama.com`, port `11434`, or a path containing `/api` is probed once per model (`POST /api/show`, about 2s, cached). If the model advertises thinking, `/thinking` offers `off`, `low`, `medium`, and `high`, or the named levels from that response. An explicit `LLM_MODELS` reasoning field still wins. The chat request sends `reasoning_effort` (`none` turns thinking off). A failed probe leaves the model as declared.
-- A returned MCP or Executor error stays with the model. The chat hears about a call only when a write left no known result, once, in one short Portuguese line with **Registrar verificação** and, when there is something to show, **Detalhes**. A dropped read is retried twice (40 ms, then 80 ms). A write is never resent. Confirming the card keeps that call's original error and stores the note beside it. `/status` lists the state and does not post another card.
-- After the user approves or declines an MCP card, the assistant's final text in that follow-up is delivered in the same chat. An empty reply sends nothing. The "Deu certo" / "Não rodou" check is unchanged. A tool that returns only a task id, with no async job manifest, is not a promise to return: the assistant polls for about 50 seconds, uses the registered job, or creates one one-shot schedule that calls `notify` in this chat. See [docs/jobs.md](docs/jobs.md).
+- A returned MCP or Executor error stays with the model. The chat hears about a call only when a write left no known result, once, in a short message with **Record verification** and, when there is something to show, **Details**. A dropped read is retried twice (40 ms, then 80 ms). A write is never resent. Confirming the card keeps that call's original error and stores the note beside it. `/status` lists the state and does not post another card.
+- After the user approves or declines an MCP card, the assistant's final text in that follow-up is delivered in the same chat. An empty reply sends nothing. The "Succeeded" / "Did not run" check is unchanged. A tool that returns only a task id, with no async job manifest, is not a promise to return: the assistant polls for about 50 seconds, uses the registered job, or creates one one-shot schedule that calls `notify` in this chat. See [docs/jobs.md](docs/jobs.md).
 - Deployment notes: [docs/coolify.md](docs/coolify.md) and [docs/verification.md](docs/verification.md).
-- Portuguese: [README.pt-BR.md](README.pt-BR.md).

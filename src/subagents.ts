@@ -41,10 +41,10 @@ export const SUBAGENT_WRITE_REFUSAL =
 
 /** Stands in for a file an MCP tool produced inside a subagent. The child has no chat. */
 export const SUBAGENT_MEDIA_OMITTED =
-  "[arquivo omitido: um subagente não envia arquivos ao chat]";
+  "[file omitted: a subagent cannot send files to the chat]";
 
-const NESTED_REFUSAL = "Um subagente não pode criar outro subagente.";
-const ARGS_REFUSAL = "Informe task ou tasks, não os dois.";
+const NESTED_REFUSAL = "A subagent cannot create another subagent.";
+const ARGS_REFUSAL = "Provide either task or tasks, not both.";
 
 export interface SubagentHost {
   /** Parent conversation id when `id` is a subagent, otherwise null. */
@@ -89,7 +89,7 @@ async function answerText(
     .join("")
     .trim();
   return text.length > MAX_ANSWER_CHARS
-    ? `${text.slice(0, MAX_ANSWER_CHARS)}\n[resposta cortada em ${MAX_ANSWER_CHARS} caracteres]`
+    ? `${text.slice(0, MAX_ANSWER_CHARS)}\n[answer truncated at ${MAX_ANSWER_CHARS} characters]`
     : text;
 }
 
@@ -162,7 +162,8 @@ export function createSubagentExtension(
           const results = await Promise.allSettled(
             children.map(async (id, index) => {
               const handle = await api.conversation(id, callContext);
-              if (!handle) return `[tarefa ${index + 1} sem resposta: missing]`;
+              if (!handle)
+                return `[task ${index + 1} returned no answer: missing]`;
               const submission = await handle.submit(
                 {
                   type: "input",
@@ -181,20 +182,20 @@ export function createSubagentExtension(
                   ? settled.reason.trim()
                   : settled.status;
               return category === "aborted"
-                ? `[tarefa ${index + 1} interrompida]`
-                : `[tarefa ${index + 1} sem resposta: ${category}]`;
+                ? `[task ${index + 1} interrupted]`
+                : `[task ${index + 1} returned no answer: ${category}]`;
             }),
           );
           const parts = results.map((result, index) =>
             result.status === "fulfilled"
-              ? result.value || `[tarefa ${index + 1} sem resposta: empty]`
-              : `[tarefa ${index + 1} sem resposta: error]`,
+              ? result.value || `[task ${index + 1} returned no answer: empty]`
+              : `[task ${index + 1} returned no answer: error]`,
           );
           const text =
             parts.length === 1
               ? parts[0]!
               : parts
-                  .map((part, index) => `## Tarefa ${index + 1}\n${part}`)
+                  .map((part, index) => `## Task ${index + 1}\n${part}`)
                   .join("\n\n");
           return {
             output: [

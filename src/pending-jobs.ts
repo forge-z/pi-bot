@@ -718,7 +718,7 @@ export class PendingJobs {
     ];
     const bad = checks.find((check) => !check.ok);
     if (!bad || bad.ok) return undefined;
-    if (bad.error.includes("accountId ausente")) return undefined;
+    if (bad.error === "missing accountId in the read") return undefined;
     return bad.error;
   }
 
@@ -726,7 +726,7 @@ export class PendingJobs {
     return this.buildArgs(entry.manifest, args, this.templateVars(row, entry));
   }
 
-  /** Path desconhecido ou sem tool de leitura declarado: fecha sem acordar turno. */
+  /** Path unknown ou sem tool de leitura declarado: fecha sem acordar turno. */
   private expireUnrecoverable(
     row: PendingJob,
     outcome = "unrecoverable_tool_path",
@@ -949,7 +949,7 @@ export class PendingJobs {
       void this.announce(
         conversationId,
         `job:ambiguous_account:${entry.path}`,
-        `ambiguous_account: a chamada de ${entry.path} passou mais de uma conta (${accounts.join(", ")}). Nada foi lido.`,
+        `ambiguous_account: the call to ${entry.path} provided more than one account (${accounts.join(", ")}). Nothing was read.`,
       );
       return false;
     }
@@ -964,7 +964,7 @@ export class PendingJobs {
       void this.announce(
         conversationId,
         `job:shape:${entry.path}`,
-        `A leitura de ${entry.path} falhou na validação: ${broken}`,
+        `Reading ${entry.path} failed validation: ${broken}`,
       );
       return false;
     }
@@ -1083,7 +1083,7 @@ export class PendingJobs {
       void this.announce(
         conversationId,
         `job:shape:${entry.path}`,
-        `A leitura de ${entry.path} falhou na validação: ${broken}`,
+        `Reading ${entry.path} failed validation: ${broken}`,
       );
       return false;
     }
@@ -1141,7 +1141,7 @@ export class PendingJobs {
 
     const accounts = invocationAccountIds(payload);
     if (accounts.length > 1) {
-      const message = `ambiguous_account: a chamada passou mais de uma conta (${accounts.join(", ")}). Nada foi lido.`;
+      const message = `ambiguous_account: the call provided more than one account (${accounts.join(", ")}). Nothing was read.`;
       if (row)
         void this.failNamed(row, "ambiguous_account", message).catch(() => {});
       else
@@ -1234,7 +1234,7 @@ export class PendingJobs {
       void this.announce(
         conversationId,
         `job:register:${dispatch.runId ?? "none"}`,
-        `Não consegui registrar o job${run}: ${message}. O disparo no provedor não foi desfeito.`,
+        `Could not register job${run}: ${message}. The provider run was not undone.`,
       );
     }
     return dispatch;
@@ -1415,7 +1415,7 @@ export class PendingJobs {
       found = await this.lookupAccounts(namespace, entry.manifest.observe.tool);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const text = `missing_account: não consegui consultar as contas de ${namespace}: ${message}`;
+      const text = `missing_account: could not look up accounts for ${namespace}: ${message}`;
       this.logPollError(row, "account", text);
       await this.failNamed(row, "missing_account", text);
       return false;
@@ -1430,12 +1430,12 @@ export class PendingJobs {
       return true;
     }
     if (found.length === 0) {
-      const text = `missing_account: a chamada de ${entry.path} não trouxe accountId e a busca no namespace ${namespace} não achou nenhuma conta.`;
+      const text = `missing_account: the call to ${entry.path} omitted accountId and no accounts were found in namespace ${namespace}.`;
       this.logPollError(row, "account", text);
       await this.failNamed(row, "missing_account", text);
       return false;
     }
-    const text = `ambiguous_account: há mais de uma conta para ${namespace} (${found.join(", ")}) e a chamada não escolheu. Nada foi lido.`;
+    const text = `ambiguous_account: multiple accounts match ${namespace} (${found.join(", ")}) and the call did not select one. Nothing was read.`;
     this.logPollError(row, "account", text);
     await this.failNamed(row, "ambiguous_account", text);
     return false;
@@ -1465,7 +1465,7 @@ export class PendingJobs {
       {
         notice: [
           text,
-          "Avise o usuário em uma linha com essa causa. Não diga que o status é desconhecido. Não dispare outro job.",
+          "Tell the user the cause in one line. Do not say the status is unknown. Do not start another job.",
         ].join("\n"),
       },
       outcome,
@@ -1522,7 +1522,7 @@ export class PendingJobs {
         row.id,
       );
       console.warn(
-        `jobs_poller: terminal outcome=delivery_unconfirmed job=${row.id} run_id=${row.run_id ?? "unknown"}: o turno terminou mas nenhuma entrega foi confirmada. O resultado está em pending_jobs.result.`,
+        `jobs_poller: terminal outcome=delivery_unconfirmed job=${row.id} run_id=${row.run_id ?? "unknown"}: the turn ended but no delivery was confirmed. The result is in pending_jobs.result.`,
       );
     }
   }
@@ -1977,7 +1977,7 @@ export class PendingJobs {
         this.expireTerminal(
           row,
           "provider_timeout",
-          "timeout sem execução encontrada",
+          "timed out without finding a run",
         );
       return false;
     }
@@ -1992,7 +1992,7 @@ export class PendingJobs {
       return this.deliverOnce(
         row,
         {
-          notice: `O job ${this.label(row)} terminou, mas o provedor não devolveu o resultado (expirado). Nada será repetido.`,
+          notice: `Job ${this.label(row)} ended, but the provider did not return a result (expired). Nothing will be retried.`,
         },
         "expired",
       );
@@ -2016,13 +2016,13 @@ export class PendingJobs {
         row,
         {
           notice: [
-            "Um job assíncrono disparado neste tópico não entregou resultado.",
-            row.goal ? `Objetivo: ${row.goal}` : "",
+            "An asynchronous job started in this topic did not return a result.",
+            row.goal ? `Goal: ${row.goal}` : "",
             `O job ${this.label(row)} terminou como ${run.status || run.state}.`,
-            run.run_id ? `Execução no provedor: ${run.run_id}.` : "",
-            run.error ? `Erro do provedor: ${run.error}` : "",
+            run.run_id ? `Provider run: ${run.run_id}.` : "",
+            run.error ? `Provider error: ${run.error}` : "",
             run.num_of_steps ? `Passos executados: ${run.num_of_steps}.` : "",
-            "Avise o usuário em uma linha. Não dispare novos jobs.",
+            "Notify the user in one line. Do not start any new jobs.",
           ]
             .filter(Boolean)
             .join("\n"),
@@ -2050,7 +2050,7 @@ export class PendingJobs {
           ) => Promise<unknown>;
         }
       | undefined;
-    if (!gateway?.callDirect) return { error: "gateway indisponível" };
+    if (!gateway?.callDirect) return { error: "gateway unavailable" };
     try {
       const observe = entry.manifest.observe;
       if (row.run_id && observe.tool) {
@@ -2072,7 +2072,7 @@ export class PendingJobs {
           (run.status || run.result !== undefined || run.state !== "unknown")
         )
           return { run };
-        return { error: `a leitura não devolveu o run ${row.run_id}` };
+        return { error: `the read did not return run ${row.run_id}` };
       }
       const reconcile =
         entry.manifest.reconcile ??
@@ -2083,8 +2083,7 @@ export class PendingJobs {
               match: "goalSuffix" as const,
             }
           : undefined);
-      if (!reconcile)
-        return { error: "sem job_id e sem ferramenta de reconciliação" };
+      if (!reconcile) return { error: "no job_id or reconciliation tool" };
       const built = this.readInput(reconcile.args, row, entry);
       if (!built.ok) return { error: built.error };
       const executed = await this.readJob(
@@ -2110,8 +2109,8 @@ export class PendingJobs {
       );
       if (candidates.length === 1) return { run: candidates[0] };
       if (candidates.length > 1)
-        return { error: "duas execuções candidatas na última leitura" };
-      return { error: "nenhuma execução encontrada na última leitura" };
+        return { error: "two candidate runs in the last check" };
+      return { error: "no run found in the last check" };
     } catch (error) {
       return { error: this.errorText(error) };
     }
@@ -2140,7 +2139,7 @@ export class PendingJobs {
 
   /**
    * A 422 / InputInvalid read can never succeed unchanged. Close now and say
-   * why — not "status desconhecido" after a long backoff.
+   * why — not "status unknown" after a long backoff.
    */
   private async failInput(row: PendingJob, message: string) {
     const text = message.trim().slice(0, 1500) || "Input failed validation";
@@ -2156,8 +2155,8 @@ export class PendingJobs {
       row,
       {
         notice: [
-          `A leitura do job ${row.id} (${this.rowPath(row)}) falhou na validação: ${text}`,
-          "Avise o usuário em uma linha, citando a causa da validação. Não diga que o status é desconhecido. Não dispare outro job.",
+          `Reading job ${row.id} (${this.rowPath(row)}) failed validation: ${text}`,
+          "Tell the user in one line why validation failed. Do not say the status is unknown. Do not start another job.",
         ].join("\n"),
       },
       "input_invalid",
@@ -2167,7 +2166,7 @@ export class PendingJobs {
   private errorText(error: unknown) {
     const message =
       error instanceof Error ? error.message : String(error ?? "");
-    return message.trim().slice(0, 300) || "erro desconhecido";
+    return message.trim().slice(0, 300) || "unknown error";
   }
 
   /**
@@ -2203,7 +2202,7 @@ export class PendingJobs {
       this.app.options.redact?.(flat) ?? flat,
     );
     const text = hidden.trim();
-    if (!text) return "erro desconhecido";
+    if (!text) return "unknown error";
     return text.length > LOG_ERROR_MAX ? text.slice(0, LOG_ERROR_MAX) : text;
   }
 
@@ -2258,7 +2257,7 @@ export class PendingJobs {
       run?.status ||
       row.last_status ||
       row.job_state?.toUpperCase() ||
-      "desconhecido";
+      "unknown";
     const lastAt = new Date(
       run ? Date.now() : (row.last_seen_at ?? row.created_at),
     );
@@ -2286,19 +2285,19 @@ export class PendingJobs {
     const errorText = error === undefined ? undefined : this.errorText(error);
     await this.submit(row, [
       errorText
-        ? `O job assíncrono ${this.label(row)} não pôde ser relido: ${errorText}.`
+        ? `Could not refresh asynchronous job ${this.label(row)}: ${errorText}.`
         : terminal
-          ? `O job assíncrono ${this.label(row)} consta como ${lastStatus} na última leitura.`
-          : `O job assíncrono ${this.label(row)} ainda não terminou.`,
-      row.run_id ? `Execução no provedor: ${row.run_id}.` : "",
-      row.goal ? `Objetivo: ${row.goal}` : "",
-      `Última leitura: ${lastStatus} às ${clock}.`,
-      `Status: ${lastStatus} depois de ${Math.round(this.timeoutMs() / 60_000)} minutos.`,
+          ? `The last check showed asynchronous job ${this.label(row)} as ${lastStatus}.`
+          : `Asynchronous job ${this.label(row)} has not finished yet.`,
+      row.run_id ? `Provider run: ${row.run_id}.` : "",
+      row.goal ? `Goal: ${row.goal}` : "",
+      `Last checked: ${lastStatus} at ${clock}.`,
+      `Status: ${lastStatus} after ${Math.round(this.timeoutMs() / 60_000)} minutes.`,
       errorText
-        ? "Avise o usuário em uma linha que não foi possível confirmar o status; não afirme que o job ainda está em execução nem invente um resultado. Não dispare novos jobs."
+        ? "Tell the user in one line that the status could not be confirmed. Do not say the job is still running or invent a result. Do not start any new jobs."
         : terminal
-          ? "Avise em uma linha que o job consta como terminado na última leitura e que o resultado ainda não foi confirmado; não diga que ainda está em execução. Não dispare novos jobs."
-          : "Avise o usuário em uma linha de que o job continua rodando; o resultado chegará quando terminar. Não dispare novos jobs.",
+          ? "Tell the user in one line that the last check showed the job had finished but the result has not been confirmed. Do not say it is still running. Do not start any new jobs."
+          : "Tell the user in one line that the job is still running and the result will arrive when it finishes. Do not start any new jobs.",
     ]);
   }
   /** Stable per job; a re-delivery of the same job is the same request. */
@@ -2466,19 +2465,19 @@ export class PendingJobs {
     const prompt =
       resultText !== undefined
         ? [
-            "Um job assíncrono disparado neste tópico terminou.",
-            row.goal ? `Objetivo: ${row.goal}` : "",
+            "An asynchronous job started in this topic has finished.",
+            row.goal ? `Goal: ${row.goal}` : "",
             `Status: ${outcome.result?.status ?? "COMPLETED"}`,
             pr ? `Pull Request: ${pr}` : "",
-            `Resultado:\n${wrapUntrustedToolResult(`job:${row.tool}`, shown.slice(0, 8000))}`,
+            `Result:\n${wrapUntrustedToolResult(`job:${row.tool}`, shown.slice(0, 8000))}`,
             pr
-              ? `Resuma em poucas linhas o que aconteceu e o que importa para o usuário, citando o link do Pull Request (${pr}). Não dispare novos jobs.`
-              : "Resuma em poucas linhas o que aconteceu e o que importa para o usuário. Não dispare novos jobs.",
+              ? `Briefly summarize what happened and what matters to the user, including the pull request link (${pr}). Do not start any new jobs.`
+              : "Briefly summarize what happened and what matters to the user. Do not start any new jobs.",
           ]
             .filter(Boolean)
             .join("\n")
         : (outcome.notice ??
-          "Um job assíncrono disparado neste tópico não entregou resultado.");
+          "An asynchronous job started in this topic did not return a result.");
     const delivery = await this.submit(deliveryRow, prompt);
     const now = Date.now();
     if (delivery === "sent" || delivery === "silent") {
@@ -2529,7 +2528,7 @@ export class PendingJobs {
         row.id,
       );
       console.warn(
-        `jobs_poller: terminal outcome=expired job=${row.id} run_id=${deliveryRow.run_id ?? "unknown"} error=delivery_failed_after_${attempts}_attempts; desistindo da entrega. O resultado está em pending_jobs.result.`,
+        `jobs_poller: terminal outcome=expired job=${row.id} run_id=${deliveryRow.run_id ?? "unknown"} error=delivery_failed_after_${attempts}_attempts; stopping delivery attempts. The result is in pending_jobs.result.`,
       );
       return false;
     }
@@ -2835,7 +2834,7 @@ function formatExecutorError(detail: unknown, depth = 0): string {
 class ExecutorProgramError extends Error {
   readonly detail: unknown;
   constructor(detail: unknown) {
-    super(formatExecutorError(detail) || "erro do Executor");
+    super(formatExecutorError(detail) || "Executor error");
     this.name = "ExecutorProgramError";
     this.detail = detail;
   }
@@ -2887,7 +2886,7 @@ export function classifyExecutorCall(result: unknown): ExecutorCall {
       kind: "failure",
       deterministic: failureIsDeterministic(body),
       notFound: isNotFoundError(body),
-      message: formatExecutorError(body) || "erro do Executor",
+      message: formatExecutorError(body) || "Executor error",
     };
   }
   return { kind: "success", value: programPayload(result) };

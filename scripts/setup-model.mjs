@@ -109,7 +109,7 @@ const MODE = "live";
 const usage = `Usage: npm run setup -- [options]
 
   With no arguments, in a terminal, a menu edits one section at a time:
-  Setup gateway, text model, image model, audio model, MCP platform, Busca na web.
+  Setup gateway, text model, image model, audio model, MCP platform, web search.
   Save & exit writes the volume. Exit without saving leaves it unchanged.
 
   --list                      show the current state
@@ -2346,7 +2346,7 @@ async function mcpMenu(readline, session) {
 }
 
 async function webMenu(readline) {
-  console.log("\nBusca na web");
+  console.log("\nWeb search");
   console.log("Providers: exa, firecrawl, or none. Enter b to go back.");
   const { web } = loadHarnessConfig(process.env);
   const draft = {};

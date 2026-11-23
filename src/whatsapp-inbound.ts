@@ -266,7 +266,7 @@ export function queueWhatsAppUncertainNotices(app: Runtime) {
       app.store,
       prefix,
       bound.chatId,
-      "Não sei se a chamada terminou. Use /resume.",
+      "I couldn't tell whether the call completed. Use /resume.",
       call.conversationId,
     );
   }
@@ -482,7 +482,7 @@ export async function acceptWhatsAppMessage(
       app.store,
       `whatsapp:inbound-failed:${message.messageId}`,
       message.chatId,
-      "Não consegui processar esta mensagem; envie de novo.",
+      "I couldn't process this message. Please send it again.",
     );
     throw error;
   }

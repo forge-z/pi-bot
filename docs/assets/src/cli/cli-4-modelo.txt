@@ -57,7 +57,7 @@ file:///agent/repos/pi-bot/dist/src/config.js:823
         throw new SetupRequiredError("login ChatGPT");
               ^
 
-SetupRequiredError: Configuração inicial ausente (login ChatGPT). Rode `npm run login` no terminal do container.
+SetupRequiredError: Initial setup is missing (ChatGPT sign-in). Run `npm run login` in the container terminal.
     at bootstrapModels (file:///agent/repos/pi-bot/dist/src/config.js:823:15)
     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     at async loadSubscriptionCatalog (file:///agent/repos/pi-bot/scripts/setup-model.mjs:386:16)

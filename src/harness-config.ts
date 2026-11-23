@@ -87,7 +87,7 @@ function webFrom(value: unknown): WebConfig {
       new Set(list).size === list.length
     )
       return list;
-    console.error(`Pi-Agent: web.${operation} inválido. Usando o padrão.`);
+    console.error(`Pi-Agent: web.${operation} is invalid. Using the default.`);
     return WEB_DEFAULTS[operation];
   };
   return { search: order("search"), extract: order("extract") };
@@ -162,12 +162,12 @@ function positiveNumber(value: unknown) {
 }
 
 function schemaProblem(value: unknown): string | undefined {
-  if (!isRecord(value)) return "o arquivo precisa ser um mapa";
+  if (!isRecord(value)) return "the file must be a map";
   if ("mcp_servers" in value && value.mcp_servers != null) {
-    if (!isRecord(value.mcp_servers)) return "mcp_servers precisa ser um mapa";
+    if (!isRecord(value.mcp_servers)) return "mcp_servers must be a map";
     for (const [name, server] of Object.entries(value.mcp_servers)) {
       if (server === null) continue;
-      if (!isRecord(server)) return `mcp_servers.${name} precisa ser um mapa`;
+      if (!isRecord(server)) return `mcp_servers.${name} must be a map`;
       if (
         server.trust !== undefined &&
         server.trust !== "trusted" &&
@@ -176,7 +176,7 @@ function schemaProblem(value: unknown): string | undefined {
         return `mcp_servers.${name}.trust aceita trusted ou untrusted`;
       if (server.tools === undefined || server.tools === null) continue;
       if (!isRecord(server.tools))
-        return `mcp_servers.${name}.tools precisa ser um mapa`;
+        return `mcp_servers.${name}.tools must be a map`;
       for (const key of ["read", "write"] as const) {
         const list = server.tools[key];
         if (list === undefined || list === null) continue;
@@ -184,31 +184,31 @@ function schemaProblem(value: unknown): string | undefined {
           !Array.isArray(list) ||
           list.some((item) => typeof item !== "string" || item.length === 0)
         )
-          return `mcp_servers.${name}.tools.${key} precisa ser uma lista de textos`;
+          return `mcp_servers.${name}.tools.${key} must be a list of strings`;
       }
     }
   }
   if ("skills" in value && value.skills != null) {
-    if (!isRecord(value.skills)) return "skills precisa ser um mapa";
+    if (!isRecord(value.skills)) return "skills must be a map";
     if ("always" in value.skills && value.skills.always != null) {
       const list = value.skills.always;
       if (
         !Array.isArray(list) ||
         list.some((item) => typeof item !== "string" || item.length === 0)
       )
-        return "skills.always precisa ser uma lista de textos";
+        return "skills.always must be a list of strings";
     }
   }
   if ("async_jobs" in value && value.async_jobs != null) {
     const jobs = value.async_jobs;
     if (Array.isArray(jobs)) {
       if (jobs.some((item) => !isRecord(item)))
-        return "async_jobs precisa ser uma lista de mapas";
-    } else if (!isRecord(jobs)) return "async_jobs precisa ser um mapa";
+        return "async_jobs must be a list of maps";
+    } else if (!isRecord(jobs)) return "async_jobs must be a map";
     else {
       for (const [name, job] of Object.entries(jobs)) {
         if (job !== null && !isRecord(job))
-          return `async_jobs.${name} precisa ser um mapa`;
+          return `async_jobs.${name} must be a map`;
       }
     }
   }
@@ -239,7 +239,9 @@ function serverFrom(value: Record<string, unknown>): ServerTools {
 function subagentsFrom(value: unknown): SubagentsConfig {
   if (value === undefined || value === null) return SUBAGENT_DEFAULTS;
   const invalid = (field: string) =>
-    console.error(`Pi-Agent: subagents.${field} inválido. Usando o padrão.`);
+    console.error(
+      `Pi-Agent: subagents.${field} is invalid. Using the default.`,
+    );
   if (!isRecord(value)) {
     invalid("(bloco)");
     return SUBAGENT_DEFAULTS;
@@ -285,7 +287,7 @@ function memoryFrom(raw: unknown): MemoryConfig {
       };
     else
       console.error(
-        "Pi-Agent: memory.curator_model inválido. Usando o modelo da conversa.",
+        "Pi-Agent: memory.curator_model is invalid. Using the conversation model.",
       );
   }
   return config;
@@ -406,7 +408,7 @@ function readDocument(path: string): {
     if (code === "ENOENT") return { doc: {}, missing: true };
     return {
       doc: {},
-      problem: code === "EISDIR" ? "não é um arquivo" : "ilegível",
+      problem: code === "EISDIR" ? "not a file" : "unreadable",
     };
   }
   let parsed: unknown;
@@ -432,15 +434,15 @@ export function loadHarnessConfig(env: Env = process.env): HarnessConfig {
   const over = readDocument(user);
   if (base.missing)
     console.error(
-      `Pi-Agent: config.default.yaml ausente (${defaults}). Sem padrões de classificação nem de jobs.`,
+      `Pi-Agent: config.default.yaml missing (${defaults}). No classification or job defaults are available.`,
     );
   else if (base.problem)
     console.error(
-      `Pi-Agent: config.default.yaml inválido (${base.problem}). Sem padrões de classificação nem de jobs.`,
+      `Pi-Agent: config.default.yaml is invalid (${base.problem}). No classification or job defaults are available.`,
     );
   if (!over.missing && over.problem)
     console.error(
-      `Pi-Agent: ${user} inválido (${over.problem}). Usando config.default.yaml.`,
+      `Pi-Agent: ${user} is invalid (${over.problem}). Using config.default.yaml.`,
     );
   const usableBase = base.problem || base.missing ? {} : base.doc;
   const usableUser = over.problem || over.missing ? {} : over.doc;

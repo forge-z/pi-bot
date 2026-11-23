@@ -276,7 +276,7 @@ test("a run that outlives the timeout becomes a short notice", async () => {
     );
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1);
-    assert.match(f.submissions[0].text, /Status: RUNNING depois de/);
+    assert.match(f.submissions[0].text, /Status: RUNNING after/);
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1, "o aviso é único");
     // The row stays open: a late COMPLETED still reaches the chat.
@@ -926,7 +926,7 @@ test("a delivery that keeps failing expires instead of looping for ever", async 
     assert.equal(row.delivery_attempts, 3);
     assert.equal(row.outcome, "expired");
     assert.ok(row.delivered_at, "a linha fecha em vez de tentar para sempre");
-    assert.ok(logged.some((line) => /desistindo/.test(line)));
+    assert.ok(logged.some((line) => /stopping delivery attempts/.test(line)));
   } finally {
     await f.close();
   }
@@ -959,8 +959,7 @@ test("a settled job with no confirmed delivery is reported once", async () => {
       "delivery_unconfirmed",
     );
     assert.equal(
-      logged.filter((line) => /nenhuma entrega foi confirmada/.test(line))
-        .length,
+      logged.filter((line) => /no delivery was confirmed/.test(line)).length,
       1,
       "avisa uma vez, não a cada tick",
     );
@@ -1285,7 +1284,7 @@ test("a finished result is delimited and only a whole GitHub URL is cited", asyn
     assert.match(text, /Data from job:/);
     assert.match(
       text,
-      new RegExp(`citando o link do Pull Request \\(${valid}\\)`),
+      new RegExp(`including the pull request link \\(${valid}\\)`),
     );
     assert.doesNotMatch(text, /sk-live/);
     assert.doesNotMatch(text, /Bearer [A-Za-z0-9]/);
@@ -1472,7 +1471,7 @@ test("a finished job without a result is expired, not failed", async () => {
     f.setObserved({ data: { run_id: "run-1", status: "COMPLETED" } });
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1);
-    assert.match(f.submissions[0].text, /expirad/i);
+    assert.match(f.submissions[0].text, /expired/i);
     const row = f.store.get<{ outcome: string }>(
       "SELECT outcome FROM pending_jobs",
     )!;
@@ -2006,11 +2005,11 @@ test("a failed re-read is a notice with the last status and the read error", asy
     f.setObserved(undefined);
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1);
-    assert.match(f.submissions[0].text, /Última leitura: RUNNING/);
+    assert.match(f.submissions[0].text, /Last checked: RUNNING/);
     assert.match(f.submissions[0].text, /502: transient provider failure/);
     assert.doesNotMatch(
       f.submissions[0].text,
-      /continua rodando|segue rodando/,
+      /Tell the user in one line that the job is still running|has not finished yet/,
     );
     assert.equal(
       f.store.get<{ delivered_at: number | null }>(
@@ -2166,7 +2165,7 @@ test("404 logo após o disparo é silêncio dentro da carência", async () => {
     );
     assert.match(
       f.submissions[0].text,
-      /NOT_FOUND|não pôde ser relido|File not found/i,
+      /NOT_FOUND|Could not refresh asynchronous job|File not found/i,
     );
   } finally {
     await f.close();
@@ -2245,7 +2244,7 @@ test("aviso após 25 min (padrão de async_job.timeout_min)", async () => {
     f.store.run("UPDATE pending_jobs SET next_poll_at=?", Date.now() - 1000);
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1, "aviso aos 25 minutos");
-    assert.match(f.submissions[0].text, /depois de 25 minutos/i);
+    assert.match(f.submissions[0].text, /after 25 minutes/i);
   } finally {
     await f.close();
   }
@@ -2310,7 +2309,7 @@ test("async job timeout and poll use config.yaml, with env as an override", asyn
     );
     await custom.jobs.tick();
     assert.equal(custom.submissions.length, 1);
-    assert.match(custom.submissions[0].text, /depois de 10 minutos/i);
+    assert.match(custom.submissions[0].text, /after 10 minutes/i);
 
     fromEnv.jobs.registerKnown(
       "chat-1",
@@ -2335,7 +2334,7 @@ test("async job timeout and poll use config.yaml, with env as an override", asyn
     );
     await fromEnv.jobs.tick();
     assert.equal(fromEnv.submissions.length, 1);
-    assert.match(fromEnv.submissions[0].text, /depois de 4 minutos/i);
+    assert.match(fromEnv.submissions[0].text, /after 4 minutes/i);
   } finally {
     console.info = original;
     await plain.close();
@@ -2377,7 +2376,7 @@ function executorFailed(error: unknown) {
 
 function assertNeverExpired(submissions: { text: string }[], message: string) {
   for (const submission of submissions)
-    assert.doesNotMatch(submission.text, /expirado/i, message);
+    assert.doesNotMatch(submission.text, /expired/i, message);
 }
 
 test("status.json no envelope real do Executor entrega o PR e não expira", async () => {
@@ -2452,7 +2451,10 @@ test("404 de status.json ausente fica em silêncio na carência e nunca diz expi
     );
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1, "avisa depois da carência");
-    assert.match(f.submissions[0].text, /não pôde ser relido|not_found|404/i);
+    assert.match(
+      f.submissions[0].text,
+      /Could not refresh asynchronous job|not_found|404/i,
+    );
     assertNeverExpired(f.submissions, "404 depois da carência não expira");
     assert.equal(
       f.store.get<{ delivered_at: number | null; outcome: string | null }>(
@@ -2555,8 +2557,8 @@ test("a poll error names the job, and a stuck missing status file ends at the ti
       1,
       "o aviso da carência segue o de hoje",
     );
-    assert.match(f.submissions[0].text, /não pôde ser relido/);
-    assert.doesNotMatch(f.submissions[0].text, /expirado/i);
+    assert.match(f.submissions[0].text, /Could not refresh asynchronous job/);
+    assert.doesNotMatch(f.submissions[0].text, /expired/i);
     const mid = f.store.get<{
       delivered_at: number | null;
       outcome: string | null;
@@ -2581,7 +2583,7 @@ test("a poll error names the job, and a stuck missing status file ends at the ti
     assert.ok(closed.delivered_at, "depois do timeout a linha fecha");
     assert.equal(closed.outcome, "provider_timeout");
     assert.equal(f.submissions.length, 1, "fechar não avisa de novo");
-    assert.doesNotMatch(f.submissions[0].text, /expirado/i);
+    assert.doesNotMatch(f.submissions[0].text, /expired/i);
     assert.ok(
       warns.some((item) => /outcome=provider_timeout/.test(item)),
       "o fechamento fica no log do operador",
@@ -2665,7 +2667,7 @@ test("DONE sem resultado ainda avisa que expirou de verdade", async () => {
     );
     await f.jobs.tick();
     assert.equal(f.submissions.length, 1);
-    assert.match(f.submissions[0].text, /expirado/i);
+    assert.match(f.submissions[0].text, /expired/i);
   } finally {
     await f.close();
   }
@@ -2804,7 +2806,7 @@ test("HTTP 422 InputInvalid closes the row immediately", async () => {
     assert.equal(f.calls.length, calls, "422 não é relido");
     assert.equal(f.submissions.length, 1);
     const notice = f.submissions[0].text.split("\n")[0] ?? "";
-    assert.match(notice, /validação/i);
+    assert.match(notice, /validation/i);
     assert.match(notice, /Expected object/);
     assert.doesNotMatch(notice, /desconhecido/i);
     const row = f.store.get<{

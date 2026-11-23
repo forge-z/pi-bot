@@ -197,10 +197,10 @@ test("a user-dispatched job completion is delivered to the originating chat and 
     assert.ok(requestId);
     assert.equal(runNotified(f.app.store, f.id, requestId), true);
     const logged = lines.find(
-      (line) => line.includes("run agendado") && line.includes(requestId),
+      (line) => line.includes("scheduled run") && line.includes(requestId),
     );
     assert.ok(logged, JSON.stringify(lines));
-    assert.match(logged, /notify=sim/);
+    assert.match(logged, /notify=yes/);
   } finally {
     console.log = log;
     await f.close();
@@ -251,9 +251,9 @@ test("a scheduled routine with no news stays silent", async () => {
       "SELECT requestId,status FROM requests WHERE source='job'",
     );
     assert.equal(job?.status, "done");
-    const logged = lines.filter((line) => line.includes("run agendado"));
+    const logged = lines.filter((line) => line.includes("scheduled run"));
     assert.ok(logged.length >= 2, JSON.stringify(lines));
-    for (const line of logged) assert.match(line, /notify=não/);
+    for (const line of logged) assert.match(line, /notify=no/);
     assert.ok(logged.some((line) => line.includes(job!.requestId)));
     assert.equal(f.tasks.runs(task.id)[0]?.status, "silencioso");
   } finally {
@@ -300,13 +300,13 @@ test("a job answer with a bearer token is redacted in chat and in the quiet log"
     assert.ok(requestId);
     const logged = lines.find(
       (line) =>
-        line.includes("run agendado") &&
+        line.includes("scheduled run") &&
         line.includes(requestId) &&
-        line.includes("texto="),
+        line.includes("text="),
     );
     assert.ok(logged, JSON.stringify(lines));
-    assert.match(logged, /notify=sim/);
-    assert.match(logged, /texto=/);
+    assert.match(logged, /notify=yes/);
+    assert.match(logged, /text=/);
     assert.doesNotMatch(logged, new RegExp(token));
     assert.doesNotMatch(logged, /Bearer\s+\S+/);
     assert.match(logged, /\[REDACTED\]/);

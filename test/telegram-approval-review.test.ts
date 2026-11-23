@@ -316,7 +316,7 @@ test("verifyMcp with incomplete review (e.g. omitted URL query) provides no veri
     // Rule: Never offer verification buttons when review is incomplete
     assert.deepEqual(markup.inline_keyboard, []);
     // Must explain that verification options are unavailable due to hidden/abbreviated content
-    assert.match(text, /Não dá para confirmar daqui/);
+    assert.match(text, /This cannot be verified here/);
     assert.doesNotMatch(text, /<pre>/);
     assert.doesNotMatch(text, /token=secret/);
     assert.doesNotMatch(text, /example\.test/);
@@ -388,13 +388,13 @@ test("verifyMcp with incomplete review (e.g. omitted URL query) provides no veri
     assert.equal(markupComplete.inline_keyboard.length, 2);
     assert.match(
       textComplete,
-      /Confira no serviço se deu certo antes de confirmar/,
+      /Check the result in the service before confirming/,
     );
     assert.deepEqual(
       markupComplete.inline_keyboard.map((row: { text: string }[]) =>
         row.map((button) => button.text),
       ),
-      [["Deu certo"], ["Não rodou"]],
+      [["Succeeded"], ["Did not run"]],
     );
   } finally {
     await app.close();
@@ -611,7 +611,7 @@ test("uncertain verification card stays short and keeps its buttons", async () =
     );
     assert.equal(deliveries.length, 1);
     const text = deliveries[0].text;
-    assert.match(text, /Confira no serviço se deu certo antes de confirmar/);
+    assert.match(text, /Check the result in the service before confirming/);
     assert.doesNotMatch(text, /accountId/);
     assert.doesNotMatch(text, /tools\.x\.y/);
     assert.doesNotMatch(text, /<pre>/);
@@ -629,7 +629,7 @@ test("uncertain verification card stays short and keeps its buttons", async () =
       markup.inline_keyboard.map((row: { text: string }[]) =>
         row.map((button) => button.text),
       ),
-      [["Deu certo"], ["Não rodou"]],
+      [["Succeeded"], ["Did not run"]],
     );
   } finally {
     await app.close();
@@ -658,7 +658,7 @@ test("uncertain notice is two plain pt-BR lines and leaves the parameters out", 
   });
   assert.equal(
     notice,
-    "Não sei se a chamada ao executor (execute) terminou. Confira no serviço e marque abaixo.\nSobre: enviar o resumo",
+    "Could not verify whether the call to executor (execute) completed. Check the service and record the result below.\nAbout: enviar o resumo",
   );
   assert.equal(notice.split("\n").length, 2);
   assert.doesNotMatch(
@@ -672,7 +672,7 @@ test("uncertain notice is two plain pt-BR lines and leaves the parameters out", 
     tool: "execute",
     input: { code: program },
   });
-  const hint = fromCode.split("\n")[1]?.replace(/^Sobre: /, "");
+  const hint = fromCode.split("\n")[1]?.replace(/^About: /, "");
   assert.equal(fromCode.split("\n").length, 2);
   assert.ok(hint?.startsWith("consultar o status do pedido"));
   assert.ok(hint && hint.length <= 100);
@@ -684,7 +684,7 @@ test("uncertain notice is two plain pt-BR lines and leaves the parameters out", 
     tool: "fetch",
     input: { url: longUrl },
   });
-  const urlHint = urlNotice.split("\n")[1]?.replace(/^Sobre: /, "") ?? "";
+  const urlHint = urlNotice.split("\n")[1]?.replace(/^About: /, "") ?? "";
   assert.ok(urlHint.startsWith("https://example.test/"));
   assert.ok(urlHint.length <= 100);
   assert.ok(urlHint.length < longUrl.length);
@@ -731,7 +731,7 @@ test("uncertain notice is two plain pt-BR lines and leaves the parameters out", 
   assert.doesNotMatch(details, /^`/m);
 });
 
-test("uncertain notice queues a short message and puts parameters behind Detalhes", async () => {
+test("uncertain notice queues a short message and puts parameters behind Details", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-uncertain-notice-"));
   const models = createModels();
   models.setProvider(fauxProvider().provider);
@@ -782,9 +782,9 @@ test("uncertain notice queues a short message and puts parameters behind Detalhe
     const text = deliveries[0].text;
     assert.match(
       text,
-      /Não sei se a chamada ao executor \(execute\) terminou\. Confira no serviço e marque abaixo\./,
+      /Could not verify whether the call to executor \(execute\) completed\. Check the service and record the result below\./,
     );
-    assert.match(text, /Sobre: consultar o status do pedido/);
+    assert.match(text, /About: consultar o status do pedido/);
     assert.doesNotMatch(
       text,
       /yyyy|sk-abcdefghijklmnop|<pre>|```|FIM_QUE_NAO_CABE/,
@@ -798,10 +798,10 @@ test("uncertain notice queues a short message and puts parameters behind Detalhe
       inline_keyboard: { text: string; callback_data: string }[][];
     };
     const labels = markup.inline_keyboard.flat().map((item) => item.text);
-    assert.deepEqual(labels, ["Registrar verificação", "Detalhes"]);
+    assert.deepEqual(labels, ["Record verification", "Details"]);
     const detailsButton = markup.inline_keyboard
       .flat()
-      .find((item) => item.text === "Detalhes")!;
+      .find((item) => item.text === "Details")!;
     const saved = app.store.get<{ value: string }>(
       "SELECT value FROM meta WHERE key=?",
       `telegram:button:${detailsButton.callback_data}`,

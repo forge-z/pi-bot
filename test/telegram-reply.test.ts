@@ -75,9 +75,9 @@ test("a reply in a topic and in a chat tells the model id, author and text", asy
       "SELECT text FROM requests WHERE conversationId=?",
       topic,
     )!.text;
-    assert.match(topicText, /\[respondendo a #7 · bot\]/);
+    assert.match(topicText, /\[replying to #7 · bot\]/);
     assert.match(topicText, /e esse ponto\?/);
-    assert.match(topicText, /\[citação\] trecho citado/);
+    assert.match(topicText, /\[quote\] trecho citado/);
     assert.ok(topicText.includes("a".repeat(500)));
     assert.equal(topicText.includes("a".repeat(501)), false);
 
@@ -100,7 +100,7 @@ test("a reply in a topic and in a chat tells the model id, author and text", asy
       "SELECT text FROM requests WHERE conversationId=?",
       chat,
     )!.text;
-    assert.match(chatText, /\[respondendo a #3 · usuário\]/);
+    assert.match(chatText, /\[replying to #3 · user\]/);
     assert.match(chatText, /legenda da foto/);
     assert.match(chatText, /concordo/);
 
@@ -220,10 +220,10 @@ test("system notices are not replies, and answering one names the notice", async
         topic,
       )
       .at(-1)!.text;
-    assert.match(text, /\[respondendo a #50 · aviso do sistema\]/);
-    assert.match(text, /A mensagem respondida é um aviso do sistema/);
+    assert.match(text, /\[replying to #50 · system notice\]/);
+    assert.match(text, /The message being replied to is a system notice/);
     assert.match(text, /Um job assíncrono disparado neste tópico terminou/);
-    assert.match(text, /\[citação\] preço foi extraído/);
+    assert.match(text, /\[quote\] preço foi extraído/);
     assert.match(text, /e o link\?/);
   } finally {
     await app.close();

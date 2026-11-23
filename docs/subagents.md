@@ -10,7 +10,7 @@ While the feature is on, the system prompt has one fixed rule. The model uses `s
 
 Example request: "compare three public RSS readers and tell me which one has the best OPML import". The model may send one task per reader to `subagent` and write the comparison itself from the three answers.
 
-The tool takes either `task` (one text) or `tasks` (a list of `{ "task": "..." }`, up to `max_parallel`). The tasks of one call run at the same time. Answers come back in order, as `## Tarefa 1`, `## Tarefa 2`, and so on. A task that fails does not drop the others: it shows as `[tarefa 2 sem resposta: turn_limit]`, for example. Each answer is cut at about 6000 characters.
+The tool takes either `task` (one text) or `tasks` (a list of `{ "task": "..." }`, up to `max_parallel`). The tasks of one call run at the same time. Answers come back in order, as `## Task 1`, `## Task 2`, and so on. A task that fails does not drop the others: it shows as `[tarefa 2 sem resposta: turn_limit]`, for example. Each answer is cut at about 6000 characters.
 
 ## Configuration
 
@@ -39,7 +39,7 @@ There is no clock limit of its own. `max_turns`, the MCP call deadlines and `/st
 
 ## Stopping
 
-`/stop` in the chat stops the topic's running subagents and cancels their MCP calls. The tool then returns `[tarefa 1 interrompida]` and the assistant ends its turn. Cancelling the parent's tool call also aborts its children.
+`/stop` in the chat stops the topic's running subagents and cancels their MCP calls. The tool then returns `[task 1 interrupted]` and the assistant ends its turn. Cancelling the parent's tool call also aborts its children.
 
 ## Restart and deletion
 

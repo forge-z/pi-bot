@@ -12,9 +12,9 @@ export const CONVERSATION_USAGE_TOOL_NAME = "conversation_usage";
 
 /** Shown to the model when the ledger cannot be read. No ids, no cause. */
 export const CONVERSATION_USAGE_READ_ERROR =
-  "Não foi possível ler o consumo desta conversa.";
+  "Could not read this conversation's usage.";
 
-const USD_UNAVAILABLE = "indisponível";
+const USD_UNAVAILABLE = "unavailable";
 
 export type UsageCostReport =
   | {
@@ -46,7 +46,7 @@ export interface UsageBucketReport {
 }
 
 export interface ConversationUsageReport {
-  scope: "conversa atual";
+  scope: "current conversation";
   tokens: TokenReport;
   cacheHitRate: number | null;
   usd: UsageCostReport;
@@ -60,10 +60,10 @@ export interface ConversationUsageReport {
 }
 
 const SUBAGENTS_NOTE =
-  "tokens, models e tools são só desta conversa. subagents soma as conversas dos subagentes que ela criou; withSubagents é a soma das duas. Não some subagents ao total de novo.";
+  "tokens, models, and tools cover this conversation only. subagents totals the child conversations it created; withSubagents already includes both. Do not add subagents to the total again.";
 
 const SCOPE_NOTE =
-  "Somente esta conversa. prompt = input + cacheRead + cacheWrite. reasoning já está em output; cacheWrite1h já está em cacheWrite; não some esses subconjuntos de novo.";
+  "This conversation only. prompt = input + cacheRead + cacheWrite. output already includes reasoning, and cacheWrite already includes cacheWrite1h. Do not count those subsets again.";
 
 /**
  * USD for one stored Usage.
@@ -211,9 +211,9 @@ function noteFor(
   if (!usd.available) {
     const someKnown = parts.some((part) => part.available && part.total > 0);
     const partial = someKnown
-      ? " O total da conversa não fecha; use só o usd dos modelos ou ferramentas com usd.available true e diga que o restante está sem preço."
+      ? " The conversation total is incomplete. Use only USD values from models or tools with usd.available true and say the remaining costs are unavailable."
       : "";
-    return `${SCOPE_NOTE} Estimativa total em USD indisponível: preço de catálogo ausente ou tarifas zeradas. Não apresente $0.00 e não diga que a inferência foi gratuita. Os tokens continuam válidos.${partial}`;
+    return `${SCOPE_NOTE} The total USD estimate is unavailable because catalog prices are missing or rates are zero. Do not report $0.00 or say inference was free. Token counts are still valid.${partial}`;
   }
   if (
     usd.total === 0 &&
@@ -221,12 +221,12 @@ function noteFor(
     tokens.prompt === 0 &&
     tokens.output === 0
   )
-    return `${SCOPE_NOTE} Não há consumo registrado nesta conversa.`;
+    return `${SCOPE_NOTE} No usage is recorded for this conversation.`;
   if (usd.source === "provider")
-    return `${SCOPE_NOTE} USD é o valor reportado pelo provedor.`;
+    return `${SCOPE_NOTE} USD is the amount reported by the provider.`;
   if (usd.source === "mixed")
-    return `${SCOPE_NOTE} USD mistura estimativa de catálogo e valor reportado pelo provedor.`;
-  return `${SCOPE_NOTE} USD é estimativa de catálogo.`;
+    return `${SCOPE_NOTE} USD combines catalog estimates and provider-reported amounts.`;
+  return `${SCOPE_NOTE} USD is estimated from the catalog.`;
 }
 
 function formatUsd(total: number) {
@@ -248,7 +248,7 @@ export function formatConversationUsageLine(
   };
   const line = `Usage: ${part(report)}`;
   return report.subagents
-    ? `${line} · subagentes: ${part(report.subagents)}`
+    ? `${line} · subagents: ${part(report.subagents)}`
     : line;
 }
 
@@ -297,7 +297,7 @@ export function summarizeConversationUsage(
   const tokens = sumTokens(parts.map((part) => part.tokens));
   const usd = combineCosts(parts.map((part) => part.usd));
   return {
-    scope: "conversa atual",
+    scope: "current conversation",
     tokens,
     cacheHitRate: cacheHitRate(tokens),
     usd,
@@ -321,7 +321,7 @@ export function summarizeModelUsage(usages: readonly Usage[]) {
 export const conversationUsageTool = defineTool({
   name: CONVERSATION_USAGE_TOOL_NAME,
   description:
-    "Consulta tokens e custo estimado em USD somente desta conversa. Chame quando o usuário perguntar sobre tokens, consumo, usage, gasto ou custo desta conversa. Não lê outras conversas nem o total do armazenamento. Se usd.available for false, diga que a estimativa em USD está indisponível; nunca apresente $0.00 nem diga que a inferência foi gratuita. reasoning já está em output e cacheWrite1h já está em cacheWrite: não some de novo.",
+    "Read token counts and estimated USD costs for this conversation only. Use when asked about its tokens, usage, or costs. Does not read other conversations or storage totals. If usd.available is false, say the estimate is unavailable; do not report $0.00 or say inference was free. Do not count reasoning or cacheWrite1h twice: output and cacheWrite already include them.",
   parameters: Type.Object({}),
   replay: "safe",
   execute: async (_args, api, ctx) => {

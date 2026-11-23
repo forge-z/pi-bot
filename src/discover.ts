@@ -180,7 +180,7 @@ export function sandboxCall(tool: string, args: unknown) {
     .split(".")
     .filter(Boolean);
   if (!parts.length || parts.some((part) => !TOOL_SEGMENT.test(part)))
-    throw new Error(`caminho de ferramenta inválido: ${tool}`);
+    throw new Error(`invalid tool path: ${tool}`);
   if (parts[0] !== "tools") parts.unshift("tools");
   let expression = "tools";
   for (const part of parts.slice(1))
@@ -252,9 +252,9 @@ function listed(items: { label: string; id: string; state?: string }[]) {
 function rejected(value: unknown) {
   const payload = programPayload(value);
   if (isExecutorApproval(value) || isExecutorApproval(payload))
-    return "a listagem aguarda aprovação";
+    return "the listing is awaiting approval";
   if (isExecutorFailure(value) || isExecutorFailure(payload))
-    return "a listagem falhou";
+    return "the listing failed";
   return "";
 }
 
@@ -265,13 +265,13 @@ function selectSingle(step: Step, value: unknown): Choice {
     return {
       ok: false,
       error: clip(
-        `Não foi possível resolver ${step.var}: há mais de uma conta. Encontradas: ${listed(linked)}.`,
+        `Could not resolve ${step.var}: more than one account matched. Found: ${listed(linked)}.`,
       ),
     };
   if (sawNamespaces(value))
     return {
       ok: false,
-      error: `Não foi possível resolver ${step.var}: nenhuma conta encontrada.`,
+      error: `Could not resolve ${step.var}: no accounts found.`,
     };
   const items = records(value, step.list)
     .map((item) => ({
@@ -283,12 +283,12 @@ function selectSingle(step: Step, value: unknown): Choice {
   if (!items.length)
     return {
       ok: false,
-      error: `Não foi possível resolver ${step.var}: nenhuma conta encontrada.`,
+      error: `Could not resolve ${step.var}: no accounts found.`,
     };
   return {
     ok: false,
     error: clip(
-      `Não foi possível resolver ${step.var}: há mais de uma conta. Encontradas: ${listed(items)}.`,
+      `Could not resolve ${step.var}: more than one account matched. Found: ${listed(items)}.`,
     ),
   };
 }
@@ -309,12 +309,12 @@ function selectNamed(step: Step, value: unknown): Choice {
     ? items.filter((item) => item.label.toLowerCase() === prefer.toLowerCase())
     : [];
   if (named.length === 1) return { ok: true, id: named[0]!.id };
-  const found = items.length ? ` Encontradas: ${listed(items)}.` : "";
+  const found = items.length ? ` Found: ${listed(items)}.` : "";
   if (named.length > 1)
     return {
       ok: false,
       error: clip(
-        `Não foi possível resolver ${step.var}: há mais de uma máquina chamada "${prefer}".${found}`,
+        `Could not resolve ${step.var}: more than one machine is named "${prefer}".${found}`,
       ),
     };
   const running = stateKey
@@ -324,14 +324,14 @@ function selectNamed(step: Step, value: unknown): Choice {
   if (!items.length)
     return {
       ok: false,
-      error: `Não foi possível resolver ${step.var}: nenhuma máquina encontrada.`,
+      error: `Could not resolve ${step.var}: no machines found.`,
     };
   const why = prefer
-    ? `nenhuma máquina chamada "${prefer}" e não há exatamente uma em execução`
-    : "não há exatamente uma máquina em execução";
+    ? `no machine is named "${prefer}" and there is not exactly one running`
+    : "there is not exactly one running machine";
   return {
     ok: false,
-    error: clip(`Não foi possível resolver ${step.var}: ${why}.${found}`),
+    error: clip(`Could not resolve ${step.var}: ${why}.${found}`),
   };
 }
 
@@ -340,7 +340,7 @@ function select(step: Step, value: unknown): Choice {
   if (problem)
     return {
       ok: false,
-      error: `Não foi possível resolver ${step.var}: ${problem}.`,
+      error: `Could not resolve ${step.var}: ${problem}.`,
     };
   if (step.pick === "single" || (!step.prefer && !step.running))
     return selectSingle(step, value);
@@ -393,7 +393,7 @@ export async function resolveTemplates(
       const message = error instanceof Error ? error.message : String(error);
       return {
         ok: false,
-        error: clip(`Não foi possível resolver ${step.var}: ${message}`),
+        error: clip(`Could not resolve ${step.var}: ${message}`),
       };
     }
   }
@@ -434,7 +434,7 @@ export async function ensureDiscovered(
     console.warn(`jobs_poller: ${resolved.error}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`jobs_poller: descoberta falhou (${message})`);
+    console.warn(`jobs_poller: discovery failed (${message})`);
   }
   return pending;
 }

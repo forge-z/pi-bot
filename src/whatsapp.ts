@@ -1362,7 +1362,8 @@ export async function pairWhatsApp(
       stale: 30_000,
     })
     .catch(() => false);
-  if (held) throw new Error("o gateway já mostra o QR nos logs");
+  if (held)
+    throw new Error("the gateway is already showing the QR code in its logs");
   return new Promise<void>((resolve, reject) => {
     // The reconnect timer is unref'd. Without this, a socket that closes
     // before the QR (and a readline that no longer holds stdin) lets the

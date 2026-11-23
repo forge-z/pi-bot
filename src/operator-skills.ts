@@ -47,7 +47,7 @@ function folderName(name: string) {
 
 function skip(name: string, reason: string) {
   const label = name.replace(/\s+/g, " ").slice(0, 80);
-  console.error(`Pi-Agent: skill ${label} ignorada (${reason}).`);
+  console.error(`Pi-Agent: skill ${label} skipped (${reason}).`);
 }
 
 function oneLine(text: string) {
@@ -64,31 +64,31 @@ function skillFile(
   const source = text.replace(/^\uFEFF/, "");
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(source);
   if (!match) {
-    skip(folder, "frontmatter inválido");
+    skip(folder, "invalid front matter");
     return;
   }
   let parsed: unknown;
   try {
     parsed = parse(match[1]);
   } catch {
-    skip(folder, "frontmatter inválido");
+    skip(folder, "invalid front matter");
     return;
   }
   if (!isRecord(parsed)) {
-    skip(folder, "frontmatter inválido");
+    skip(folder, "invalid front matter");
     return;
   }
   if (typeof parsed.name !== "string" || parsed.name !== folder) {
-    skip(folder, "name ausente ou diferente da pasta");
+    skip(folder, "name is missing or does not match the directory");
     return;
   }
   if (typeof parsed.description !== "string" || !parsed.description.trim()) {
-    skip(folder, "frontmatter inválido");
+    skip(folder, "invalid front matter");
     return;
   }
   const body = match[2].trim();
   if (!body) {
-    skip(folder, "corpo vazio");
+    skip(folder, "empty body");
     return;
   }
   return { description: parsed.description.trim(), body };
@@ -96,7 +96,7 @@ function skillFile(
 
 function readSkill(dir: string, name: string): OperatorSkill | undefined {
   if (!folderName(name)) {
-    skip(name, "nome inválido");
+    skip(name, "invalid name");
     return;
   }
   let text: string;
@@ -104,7 +104,7 @@ function readSkill(dir: string, name: string): OperatorSkill | undefined {
     text = readFileSync(join(dir, name, "SKILL.md"), "utf8");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    skip(name, code === "ENOENT" ? "não encontrada" : "ilegível");
+    skip(name, code === "ENOENT" ? "not found" : "unreadable");
     return;
   }
   const parsed = skillFile(text, name);
@@ -129,7 +129,7 @@ export function loadOperatorSkills(env: Env = process.env): OperatorSkill[] {
     return skills;
   } catch (error) {
     console.error(
-      `Pi-Agent: skills ignoradas (${error instanceof Error ? error.name : "erro"}).`,
+      `Pi-Agent: skills skipped (${error instanceof Error ? error.name : "error"}).`,
     );
     return [];
   }

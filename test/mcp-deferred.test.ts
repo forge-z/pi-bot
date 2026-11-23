@@ -107,7 +107,7 @@ test("config accepts deferred and alwaysLoad; omitted mode stays direct", () => 
             },
           ]),
         }),
-      /apenas modo direct ou deferred/,
+      /mode must be direct or deferred/,
     );
   }
   assert.throws(
@@ -117,7 +117,7 @@ test("config accepts deferred and alwaysLoad; omitted mode stays direct", () => 
         MCP_SERVERS_JSON:
           '[{"name":"github","url":"https://github.example/mcp","tokenEnv":"GH_TOKEN","mode":"deferred","alwaysLoad":""}]',
       }),
-    /alwaysLoad inválido/,
+    /Invalid MCP alwaysLoad/,
   );
 });
 

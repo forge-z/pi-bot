@@ -134,7 +134,7 @@ test("no skills folder leaves the system prompt unchanged", async () => {
     const logged = errorsOf(() => loadOperatorSkills(env(missing)));
     assert.match(
       logged.join("\n"),
-      /skill weekly-review ignorada \(não encontrada\)/,
+      /skill weekly-review skipped \(not found\)/,
     );
     assert.deepEqual(loadOperatorSkills(env(plain)), []);
     assert.deepEqual(loadOperatorSkills(env(listed)), []);
@@ -244,15 +244,15 @@ test("a missing, invalid, or unreadable skill is skipped and the bot still boots
       assert.deepEqual(loadOperatorSkills(env(root)), loaded);
     });
     const text = logged.join("\n");
-    assert.match(text, /missing-skill ignorada \(não encontrada\)/);
-    assert.match(text, /\.\.\/outside ignorada \(nome inválido\)/);
-    assert.match(text, /broken ignorada \(ilegível\)/);
-    assert.match(text, /bad-yaml ignorada \(frontmatter inválido\)/);
+    assert.match(text, /missing-skill skipped \(not found\)/);
+    assert.match(text, /\.\.\/outside skipped \(invalid name\)/);
+    assert.match(text, /broken skipped \(unreadable\)/);
+    assert.match(text, /bad-yaml skipped \(invalid front matter\)/);
     assert.match(
       text,
-      /wrong-name ignorada \(name ausente ou diferente da pasta\)/,
+      /wrong-name skipped \(name is missing or does not match the directory\)/,
     );
-    assert.match(text, /empty-body ignorada \(corpo vazio\)/);
+    assert.match(text, /empty-body skipped \(empty body\)/);
     assert.equal(text.includes(outside), false);
     assert.equal(text.includes("BAD YAML"), false);
     const prompts = await promptFor(root);
@@ -310,10 +310,7 @@ test("skills.always must be a list of names and replaces the default", async () 
       const config = loadHarnessConfig({ CONFIG_FILE: bad, DATA_DIR: root });
       assert.deepEqual(config.skillsAlways, []);
     });
-    assert.match(
-      logged.join("\n"),
-      /skills\.always precisa ser uma lista de textos/,
-    );
+    assert.match(logged.join("\n"), /skills\.always must be a list of strings/);
     assert.deepEqual(loadHarnessConfig({ DATA_DIR: root }).skillsAlways, []);
     assert.deepEqual(loadHarnessConfig({ CONFIG_FILE: good }).skillsAlways, [
       "weekly-review",

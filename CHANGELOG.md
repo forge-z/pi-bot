@@ -7,17 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista do próprio servidor declara como leitura; um verbo de leitura no nome ou um programa `execute` não basta. O WhatsApp não baixa mais anexos por URL, a menos que o host esteja em `whatsapp.attachment_urls.hosts`.
+### Changed
 
-pt-BR: o cartão de aprovação de uma leitura ganha "Sempre permitir isto" ao lado de "Aprovar uma vez". A regra vale para um servidor, uma ferramenta e, quando houver, um recurso (por exemplo, o calendário). `/approvals` lista as regras e `/revoke <n>` remove uma. Envio, deleção, pagamento e qualquer escrita sempre pedem aprovação.
-
-pt-BR: `/receipt` mostra o último turno e `/receipt <n>` consulta os anteriores. Para acrescentar uma linha curta às respostas finais, use `turn_receipt.footer: true`.
+- Setup, diagnostics, built-in tool output, and chat messages use English. Setup no longer accepts Portuguese menu choices or yes/no answers. User and model content is unchanged.
 
 ### Added
 
-- Telegram and WhatsApp approval cards for a reviewable read offer "Sempre permitir isto". The rule is one MCP server, one held tool, the resource the arguments name (calendar, folder, repository, ...) and the credential binding, stored in SQLite with date and origin. A matching read is resumed without a card, also in scheduled runs, and counts as remembered in `/receipt`. `/approvals` lists rules and `/revoke <n>` removes one. Writes, sends, deletions and payments never get the button.
+- Telegram and WhatsApp approval cards for a reviewable read offer "Always allow this". The rule is one MCP server, one held tool, the resource the arguments name (calendar, folder, repository, ...) and the credential binding, stored in SQLite with date and origin. A matching read is resumed without a card, also in scheduled runs, and counts as remembered in `/receipt`. `/approvals` lists rules and `/revoke <n>` removes one. Writes, sends, deletions and payments never get the button.
 - Telegram and WhatsApp can show per-turn tool, approval, search, token, and model-cost metadata with `/receipt [n]`. The SQLite receipt does not copy conversation text, arguments, page content, or keys. The reply footer is off by default.
-- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Busca na web** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With neither provider configured, the assistant keeps using its MCP tools.
+- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Web search** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With neither provider configured, the assistant keeps using its MCP tools.
 - Long-term memory in editable Markdown on the data volume. The idle curator uses the conversation's model by default and does not run from schedules. Daily notes are searchable with `memory_search`; Telegram and WhatsApp support `/memory` and `/forget <text>`.
 
 ### Security
@@ -34,21 +32,17 @@ pt-BR: `/receipt` mostra o último turno e `/receipt <n>` consulta os anteriores
 
 ## [0.5.1] - 2026-11-20
 
-pt-BR: 0.5.1 deixa de tratar como escrita uma leitura cujo `execute` usa um alias simples (`const gh = tools.github.repos; gh.getContent(...)`) ou um verbo de leitura no meio do nome (`inboxesMessagesList`, `v1ExtractPost`). Essas chamadas voltam a falhar em silêncio, como as outras leituras. A conferência "Deu certo" / "Não rodou" guarda o erro original ao lado da nota.
-
 ### Fixed
 
 - An `execute` program is a read when every resolved call is a read. A simple alias counts: `const`, `let`, or `var` with `X = tools.a.b`, then `X.method(` or `X.c.method(`, and `const { getContent } = tools.github.repos`. Brackets and any use that does not resolve stay writes. One write call makes the program a write.
 - A leaf the read globs miss is a read when a read verb is its own camelCase word: `get`, `list`, `fetch`, `search`, `read`, `describe`, `extract`, `query`, `find`, `status`, `usage`, `metrics` (`inboxesMessagesList`, `v1ExtractPost`). A write verb in that leaf stays a write (`create`, `update`, `delete`, `send`, `post`, `publish`, `remove`, `exec`, `run`, `start`, `stop`, `upload`, `write`, `set`, `put`, `patch`, `merge`, `purge`, `revoke`). A trailing HTTP `Post` next to a read verb (`ExtractPost`, `SearchPost`) is not a write. `createOrUpdateFileContents`, `machines.exec`, `automation.run`, and `messages.send` stay writes. An explicit read glob still wins, so `getRunById` stays a read.
-- Confirming an uncertain call ("Deu certo" / "Não rodou") keeps the original result on the row and stores the verification note beside it.
+- Confirming an uncertain call ("Succeeded" / "Did not run") keeps the original result on the row and stores the verification note beside it.
 
 ### Changed
 
 - Package version is 0.5.1. The MCP client announces that same version.
 
 ## [0.5.0] - 2026-11-20
-
-pt-BR: 0.5.0 sobe o harness para o Pi 1.6.0. A resposta depois de uma aprovação no chat passa a ser entregue nesse chat. Um id de tarefa sem manifesto não pode mais virar um "já volto" sem consulta neste turno, job registrado ou checagem única. A reação 👀 espera cerca de 4s e some se a resposta sair antes. Uma tarefa longa manda uma nota curta no chat antes do trabalho, e a resposta final vai sozinha. Uma resposta rápida não manda essa nota. Um run agendado continua em silêncio. Com `subagents.enabled: true`, o modelo pode delegar trabalho somente leitura a um subagente e recebe só a resposta final; desligado por padrão.
 
 ### Added
 
@@ -57,7 +51,7 @@ pt-BR: 0.5.0 sobe o harness para o Pi 1.6.0. A resposta depois de uma aprovaçã
 
 ### Fixed
 
-- An MCP approval the user decides in the chat delivers the assistant's follow-up in that chat. A blank follow-up sends nothing. Other system turns stay silent, including the "Deu certo" / "Não rodou" check.
+- An MCP approval the user decides in the chat delivers the assistant's follow-up in that chat. A blank follow-up sends nothing. Other system turns stay silent, including the "Succeeded" / "Did not run" check.
 
 ### Changed
 
@@ -69,8 +63,6 @@ pt-BR: 0.5.0 sobe o harness para o Pi 1.6.0. A resposta depois de uma aprovaçã
 ## [0.4.0] - 2026-11-18
 
 Beta. The README calls the project beta: usable day to day, with configuration and commands that may still change between releases.
-
-pt-BR: 0.4.0 (beta) traz o gateway de WhatsApp, o OAuth do Upsy e a landing page.
 
 ### Added
 
@@ -104,8 +96,6 @@ pt-BR: 0.4.0 (beta) traz o gateway de WhatsApp, o OAuth do Upsy e a landing page
 
 Alpha. At this commit the README still calls the project alpha. `package.json` is `0.3.0`.
 
-pt-BR: 0.3.0 (alfa) grava a configuração no volume e aperta a recuperação de MCP, os jobs e o sandbox.
-
 ### Added
 
 - `npm run setup` stores the menu on the volume: gateway (Telegram), text, image, and audio models, then the MCP platform (Executor, Composio, both, or none). The bot token and allowlist live on the volume. A set environment variable wins. `TZ` stays an environment variable. ([#7](https://github.com/forge-z/pi-bot/pull/7))
@@ -129,8 +119,6 @@ pt-BR: 0.3.0 (alfa) grava a configuração no volume e aperta a recuperação de
 ## [0.2.0] - 2026-11-09
 
 Alpha. At this commit the README still calls the project alpha.
-
-pt-BR: primeira versão pública (alfa) — assistente no Telegram, do setup e da agenda até jobs, sandbox e login do ChatGPT.
 
 ### Added
 

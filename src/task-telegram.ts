@@ -291,7 +291,7 @@ export function queueNotify(
         : (resolved?.reason ??
           "This conversation is not linked to a Telegram chat.");
     if (task) rememberRouteError(store, requestId, reason);
-    return `${reason} Nada foi enviado.`;
+    return `${reason} Nothing was sent.`;
   }
   const notificationId = `${conversationId}:${requestId}:task-notification`;
   const safeCall = callId.replace(/[^\w.-]/g, "_").slice(0, 80) || "call";

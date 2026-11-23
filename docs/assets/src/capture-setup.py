@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Run `npm run setup` in a PTY and save sanitized slices for the landing images.
 
-Reproduzir, na raiz do repositório, com Node 24 e as dependências instaladas
+Run from the repository root with Node 24 and dependencies installed
 (`npm ci && npm run build`):
 
     python3 docs/assets/src/capture-setup.py
 
-O script não grava segredo. A chave digitada é falsa e o prompt é oculto.
-Um QR de pareamento real, se aparecer, é descartado e trocado pelo marcador
-@@QR@@. O renderizador desenha no lugar um QR borrado de um texto fictício.
+The script does not record secrets. The example key is synthetic and entry is hidden.
+Any real pairing QR is discarded and replaced with the
+@@QR@@ marker. The renderer replaces it with a blurred QR using fictional data.
 """
 
 from __future__ import annotations
@@ -180,7 +180,7 @@ class Session:
 def slice_from(text: str, start: str) -> str:
     index = text.rfind(start)
     if index < 0:
-        raise SystemExit(f"marcador não encontrado: {start!r}")
+        raise SystemExit(f"marker not found: {start!r}")
     return text[index:].rstrip() + "\n"
 
 
@@ -224,11 +224,11 @@ def without_npm_noise(text: str) -> str:
 
 def assert_clean(name: str, text: str) -> None:
     if FAKE_KEY in text:
-        raise SystemExit(f"{name} contém a chave falsa; o prompt deveria ocultá-la")
+        raise SystemExit(f"{name} contains the synthetic key; the prompt should hide it")
     lowered = text.lower()
     for banned in ("sk-ant-", "sk-proj-", "xoxb-", "ghp_", "bearer "):
         if banned in lowered:
-            raise SystemExit(f"{name} parece conter um segredo ({banned})")
+            raise SystemExit(f"{name} appears to contain a secret ({banned})")
 
 
 def dedupe_echo(text: str) -> str:
@@ -260,7 +260,7 @@ def capture_gateway(log: Path) -> None:
     try:
         if not session.wait("q - Exit without saving", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu inicial não apareceu")
+            raise SystemExit("main menu did not appear")
         # The prompt is the last line; give readline a beat to paint it.
         time.sleep(0.3)
         session.pump(0.2)
@@ -269,7 +269,7 @@ def capture_gateway(log: Path) -> None:
         session.send("1\n")
         if not session.wait("One phone gateway per install", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu de gateway não apareceu")
+            raise SystemExit("gateway menu did not appear")
         time.sleep(0.2)
         session.pump(0.2)
         write_slice("cli-2-gateway", slice_from(session.text(), "Setup gateway"))
@@ -277,15 +277,15 @@ def capture_gateway(log: Path) -> None:
         session.send("2\n")
         if not session.wait("Unofficial WhatsApp Web", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu de WhatsApp não apareceu")
+            raise SystemExit("WhatsApp menu did not appear")
         session.send("1\n")
         if not session.wait("Numbers with country code", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("pergunta do número não apareceu")
+            raise SystemExit("phone number prompt did not appear")
         session.send(FAKE_NUMBER + "\n")
         if not session.wait(FAKE_NUMBER, 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("número não foi aceito")
+            raise SystemExit("phone number was not accepted")
         time.sleep(0.2)
         session.pump(0.2)
         session.send("2\n")
@@ -316,22 +316,22 @@ def capture_model(log: Path) -> None:
     try:
         if not session.wait("q - Exit without saving", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu inicial (modelo) não apareceu")
+            raise SystemExit("main menu did not appear for the model capture")
         session.send("2\n")
         if not session.wait("Text model", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu de texto não apareceu")
+            raise SystemExit("text menu did not appear")
         session.send("1\n")
         if not session.wait("Official pi-ai providers", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("lista de provedores não apareceu")
+            raise SystemExit("provider list did not appear")
         if not session.wait("Provider [", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("prompt de provedor não apareceu")
+            raise SystemExit("provider prompt did not appear")
         session.send("0\n")
         if not session.wait("Subscription [1]", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("pergunta de assinatura não apareceu")
+            raise SystemExit("subscription prompt did not appear")
         session.send("1\n")
         # Do not answer a login prompt. On a fresh volume this build exits with
         # SetupRequiredError before the device-code question, which is still
@@ -341,7 +341,7 @@ def capture_model(log: Path) -> None:
             session.pump(0.1)
             current = session.text()
             if (
-                "(s/n)" in current
+                "(y/n)" in current
                 or "npm run login" in current
                 or "SetupRequiredError" in current
             ):
@@ -350,13 +350,13 @@ def capture_model(log: Path) -> None:
                 break
         else:
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("o login do modelo não chegou a uma pergunta ou a um erro")
+            raise SystemExit("model login did not reach a prompt or error")
         time.sleep(0.4)
         session.pump(0.2)
         body = slice_from(session.text(), "\nText model\n").lstrip("\n")
-        if "(s/n)" not in body and "npm run login" not in body:
+        if "(y/n)" not in body and "npm run login" not in body:
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("a saída do modelo não parou antes do login externo")
+            raise SystemExit("model output did not stop before external sign-in")
         write_slice("cli-4-modelo", strip_qr(body))
         log.write_text(strip_qr(session.text()), encoding="utf-8")
     finally:
@@ -373,61 +373,61 @@ def capture_ready(log: Path) -> None:
     try:
         if not session.wait("q - Exit without saving", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu inicial (pronto) não apareceu")
+            raise SystemExit("main menu did not appear for the final capture")
         session.send("1\n")
         if not session.wait("1 - Telegram", 20):
-            raise SystemExit("gateway não abriu")
+            raise SystemExit("gateway menu did not open")
         session.send("2\n")
         if not session.wait("1 - Allowed numbers", 20):
-            raise SystemExit("WhatsApp não abriu")
+            raise SystemExit("WhatsApp menu did not open")
         session.send("1\n")
         if not session.wait("Numbers with country code", 20):
-            raise SystemExit("número não foi pedido")
+            raise SystemExit("phone number was not requested")
         session.send(FAKE_NUMBER + "\n")
         if not session.wait(FAKE_NUMBER, 20):
-            raise SystemExit("número recusado")
+            raise SystemExit("phone number was refused")
         session.send("s\n")
         if not session.wait("WhatsApp saved on the volume", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("WhatsApp não foi gravado")
+            raise SystemExit("WhatsApp settings were not saved")
         # Saving WhatsApp returns to the gateway menu, not the main menu.
         if not session.wait_tail("Active: WhatsApp", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("não voltou ao menu do gateway")
+            raise SystemExit("did not return to the gateway menu")
         session.send("b\n")
         if not session.wait_tail("configured (WhatsApp)", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("não voltou ao menu principal")
+            raise SystemExit("did not return to the main menu")
 
         session.send("2\n")
         if not session.wait_tail("1 - Provider", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu de texto não abriu")
+            raise SystemExit("text model menu did not open")
         session.send("1\n")
         if not session.wait("Provider [", 20):
-            raise SystemExit("provedor não foi pedido")
+            raise SystemExit("provider was not requested")
         session.send("anthropic\n")
         if not session.wait("API key (hidden):", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("chave não foi pedida")
+            raise SystemExit("API key was not requested")
         session.send(FAKE_KEY + "\n")
         if not session.wait("Key saved for anthropic", 30):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("catálogo do provedor não carregou")
+            raise SystemExit("provider catalog did not load")
         session.send("2\n")
         if not session.wait("claude-sonnet-4-6", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("modelo claude-sonnet-4-6 não está no catálogo")
+            raise SystemExit("claude-sonnet-4-6 is not in the catalog")
         if not session.wait("Model [", 20):
-            raise SystemExit("prompt de modelo não apareceu")
+            raise SystemExit("model prompt did not appear")
         session.send("claude-sonnet-4-6\n")
         if not session.wait("Model: claude-sonnet-4-6", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("modelo não ficou selecionado")
+            raise SystemExit("model was not selected")
         session.send("4\n")
         if not session.wait("Effort for", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("esforço não foi pedido")
+            raise SystemExit("reasoning effort was not requested")
         effort_window = session.text()
         effort_line = next(
             (line for line in effort_window.splitlines() if line.startswith("Effort for ")),
@@ -436,14 +436,14 @@ def capture_ready(log: Path) -> None:
         session.send("medium\n" if " medium" in f" {effort_line} " else "\n")
         if not session.wait("Effort: ", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("esforço não foi aceito")
+            raise SystemExit("reasoning effort was not accepted")
         session.send("s\n")
         if not session.wait("Saved on the volume (anthropic)", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("modelo de texto não foi gravado")
+            raise SystemExit("text model was not saved")
         if not session.wait_tail("configured (anthropic/", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("não voltou ao menu depois do texto")
+            raise SystemExit("did not return to the main menu after text setup")
 
         session.send("3\n")
         deadline = time.time() + 30
@@ -454,35 +454,35 @@ def capture_ready(log: Path) -> None:
                 break
         else:
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("menu de imagem não abriu")
+            raise SystemExit("image menu did not open")
         time.sleep(0.3)
         session.pump(0.2)
         image_tail = session.tail(24)
         if "does not accept images" in image_tail:
             session.send("-\n")
             if not session.wait_tail("Image model disabled", 20):
-                raise SystemExit("não desligou a imagem")
+                raise SystemExit("image handling was not disabled")
         session.send("s\n")
         if not session.wait_tail("3 - Image model", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("não voltou ao menu depois da imagem")
+            raise SystemExit("did not return to the main menu after image setup")
 
         session.send("5\n")
         if not session.wait_tail("1 - Composio", 20):
-            raise SystemExit("menu MCP não abriu")
+            raise SystemExit("MCP menu did not open")
         session.send("6\n")
         if not session.wait_tail("MCP platform set to none", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("MCP none não foi escolhido")
+            raise SystemExit("None was not selected for MCP")
         session.send("s\n")
         if not session.wait_tail("not set (none)", 20):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("não voltou ao menu depois do MCP")
+            raise SystemExit("did not return to the main menu after MCP setup")
 
         session.send("s\n")
         if not session.wait("No gateway is running", 40):
             log.write_text(strip_qr(session.text()), encoding="utf-8")
-            raise SystemExit("confirmação final não apareceu")
+            raise SystemExit("final confirmation did not appear")
         time.sleep(0.4)
         session.pump(0.2)
         write_slice("cli-5-pronto", slice_from(session.text(), "\nSetup\n").lstrip("\n"))
@@ -494,7 +494,7 @@ def capture_ready(log: Path) -> None:
 
 def main() -> None:
     if not (REPO / "package.json").exists():
-        raise SystemExit(f"raiz do repositório não encontrada a partir de {REPO}")
+        raise SystemExit(f"could not find the repository root from {REPO}")
     logs = Path("/tmp/pi-bot-capture-logs")
     logs.mkdir(parents=True, exist_ok=True)
     which = subprocess.run(["npm", "--version"], check=False, capture_output=True, text=True)

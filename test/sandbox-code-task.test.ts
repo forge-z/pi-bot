@@ -175,7 +175,7 @@ test("Instabox rejects read-only jobs before discovery, approval or dispatch", a
         context,
       );
       assert.equal(res.isError, true);
-      assert.match(getText(res), /não aceita tarefas somente leitura/);
+      assert.match(getText(res), /does not accept read-only tasks/);
     }
     assert.equal(f.calls.length, 0);
     assert.equal(f.app.mcpCalls!.interactions(convId).length, 0);
@@ -318,7 +318,7 @@ test("writes=true decline does not dispatch", async () => {
       context,
     );
     const interaction = f.app.mcpCalls!.interactions(convId)[0]!;
-    assert.match(interaction.payload, /branch: \(padrão do job\)/);
+    assert.match(interaction.payload, /branch: \(job default\)/);
     await f.app.mcpCalls!.decide(convId, interaction.id, "decline");
     assert.equal(launched(f.calls).length, 0);
     assert.equal(jobCount(f.app, convId), 0);
@@ -370,7 +370,7 @@ test("deterministic dispatch failure closes the row", async () => {
       context,
     );
     assert.match(getText(res), /approval_pending/);
-    assert.match(await approveJob(f.app, convId), /Erro ao disparar tarefa/);
+    assert.match(await approveJob(f.app, convId), /Failed to start the task/);
     const row = f.app.store.get<{ outcome: string | null }>(
       "SELECT outcome FROM pending_jobs WHERE conversation_id=?",
       convId,
@@ -610,12 +610,12 @@ test("repo allowlist is empty until config.yaml or the env override sets it", as
     return getText(res);
   };
   try {
-    assert.match(await run(plain, "example/repo"), /não permitido/);
-    assert.match(await run(plain, "other-org/repo"), /não permitido/);
+    assert.match(await run(plain, "example/repo"), /not allowed/);
+    assert.match(await run(plain, "other-org/repo"), /not allowed/);
     assert.match(await run(custom, "other-org/repo"), /"approval_pending"/);
-    assert.match(await run(custom, "example/repo"), /não permitido/);
+    assert.match(await run(custom, "example/repo"), /not allowed/);
     assert.match(await run(fromEnv, "env-org/only"), /"approval_pending"/);
-    assert.match(await run(fromEnv, "other-org/repo"), /não permitido/);
+    assert.match(await run(fromEnv, "other-org/repo"), /not allowed/);
   } finally {
     await plain.close();
     await custom.close();
@@ -642,10 +642,7 @@ test("a configured sandbox task is on the model tool list and the prompt forbids
     );
     assert.ok(listed);
     assert.match(listed.description ?? "", /writes=true/);
-    assert.match(
-      listed.description ?? "",
-      /Não use para tarefas somente leitura/,
-    );
+    assert.match(listed.description ?? "", /Do not use it for read-only tasks/);
     const prompt = await sectionText(f.app, "long-task");
     assert.equal(prompt, steer);
   } finally {

@@ -9,7 +9,7 @@ export interface AudioConfig {
   language: string;
 }
 
-const GEMINI_PROMPT = "Transcreva este áudio. Devolva só o texto transcrito.";
+const GEMINI_PROMPT = "Transcribe this audio. Return only the transcript.";
 
 /** Transcribes Telegram's OGG/Opus voice note; the provider reads it as-is. */
 export async function transcribeAudio(
@@ -23,7 +23,7 @@ export async function transcribeAudio(
       ? await gemini(doFetch, config, audio, options.signal)
       : await openai(doFetch, config, audio, options.signal);
   const trimmed = text.trim();
-  if (!trimmed) throw new Error("transcrição vazia");
+  if (!trimmed) throw new Error("empty transcription");
   return trimmed;
 }
 
@@ -57,7 +57,7 @@ async function openai(
     `${config.baseUrl}/audio/transcriptions`,
     requestInit({ authorization: `Bearer ${config.apiKey}` }, form, signal),
   );
-  if (!response.ok) throw new Error(`transcrição ${response.status}`);
+  if (!response.ok) throw new Error(`transcription HTTP ${response.status}`);
   const body = (await response.json()) as { text?: unknown };
   return typeof body.text === "string" ? body.text : "";
 }
@@ -70,7 +70,7 @@ async function gemini(
   signal?: AbortSignal,
 ) {
   const instruction = config.language
-    ? `${GEMINI_PROMPT} O áudio está em ${config.language}; responda nesse idioma.`
+    ? `${GEMINI_PROMPT} The audio is in ${config.language}; respond in that language.`
     : GEMINI_PROMPT;
   const response = await doFetch(
     `${config.baseUrl}/models/${config.modelId}:generateContent`,
@@ -94,7 +94,7 @@ async function gemini(
       signal,
     ),
   );
-  if (!response.ok) throw new Error(`transcrição ${response.status}`);
+  if (!response.ok) throw new Error(`transcription HTTP ${response.status}`);
   const body = (await response.json()) as {
     candidates?: { content?: { parts?: { text?: unknown }[] } }[];
   };

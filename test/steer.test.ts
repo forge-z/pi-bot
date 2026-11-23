@@ -145,7 +145,7 @@ test("Mensagem durante turno com ferramenta pendente vira steer e é vista pelo 
       ).length,
       1,
     );
-    assert.match(f.app.turnReceipts.show(convId, ""), /mcp_tools: 1 chamada/);
+    assert.match(f.app.turnReceipts.show(convId, ""), /mcp_tools: 1 call/);
 
     const snapshot = await f.app.snapshot(convId);
     const assistants = snapshot.view.entries.filter(

@@ -8,6 +8,12 @@ const RECENT_LIMIT = 20;
 
 type TelegramAuthor = "bot" | "usuário" | "aviso";
 
+function authorLabel(author: string) {
+  if (author === "aviso") return "system notice";
+  if (author === "usuário") return "user";
+  return author;
+}
+
 export function telegramAuthor(
   from: { id?: number; is_bot?: boolean } | undefined,
   botId?: number,
@@ -59,7 +65,7 @@ export function acceptedReplyTo(
   if (replyTo === undefined) return;
   if (!Number.isSafeInteger(replyTo) || replyTo <= 0) {
     console.log(
-      `Pi-Agent: notify replyTo=${String(replyTo)} ignorado; id inválido.`,
+      `Pi-Agent: notify replyTo=${String(replyTo)} ignored: invalid ID.`,
     );
     return;
   }
@@ -78,8 +84,8 @@ export function acceptedReplyTo(
   );
   console.log(
     other
-      ? `Pi-Agent: notify replyTo=${replyTo} ignorado; a mensagem é do chat ${other.chat}, não de ${chat}.`
-      : `Pi-Agent: notify replyTo=${replyTo} ignorado; pertinência ao chat ${chat} não confirmada.`,
+      ? `Pi-Agent: notify replyTo=${replyTo} ignored: the message belongs to chat ${other.chat}, not ${chat}.`
+      : `Pi-Agent: notify replyTo=${replyTo} ignored: the message could not be verified as belonging to chat ${chat}.`,
   );
 }
 
@@ -148,14 +154,14 @@ export function recentChatLines(store: Store, chat: string) {
     .reverse();
   if (!rows.length) return "";
   return [
-    "Mensagens neste chat (message_id para replyTo de notify):",
+    "Messages in this chat (message_id for notify replyTo):",
     ...rows.map((row) => {
-      const who = row.author === "aviso" ? "aviso do sistema" : row.author;
+      const who = authorLabel(row.author);
       const text =
         row.excerpt.length > LIST_LIMIT
           ? `${row.excerpt.slice(0, LIST_LIMIT)}…`
           : row.excerpt;
-      return `#${row.messageId} ${who}: ${text || "(sem texto)"}`;
+      return `#${row.messageId} ${who}: ${text || "(no text)"}`;
     }),
   ].join("\n");
 }
@@ -228,15 +234,15 @@ export function formatReplyInput(
   );
   const system = seen?.author === "aviso";
   const author = system
-    ? "aviso do sistema"
-    : telegramAuthor(reply.from, botId);
+    ? "system notice"
+    : authorLabel(telegramAuthor(reply.from, botId));
   const fromUpdate = excerpt(reply.text ?? reply.caption ?? "", REPLY_LIMIT);
   const fromSeen = excerpt(seen?.excerpt ?? "", REPLY_LIMIT);
   const body = fromUpdate || fromSeen;
-  const lines = [`[respondendo a #${messageId} · ${author}]`];
-  if (system) lines.push("A mensagem respondida é um aviso do sistema.");
+  const lines = [`[replying to #${messageId} · ${author}]`];
+  if (system) lines.push("The message being replied to is a system notice.");
   if (body) lines.push(body);
   const quote = excerpt(message.quote?.text ?? "", REPLY_LIMIT);
-  if (quote) lines.push(`[citação] ${quote}`);
+  if (quote) lines.push(`[quote] ${quote}`);
   return `${lines.join("\n")}\n\n`;
 }

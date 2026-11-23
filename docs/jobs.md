@@ -157,15 +157,15 @@ topic that asked is told when the machine is ready:
 `machines.exec` is synchronous (up to 600 s) and needs no manifest; wrap long builds in
 `nohup` and register the work with the job tools instead.
 
-### Tarefas de código na sandbox (`sandbox_code_task`)
+### Sandbox code tasks (`sandbox_code_task`)
 
-`sandbox_code_task` hoje suporta só o Instabox. O bloco em `config.default.yaml`, as variáveis `INSTABOX_*` e `scripts/instabox/` são desse provedor. Apontar o YAML para outro sandbox (freestyle.sh, por exemplo) não faz o bot usá-lo.
+`sandbox_code_task` supports only Instabox. The block in `config.default.yaml`, the `INSTABOX_*` variables, and the scripts in `scripts/instabox/` are specific to that provider. Pointing the YAML at another sandbox does not make the bot use it.
 
 ```yaml
 sandbox_code_task:
   tool: sandbox_code_task
-  job: "internal.instabox.codeTask" # manifesto em async_jobs
-  server: executor # executor usa `execute` + tools.*; outro nome é chamado direto
+  job: "internal.instabox.codeTask" # manifest in async_jobs
+  server: executor # executor uses `execute` + tools.*; other servers are called directly
   goal: prompt
   idPrefix: "cj-"
   exec:
@@ -176,8 +176,8 @@ sandbox_code_task:
         id: "${INSTABOX_MACHINE_ID}"
         cmd: "bash ~/bin/start-job.sh ${job_id}"
         timeoutSeconds: 15
-        stdin: "${payload}" # parâmetros do modelo em JSON
-  parameters: # JSON Schema da chamada do modelo
+        stdin: "${payload}" # model parameters as JSON
+  parameters: # JSON Schema for the model's call
     type: object
     required: [repo, agent, prompt]
     properties:
@@ -185,7 +185,7 @@ sandbox_code_task:
       agent: { type: string, enum: [agy, pi, claude] }
       prompt: { type: string }
       branch: { type: string }
-      writes: { type: boolean } # somente true é aceito; pede o cartão antes do exec
+      writes: { type: boolean } # only true is accepted; approval is required before execution
   allow:
     field: repo
     # patterns is empty in config.default.yaml. Set it here or via
@@ -193,44 +193,45 @@ sandbox_code_task:
     patterns: "example/*"
 ```
 
-- O Instabox compartilhado rejeita `writes: false` ou omitido antes de chamar a sandbox. Ele executa na mesma conta que tem credenciais de escrita; mover arquivos ou limpar variáveis não isola o agente. Tarefas somente leitura precisam de um ambiente separado, sem acesso a credenciais de escrita.
-- Com `writes: true`, a ferramenta retorna `{ status: "approval_pending" }`. Só depois do aceite, o disparo gera um `jobId` (`<idPrefix><timestamp-base36>-<random>`) e registra a linha em `pending_jobs` antes de chamar a sandbox. No Instabox, só o `jobId` entra no comando; os parâmetros vão em JSON pelo `stdin`.
-- O poller usa o manifesto `job` para ler o status; no padrão, `/data/home/jobs/${id}/status.json` via `tools.instabox.machines.readFiles` a cada 20 segundos (com backoff). O `status:"completed"` do Executor é o envelope da chamada, não o estado do job. Um `status.json` ausente (404) durante a carência fica em silêncio.
-- Quando o job conclui, o poller entrega o resultado como um turno novo no tópico original. Ele pode incluir o link do pull request (`result.pr`) e o nome da branch. O modelo trata o resultado como dado, não como instrução, e só cita links cuja URL inteira seja `https://github.com/...`.
-- O cartão "Aprovação MCP pendente" mostra repositório, agente, branch e um trecho curto do prompt. Recusar não dispara nada.
-- Linhas antigas de `instabox_code_task` continuam resolvendo porque o manifesto padrão mantém `tool: internal.instabox.codeTask`.
-- **Instalação na Sandbox Instabox**:
-  1. Copie os scripts versionados no repositório (`scripts/instabox/start-job.sh` e `scripts/instabox/run-job.sh`) para o diretório `~/bin/` da máquina:
-     ```bash
-     mkdir -p ~/bin
-     cp scripts/instabox/*.sh ~/bin/
-     chmod +x ~/bin/*.sh
-     ```
-  2. Configure `~/.agents-env.sh` com as chaves e tokens necessários (autenticação `gh`, chaves de API para os agentes CLI):
-     ```bash
-     # ~/.agents-env.sh
-     export GITHUB_TOKEN="..."
-     export ANTHROPIC_API_KEY="..."
-     export OPENAI_API_KEY="..."
-     ```
-  3. Certifique-se de que as ferramentas `git`, `gh`, `node` e os agentes CLI (`agy`, `pi`, `claude`) estejam instalados no ambiente da sandbox.
-  4. Antes de reativar uma instalação antiga, encerre os jobs antigos, atualize o bot e instale as duas versões novas dos scripts. Remova a configuração legada `sandbox_code_task.readonly` e qualquer prefixo `JOB_READONLY=1` de comandos personalizados. Se houve jobs sem aprovação, trate as credenciais de escrita da máquina como potencialmente expostas e rotacione-as.
-  5. Restrinja o acesso direto ao terminal e à API de execução da máquina a operadores autorizados. Os scripts recusam pedidos sem `writes: true`, mas quem verifica o aceite do cartão é o bot, não a máquina.
+- The shared Instabox rejects `writes: false` or an omitted value before contacting the sandbox. It runs under the account that holds write credentials; moving files or clearing environment variables does not isolate the agent. Use a separate environment without write credentials for read-only tasks.
+- With `writes: true`, the tool returns `{ status: "approval_pending" }`. Only after approval does it generate a `jobId` (`<idPrefix><timestamp-base36>-<random>`), write a row to `pending_jobs`, and call the sandbox. Only the ID goes into the command; parameters are passed as JSON on stdin.
+- The poller uses the manifest's `job` entry to read status. By default it reads `/data/home/jobs/${id}/status.json` through `tools.instabox.machines.readFiles` every 20 seconds with backoff. Executor's `status:"completed"` describes the call envelope, not the job. A missing status file (404) during the grace period is not reported.
+- When the job finishes, the poller delivers the result in a new turn in the original topic. It can include the pull request link (`result.pr`) and branch name. The model treats the result as data, not instructions, and cites only full `https://github.com/...` links.
+- The approval card shows the repository, agent, branch, and a short prompt excerpt. Declining does not start a job.
+- Existing `instabox_code_task` rows still resolve through the default `tool: internal.instabox.codeTask` manifest.
 
-- **Variáveis de Ambiente**:
-  - `INSTABOX_MACHINE_ID`: opcional. Sem ela, o `discover` do manifesto escolhe a máquina somente quando existe exatamente uma em execução. Zero ou várias é erro e a lista é mostrada. Não há nome padrão.
-  - `INSTABOX_ACCOUNT_ID`: opcional. Sem ela, usa a única conta encontrada. Mais de uma é erro.
-  - `INSTABOX_REPO_ALLOWLIST`: override opcional de `sandbox_code_task.allow.patterns`. O padrão em `config.default.yaml` é vazio: nada é permitido até o operador definir a lista em `$DATA_DIR/config.yaml` ou nesta variável. Lista separada por vírgula; `owner/*` casa com o dono. A variável, quando definida, vence o arquivo.
-  - `MCP_CALL_TIMEOUT_MS`: Timeout de chamadas de ferramenta no MCP (padrão `60000` ms).
-  - `ASYNC_JOB_TIMEOUT_MIN`: override opcional de `async_job.timeout_min` (padrão `25`).
-  - `ASYNC_JOB_POLL_SECONDS`: override opcional de `async_job.poll_seconds` (padrão `25`).
-  - `ASYNC_JOB_READ_TIMEOUT_MS`: Timeout de leitura do poller (padrão `20000` ms).
+**Install on the Instabox machine:**
+
+1. Copy the versioned scripts to `~/bin/` and make them executable:
+   ```bash
+   mkdir -p ~/bin
+   cp scripts/instabox/*.sh ~/bin/
+   chmod +x ~/bin/*.sh
+   ```
+2. Configure `~/.agents-env.sh` with the required credentials (GitHub CLI authentication and API keys for the CLI agents):
+   ```bash
+   # ~/.agents-env.sh
+   export GITHUB_TOKEN="..."
+   export ANTHROPIC_API_KEY="..."
+   export OPENAI_API_KEY="..."
+   ```
+3. Install `git`, `gh`, `node`, and the CLI agents (`agy`, `pi`, and `claude`) in the sandbox.
+4. Before re-enabling an older installation, stop old jobs, update the bot, and install both new scripts. Remove the legacy `sandbox_code_task.readonly` setting and any `JOB_READONLY=1` prefix from custom commands. If jobs ran without approval, treat the machine's write credentials as potentially exposed and rotate them.
+5. Restrict direct terminal and execution API access to authorized operators. The scripts reject jobs without `writes: true`, but the bot, not the machine, verifies approval.
+
+**Environment variables:**
+
+- `INSTABOX_MACHINE_ID`: Optional. Without it, discovery selects a machine only when exactly one is running. Zero or multiple running machines produce an error with the list. There is no default name.
+- `INSTABOX_ACCOUNT_ID`: Optional. Without it, discovery uses the only matching account. Multiple accounts produce an error.
+- `INSTABOX_REPO_ALLOWLIST`: Overrides `sandbox_code_task.allow.patterns`. The default is empty: nothing is allowed until the operator sets the list in `$DATA_DIR/config.yaml` or this variable. Use comma-separated values. For example, `owner/*` matches that owner's repositories. The environment variable takes precedence over the file.
+- `MCP_CALL_TIMEOUT_MS`: MCP tool call timeout (default `60000` ms).
+- `ASYNC_JOB_TIMEOUT_MIN`: Overrides `async_job.timeout_min` (default `25`).
+- `ASYNC_JOB_POLL_SECONDS`: Overrides `async_job.poll_seconds` (default `25`).
+- `ASYNC_JOB_READ_TIMEOUT_MS`: Poller read timeout (default `20000` ms).
 
 ## After an approval
 
-Approving or declining an MCP card in the chat records the outcome as a system turn. The assistant's final text in that turn is delivered in the same chat, on the same path as a job the user started. A blank reply sends nothing. Any other system turn stays silent. The "Deu certo" / "Não rodou" check is unchanged: the chat gets only "Verificação registrada. Nada foi reenviado.", and that system turn does not deliver the assistant's text.
-
-pt-BR: Aprovar ou recusar o cartão no chat grava o resultado como um turno de sistema. O texto final desse turno é entregue no mesmo chat, no mesmo caminho de um job que a pessoa disparou. Uma resposta vazia não envia nada. Os outros turnos de sistema continuam em silêncio. A conferência "Deu certo" / "Não rodou" não muda: o chat recebe só "Verificação registrada. Nada foi reenviado.", e o texto do assistente nesse turno não é entregue.
+Approving or declining an MCP card in the chat records the outcome as a system turn. The assistant's final text in that turn is delivered in the same chat, on the same path as a job the user started. A blank reply sends nothing. Any other system turn stays silent. The **Succeeded** / **Did not run** check sends only “Verification recorded. Nothing was resent.” That system turn does not deliver the assistant's text.
 
 ## A task id with no manifest
 
@@ -243,5 +244,3 @@ A tool can return only a task id, with no row in `pending_jobs`, when the tool i
 A scheduled or system turn cannot create that check. It polls inside the turn, or it says the result is not in yet. It still does not promise to return.
 
 The tool result carries a short note in these two cases, so the instruction sits next to the id.
-
-pt-BR: Uma ferramenta pode devolver só um id de tarefa, sem linha em `pending_jobs`, quando não há manifesto. Ninguém observa esse id. O assistente não promete voltar. Ou consulta de novo neste turno por até cerca de 50 segundos (`execute` para em 60), ou usa o job registrado, ou, num turno da pessoa, cria uma checagem única com `tasks_create` (`once`) cujo prompt chama `notify` neste chat. Um run agendado continua falando só por `notify`. Um turno de sistema ou agendado não cria essa checagem.

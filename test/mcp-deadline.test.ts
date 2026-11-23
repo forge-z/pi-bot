@@ -154,8 +154,8 @@ test("uma escrita pendurada libera recursos, mas bloqueia a próxima ação até
       () => "passou",
       (error: Error) => error.message,
     );
-    assert.match(failure, /estourou o prazo/);
-    assert.match(failure, /resultado.*incerto/i);
+    assert.match(failure, /exceeded the .* deadline/);
+    assert.match(failure, /outcome.*uncertain/i);
     assert.equal(
       store.get<{ state: string }>(
         "SELECT state FROM mcp_calls WHERE tool='execute'",
@@ -163,10 +163,10 @@ test("uma escrita pendurada libera recursos, mas bloqueia a próxima ação até
       "uncertain",
     );
     assert.equal(notices.length, 1);
-    assert.match(notices[0]!.text, /estourou o prazo/);
+    assert.match(notices[0]!.text, /exceeded the .* deadline/);
     await assert.rejects(
       calls.execute("conversation", 3, "mock", "fast", {}),
-      /resultado MCP incerto/i,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
     );
     const lost = calls.list("conversation")[0];
     const before = lost.result;
@@ -179,9 +179,9 @@ test("uma escrita pendurada libera recursos, mas bloqueia a próxima ação até
       "SELECT result FROM mcp_calls WHERE id=?",
       lost.id,
     )?.result;
-    assert.match(kept ?? "", /estourou o prazo/);
+    assert.match(kept ?? "", /exceeded the .* deadline/);
     assert.match(kept ?? "", /Usuário verificou o efeito remoto/);
-    assert.match(before ?? "", /estourou o prazo/);
+    assert.match(before ?? "", /exceeded the .* deadline/);
     const next = await calls.execute("conversation", 4, "mock", "fast", {});
     assert.match(JSON.stringify(next), /done:fast/);
   } finally {
@@ -265,7 +265,7 @@ test("um resume com retorno perdido mantém incerteza até resolução humana", 
     );
     await assert.rejects(
       calls.execute("conversation", 2, "mock", "fast", {}),
-      /resultado MCP incerto/i,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
     );
     calls.reconcile(
       "conversation",
@@ -312,14 +312,20 @@ test("running vencido fica incerto; pausa sem despacho permite continuar", async
         () => "passou",
         (error: Error) => error.message,
       );
-    assert.match(blocked, /resultado MCP incerto/i);
+    assert.match(
+      blocked,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
     assert.equal(
       store.get<{ state: string }>(
         "SELECT state FROM mcp_calls WHERE id='stuck'",
       )?.state,
       "uncertain",
     );
-    assert.match(notices[0]!.text, /resultado MCP incerto/i);
+    assert.match(
+      notices[0]!.text,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
+    );
     store.run(
       "UPDATE mcp_calls SET state='paused', updatedAt=? WHERE id='stuck'",
       Date.now(),
@@ -382,7 +388,7 @@ test("uma pausa vencida não segura a conversa; uma pausa viva ainda segura", as
         (error: Error) => error.message,
       );
     assert.notEqual(blocked, "passou");
-    assert.match(blocked, /em andamento|solicitação pendente/);
+    assert.match(blocked, /in progress|pending request/);
     store.run(
       "UPDATE mcp_interactions SET payload=? WHERE id='live'",
       JSON.stringify({

@@ -334,8 +334,8 @@ export function parseAggregatorChoice(
   if (raw === "3" || raw === "upsy") return "upsy";
   if (raw === "4" || raw === "self-hosted" || raw === "selfhosted")
     return "self-hosted";
-  if (raw === "5" || raw === "both" || raw === "ambos") return "both";
-  if (raw === "6" || raw === "none" || raw === "nenhum") return "none";
+  if (raw === "5" || raw === "both") return "both";
+  if (raw === "6" || raw === "none") return "none";
   return undefined;
 }
 
@@ -776,7 +776,7 @@ const MAIN_MENU: Record<string, SetupMenuCommand> = {
   "mcp platform": "mcp",
   "6": "web",
   web: "web",
-  "busca na web": "web",
+  "web search": "web",
   s: "restart",
   save: "restart",
   "save and restart": "restart",
@@ -827,7 +827,7 @@ const MENU_LABELS: Record<keyof SetupMenuStatus, string> = {
   image: "Image model",
   audio: "Audio model",
   mcp: "MCP platform",
-  web: "Busca na web",
+  web: "Web search",
 };
 
 /** Main menu text. `detail` is a short parenthetical after configured / not set. */
@@ -891,14 +891,13 @@ export function routeWhatsappMenu(answer: string) {
 }
 
 /**
- * A yes or no. `s`/`sim`/`y`/`yes` are yes, `n`/`no`/`nao`/`não` are no.
+ * A yes or no. `y`/`yes` are yes, `n`/`no` are no.
  * Anything else, including `true`, is not an answer.
  */
 export function parseYesNo(answer: string): boolean | undefined {
   const key = answer.trim().toLowerCase();
-  if (key === "s" || key === "sim" || key === "y" || key === "yes") return true;
-  if (key === "n" || key === "no" || key === "nao" || key === "não")
-    return false;
+  if (key === "y" || key === "yes") return true;
+  if (key === "n" || key === "no") return false;
   return undefined;
 }
 
@@ -908,13 +907,13 @@ export async function askYesNo(
   label: string,
   fallback: boolean,
 ) {
-  const prompt = `${label} (s/n) [${fallback ? "s" : "n"}]: `;
+  const prompt = `${label} (y/n) [${fallback ? "y" : "n"}]: `;
   for (;;) {
     const answer = await ask(prompt);
     if (!answer.trim()) return fallback;
     const parsed = parseYesNo(answer);
     if (parsed !== undefined) return parsed;
-    console.log("Answer s, n, y, yes, sim, no, nao, or não.");
+    console.log("Answer y, yes, n, or no.");
   }
 }
 

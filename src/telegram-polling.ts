@@ -52,7 +52,9 @@ export function configureTelegram(
     "SELECT value FROM meta WHERE key='telegram:connection'",
   );
   if (old && JSON.parse(old.value).bot?.id !== bot.id)
-    throw new Error("Volume pertence a outro bot. Use um volume separado.");
+    throw new Error(
+      "This volume belongs to another bot. Use a separate volume.",
+    );
   appStore.savepoint("clean_connection", () => {
     appStore.run(
       "INSERT INTO credentials VALUES ('telegram:bot',?) ON CONFLICT(provider) DO UPDATE SET value=excluded.value",
@@ -239,7 +241,7 @@ export class TelegramPolling {
           }
         })
         .catch(() => {
-          console.error("Falha na fila Telegram.");
+          console.error("Telegram queue failed.");
         })
         .finally(() => {
           this.flushWork = undefined;

@@ -42,7 +42,7 @@ function filenameOf(media: OutboundMedia) {
   if (media.filename) return media.filename;
   const fromUrl = media.url?.split(/[?#]/)[0]?.split("/").pop();
   if (fromUrl && /\.[a-z0-9]{2,5}$/i.test(fromUrl)) return fromUrl;
-  return `anexo.${mediaTarget(media).ext}`;
+  return `attachment.${mediaTarget(media).ext}`;
 }
 
 /**
@@ -94,7 +94,7 @@ export function outboundMedia(part: unknown): OutboundMedia | undefined {
 /** What the model reads instead of the bytes: it knows a file was sent, without them. */
 export function describeMedia(media: OutboundMedia) {
   const kind = {
-    audio: "áudio",
+    audio: "audio",
     voice: "voz",
     photo: "imagem",
     document: "documento",
@@ -102,7 +102,7 @@ export function describeMedia(media: OutboundMedia) {
   const size = media.data
     ? `, ${Math.round((media.data.length * 3) / 4 / 1024)} KB`
     : "";
-  return `[anexo enviado ao chat: ${media.mimeType ?? kind}${size}]`;
+  return `[attachment sent to chat: ${media.mimeType ?? kind}${size}]`;
 }
 
 const FENCE = /^```(?:json)?\s*([\s\S]*?)\s*```$/i;
@@ -173,7 +173,7 @@ export function imageVerdict(
   mimeType: string,
 ): { ok: true } | { ok: false; reason: string } {
   if (typeof data !== "string" || !data)
-    return { ok: false, reason: "sem bytes" };
+    return { ok: false, reason: "no data" };
   let size: Dimensions | undefined;
   let byteLength = 0;
   try {
@@ -184,7 +184,7 @@ export function imageVerdict(
     size = undefined;
   }
   if (!size)
-    return { ok: false, reason: `${mimeType || "formato"} não reconhecido` };
+    return { ok: false, reason: `${mimeType || "format"} not recognized` };
   if (size.kind === "png" || size.kind === "gif") {
     if (size.width < MIN_IMAGE_SIDE || size.height < MIN_IMAGE_SIDE)
       return {
@@ -220,7 +220,7 @@ export function attachmentMedia(input: {
 }): OutboundMedia {
   const url = typeof input.url === "string" ? input.url.trim() : "";
   if (!/^https?:\/\//i.test(url))
-    throw new Error("Anexo exige uma URL pública http(s)");
+    throw new Error("An attachment requires a public HTTP(S) URL");
   const declared =
     input.kind === "audio" ||
     input.kind === "voice" ||

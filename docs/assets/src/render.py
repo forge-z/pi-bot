@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Render landing PNGs from the captured setup transcript and the chat HTML.
 
-Reproduzir, na raiz do repositório (Chrome no PATH, fontes JetBrains Mono e Inter):
+Run from the repository root (Chrome on PATH, JetBrains Mono and Inter fonts):
 
-    python3 docs/assets/src/capture-setup.py   # opcional: refaz os .txt
+    python3 docs/assets/src/capture-setup.py   # optional: refreshes the .txt files
     python3 docs/assets/src/render.py
 
-O QR desenhado no lugar de @@QR@@ é gerado de um texto fictício e borrado.
-Não é um código de pareamento.
+The QR image in place of @@QR@@ uses fictional data and is blurred.
+It is not a pairing code.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ FAKE_QR_TEXT = "mockup-pi-bot-nao-e-um-pareamento"
 def png_info(path: Path) -> tuple[int, int, int]:
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise SystemExit(f"{path} não é PNG")
+        raise SystemExit(f"{path} is not a PNG")
     width, height = struct.unpack(">II", data[16:24])
     return width, height, path.stat().st_size
 
@@ -194,7 +194,7 @@ def terminal_html(lines: list[str], qr: str | None) -> str:
 
 def shoot(html_path: Path, png_path: Path, width: int, height: int) -> None:
     if not CHROME:
-        raise SystemExit("google-chrome não está no PATH")
+        raise SystemExit("google-chrome is not on PATH")
     png_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pi-bot-chrome-") as profile:
         subprocess.run(

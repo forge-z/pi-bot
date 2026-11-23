@@ -164,9 +164,9 @@ test("a read delegated through call times out without blocking the server", asyn
         () => "passou",
         (error: Error) => error.message,
       );
-    assert.match(failure, /estourou o prazo de 1s/);
+    assert.match(failure, /exceeded the 1-second deadline/);
     assert.match(failure, /sandbox_code_task/);
-    assert.doesNotMatch(failure, /incerto/i);
+    assert.doesNotMatch(failure, /uncertain/i);
     assert.equal(
       store.get<{ state: string }>(
         "SELECT state FROM mcp_calls WHERE tool='call'",
@@ -258,7 +258,7 @@ test("validation rejection and a returned write error both fail closed; only a l
       calls.execute("c", 1, "executor", "resume", { requestId: "x" }),
       (error: Error) => {
         assert.ok(error instanceof PolicyError);
-        assert.match(error.message, /decisão humana/);
+        assert.match(error.message, /human decision/);
         return true;
       },
     );
@@ -269,10 +269,7 @@ test("validation rejection and a returned write error both fail closed; only a l
       code: "await tools.call({})",
     });
     assert.equal(rejected.isError, true);
-    assert.match(
-      JSON.stringify(rejected.content),
-      /antes de qualquer despacho/,
-    );
+    assert.match(JSON.stringify(rejected.content), /before dispatch/);
     assert.equal(
       store.get<{ state: string }>(
         "SELECT state FROM mcp_calls WHERE tool='execute' AND id LIKE '%' AND conversationId='c' ORDER BY updatedAt DESC",
@@ -323,7 +320,7 @@ test("validation rejection and a returned write error both fail closed; only a l
       calls.execute("c", 7, "executor", "execute", {
         code: "await tools.call({})",
       }),
-      /neste servidor/,
+      /to this server/,
     );
     assert.equal(calls.clearUncertain("c"), 1);
     await calls.execute("c", 8, "executor", "execute", {

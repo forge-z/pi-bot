@@ -59,7 +59,7 @@ function migrateVolume(dir: string) {
     const migrated = migrateLegacyOfficialSetup(db, process.env);
     if (migrated)
       console.info(
-        `Volume: chave compatível reaproveitada em ${migrated.providerId}/${migrated.modelId}.`,
+        `Volume: reused the compatible API key for ${migrated.providerId}/${migrated.modelId}.`,
       );
   } catch {
     /* A volume that cannot be migrated keeps the compat path. */
@@ -71,27 +71,27 @@ function migrateVolume(dir: string) {
 function waitMessage(error: SetupRequiredError) {
   if (setupNeedsLogin(error))
     return (
-      "Assinatura ChatGPT ainda não autenticada. Rode `npm run login` no terminal do container; " +
-      "o bot começa a responder sozinho quando o login terminar."
+      "ChatGPT subscription is not authenticated yet. Run `npm run login` in the container terminal; " +
+      "the bot will start responding once login completes."
     );
-  if (/número do WhatsApp/i.test(error.message))
+  if (/WhatsApp number/i.test(error.message))
     return (
-      "Sem o número do dono no WhatsApp. Rode `npm run setup` no terminal do container e escolha WhatsApp; " +
-      "o bot fica no ar e começa a responder sozinho quando o assistente terminar."
+      "The WhatsApp owner number is not configured. Run `npm run setup` in the container terminal and select WhatsApp; " +
+      "the bot will remain online and start responding when setup finishes."
     );
-  if (/token do Telegram/i.test(error.message))
+  if (/Telegram token/i.test(error.message))
     return (
-      "Sem token do Telegram no ambiente nem no volume. Rode `npm run setup` no terminal do container; " +
-      "o bot fica no ar e começa a responder sozinho quando o assistente terminar."
+      "No Telegram token is configured in the environment or on the volume. Run `npm run setup` in the container terminal; " +
+      "the bot will remain online and start responding when setup finishes."
     );
-  if (/usuários permitidos do Telegram/i.test(error.message))
+  if (/allowed Telegram users/i.test(error.message))
     return (
-      "Sem usuários permitidos do Telegram no ambiente nem no volume. Rode `npm run setup` no terminal do container; " +
-      "o bot fica no ar e começa a responder sozinho quando o assistente terminar."
+      "No allowed Telegram users are configured in the environment or on the volume. Run `npm run setup` in the container terminal; " +
+      "the bot will remain online and start responding when setup finishes."
     );
   return (
-    "Sem provedor configurado. Rode `npm run setup` no terminal do container; " +
-    "o bot começa a responder sozinho quando o assistente terminar."
+    "No provider is configured. Run `npm run setup` in the container terminal; " +
+    "the bot will start responding when setup finishes."
   );
 }
 
@@ -113,7 +113,7 @@ async function modelsOrWait(dir: string) {
         phone === "whatsapp" &&
         !resolveWhatsappUsers(process.env, readStoredWhatsapp(dir))?.length
       )
-        throw new SetupRequiredError("número do WhatsApp");
+        throw new SetupRequiredError("WhatsApp number");
       const config = readConfig(
         process.env,
         readStoredAggregators(dir),
@@ -177,7 +177,7 @@ export async function startWhatsApp(input: {
     process.env,
     readStoredWhatsapp(input.dir),
   );
-  if (!users?.length) throw new SetupRequiredError("número do WhatsApp");
+  if (!users?.length) throw new SetupRequiredError("WhatsApp number");
   cancelInactiveGateway(input.store, "whatsapp");
   rmSync(`${input.dir}/health.json`, { force: true });
   let notifyFlush = () => {};
@@ -252,22 +252,22 @@ export async function startWhatsApp(input: {
         try {
           await sweepMcpApprovals(app);
         } catch (error) {
-          logFailure("Falha ao revisar aprovações do WhatsApp", error);
+          logFailure("Failed to review WhatsApp approvals", error);
         }
         try {
           queueWhatsappApprovals(app);
         } catch (error) {
-          logFailure("Falha ao enfileirar aprovações do WhatsApp", error);
+          logFailure("Failed to queue WhatsApp approvals", error);
         }
         try {
           queueWhatsAppUncertainNotices(app);
         } catch (error) {
-          logFailure("Falha ao enfileirar avisos de MCP incerto", error);
+          logFailure("Failed to queue uncertain MCP notices", error);
         }
         try {
           await flushChannelDeliveries(app.store, wa, app.options.redact);
         } catch (error) {
-          logFailure("Falha ao enviar mensagens do WhatsApp", error);
+          logFailure("Failed to send WhatsApp messages", error);
         }
       })().finally(() => {
         running = undefined;
@@ -321,7 +321,7 @@ export async function startWhatsApp(input: {
   for (const event of ["SIGTERM", "SIGINT"] as const)
     process.once(event, onSignal);
   flush();
-  console.info("Pi-Agent: WhatsApp gateway iniciado.");
+  console.info("Pi-Agent: WhatsApp gateway started.");
   return {
     close: async () => {
       for (const event of ["SIGTERM", "SIGINT"] as const)
@@ -362,10 +362,10 @@ async function startProcess() {
     const activeCatalog = active ? models.getModels(active) : [];
     console.info(
       active && active !== LLM_PROVIDER_ID && activeProvider
-        ? `Pi-Agent: provedor ${active} (${activeProvider.baseUrl ?? "catálogo oficial"}) — ${activeCatalog.length} modelo(s) do catálogo pi-ai, reasoning habilitado em ${activeCatalog.filter((model) => model.reasoning).length}.`
+        ? `Pi-Agent: provider ${active} (${activeProvider.baseUrl ?? "official catalog"}) — ${activeCatalog.length} model(s) from the pi-ai catalog, reasoning enabled for ${activeCatalog.filter((model) => model.reasoning).length}.`
         : llm
-          ? `Pi-Agent: provedor compatível ${LLM_PROVIDER_ID} (${llm.baseUrl ?? "sem endpoint"}) — ${llmCatalog.length} modelo(s), reasoning habilitado em ${llmCatalog.filter((model) => model.reasoning).length}.`
-          : `Pi-Agent: assinatura ChatGPT via ${
+          ? `Pi-Agent: compatible provider ${LLM_PROVIDER_ID} (${llm.baseUrl ?? "no endpoint"}) — ${llmCatalog.length} model(s), reasoning enabled for ${llmCatalog.filter((model) => model.reasoning).length}.`
+          : `Pi-Agent: ChatGPT subscription via ${
               models
                 .getProviders()
                 .filter(
@@ -505,7 +505,7 @@ async function startProcess() {
         });
       });
       void polling.engine.flush();
-      console.info("Pi-Agent: Telegram polling iniciado.");
+      console.info("Pi-Agent: Telegram polling started.");
     }
   } catch (error) {
     console.error(startupErrorMessage(error));

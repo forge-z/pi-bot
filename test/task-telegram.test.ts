@@ -275,7 +275,7 @@ test("web plus Telegram sends one copy only after the explicit task selection", 
     assert.equal(f.sent.length, 1);
     // The result is the message; a task title is never content.
     assert.match(f.sent[0]!.text, /Resultado do cron/);
-    assert.doesNotMatch(f.sent[0]!.text, /Tarefa:/);
+    assert.doesNotMatch(f.sent[0]!.text, /Task:/);
   } finally {
     await f.close();
   }
@@ -889,10 +889,10 @@ test("a scheduled run that does not call notify sends nothing and logs the final
         "nenhuma entrega registrada",
       );
       assert.equal(run.status, "silencioso", JSON.stringify(answer));
-      const logged = lines.find((line) => line.includes("run agendado"));
+      const logged = lines.find((line) => line.includes("scheduled run"));
       assert.ok(logged, JSON.stringify(lines));
       assert.match(logged!, new RegExp(`id=${f.task.id}`));
-      assert.match(logged!, /notify=não/);
+      assert.match(logged!, /notify=no/);
       const flat = answer.replace(/\s+/g, " ").trim();
       if (flat)
         assert.match(
@@ -925,8 +925,8 @@ test("notify with real text posts to the schedule chat and topic", async () => {
     const blob = JSON.stringify(
       (await (await f.app.conversation(f.id)).context(context)).messages,
     );
-    assert.match(blob, /O texto final deste run não é entregue/);
-    assert.match(blob, /chame notify/);
+    assert.match(blob, /The final text from this run is not delivered/);
+    assert.match(blob, /Call notify/);
   } finally {
     await f.close();
   }
@@ -955,7 +955,7 @@ test("notify replyTo in the same chat is a reply and keeps the schedule topic", 
     const blob = JSON.stringify(
       (await (await f.app.conversation(f.id)).context(context)).messages,
     );
-    assert.match(blob, /#77 usuário: pode olhar isso/);
+    assert.match(blob, /#77 user: pode olhar isso/);
   } finally {
     await f.close();
   }

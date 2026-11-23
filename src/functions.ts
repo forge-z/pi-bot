@@ -18,7 +18,7 @@ function url(raw: string | undefined, label: string) {
   if (!raw) return undefined;
   const value = raw.trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(value))
-    throw new Error(`${label} precisa começar com https://`);
+    throw new Error(`${label} must start with https://`);
   return value;
 }
 

@@ -254,8 +254,8 @@ test("setup preserves unrelated YAML, stores keys separately and diagnoses actua
   const file = join(dir, "config.yaml");
   try {
     assert.deepEqual(describeWebSetup(dir, env), [
-      "web.search: nativo desligado (MCP)",
-      "web.extract: nativo desligado (MCP)",
+      "web.search: native tool disabled (MCP)",
+      "web.extract: native tool disabled (MCP)",
     ]);
     await writeFile(file, "# keep\nreaction_delay_ms: 0\n");
     const web: WebConfig = { search: ["firecrawl", "exa"], extract: ["exa"] };
@@ -271,7 +271,10 @@ test("setup preserves unrelated YAML, stores keys separately and diagnoses actua
     });
     assert.deepEqual(
       describeWebSetup(dir, { ...env, FIRECRAWL_API_KEY: firecrawl }),
-      ["web.search: firecrawl → exa", "web.extract: exa — aviso: sem fallback"],
+      [
+        "web.search: firecrawl → exa",
+        "web.extract: exa — warning: no fallback",
+      ],
     );
     saveWebSetup(db, env, web, { exa: null });
     assert.deepEqual(readVolumeWebKeys(dir), {});

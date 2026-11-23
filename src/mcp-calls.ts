@@ -468,18 +468,18 @@ function longJobHint() {
   const name = configuredSandboxTool();
   if (!name) return "";
   const seconds = Math.round(mcpCallTimeoutMs() / 1000);
-  return ` Para algo que possa passar de ~${seconds}s ou que precise de aviso ao terminar, use ${name}.`;
+  return ` For anything that may take longer than about ${seconds} seconds or needs a completion notice, use ${name}.`;
 }
 
 function timeoutTail(read: boolean) {
   return read
-    ? "A leitura falhou; a trava foi liberada."
-    : "Resultado MCP incerto; verifique antes de outra ação neste servidor.";
+    ? "The read failed and the lock was released."
+    : "The MCP outcome is uncertain. Verify it before taking another action on this server.";
 }
 
 function readTimeoutText(label: string, read: boolean) {
   const seconds = Math.round(mcpCallTimeoutMs() / 1000);
-  return `A chamada ${label} estourou o prazo de ${seconds}s e foi encerrada. ${timeoutTail(read)}${longJobHint()}`;
+  return `The call to ${label} exceeded the ${seconds}-second deadline and was stopped. ${timeoutTail(read)}${longJobHint()}`;
 }
 
 /** Every `tools` word is a direct call or a simple alias that fully resolved. Brackets stay a write. */
@@ -508,7 +508,7 @@ function codeIsAccounted(value: unknown, depth = 0): boolean {
  * another call on this server is uncertain, because checking that result means reading.
  * A later read does not clear the uncertainty. */
 const LOST_RESULT =
-  /estourou o prazo|Resultado MCP incerto|não terminou dentro do prazo|MCP response timed out|MCP connection or operation failed|session expired|was not resent|não será repetida automaticamente|Não foi possível salvar|check the result in the service/i;
+  /estourou o prazo|Resultado MCP incerto|não terminou dentro do prazo|MCP response timed out|MCP connection or operation failed|session expired|was not resent|não será repetida automaticamente|Não foi possível salvar|check the result in the service|exceeded .* seconds without a response|exceeded the .* deadline|did not finish before the deadline|outcome is uncertain|will not be retried automatically/i;
 
 /** True only when a write ended without a known result. A returned tool error,
  * a read, and a scheduled approval skip do not ask the person. */
@@ -667,7 +667,7 @@ function buildExecutorResumeArgs(
 // is told so. It must never be combined with an approval request, and it tells the
 // model not to summarize the step it skipped.
 const APPROVAL_SKIPPED =
-  "Passo pulado: execução agendada não pode aguardar aprovação humana. Nenhuma retomada automática foi enviada. Não resuma este passo como concluído.";
+  "Step skipped: scheduled runs cannot wait for human approval. No automatic resume request was sent. Do not report this step as completed.";
 
 function namedTool(value: Record<string, unknown>) {
   const invocation = object(value.invocation) ? value.invocation : undefined;
@@ -775,11 +775,10 @@ function noDispatchNotice(value: unknown) {
       )
     );
   });
-  const generic =
-    "A mensagem de recovery do servidor é genérica e não se aplica a este caso.";
+  const generic = "The server's generic recovery message does not apply here.";
   return unknown
-    ? `Ferramenta inexistente, recusada antes de qualquer despacho: nada foi executado. Não repita esta chamada; corrija o caminho da ferramenta. ${generic}`
-    : `Recusado na validação, antes de qualquer despacho: nada foi executado. Não repita esta chamada; corrija a entrada. ${generic}`;
+    ? `Tool not found. The call was rejected before dispatch; nothing ran. Do not retry this call; correct the tool path. ${generic}`
+    : `Validation failed before dispatch; nothing ran. Do not retry this call; correct its input. ${generic}`;
 }
 
 function toCallToolResult(result: unknown): CallToolResult {
@@ -1089,8 +1088,8 @@ export class McpCalls {
   private pendingApprovalMessage(conversationId: string) {
     const requestId = this.pendingApprovalRequestId(conversationId);
     return requestId
-      ? `Responda à solicitação pendente do servidor MCP (${requestId}) antes de continuar`
-      : "Responda à solicitação pendente do servidor MCP antes de continuar";
+      ? `Respond to the pending request from the MCP server (${requestId}) before continuing`
+      : "Respond to the pending request from the MCP server before continuing";
   }
   private serialize<T>(conversationId: string, operation: () => Promise<T>) {
     const pending = (this.tails.get(conversationId) ?? Promise.resolve())
@@ -1145,7 +1144,7 @@ export class McpCalls {
     const now = new Date().toISOString();
     for (const row of rows)
       console.log(
-        `Pi-Agent: resultado MCP incerto dispensado: ${row.server}/${row.tool} (${now}).`,
+        `Pi-Agent: uncertain MCP outcome dismissed: ${row.server}/${row.tool} (${now}).`,
       );
     return rows.length;
   }
@@ -1159,13 +1158,13 @@ export class McpCalls {
     signal?: AbortSignal,
     scheduled = false,
   ) {
-    if (this.closed) throw new PolicyError("Aplicação encerrando");
+    if (this.closed) throw new PolicyError("Application is shutting down");
     if (signal?.aborted)
-      throw new McpNotSentError("Chamada MCP cancelada antes do envio.");
+      throw new McpNotSentError("MCP call canceled before dispatch.");
     // Model-facing entry. A requestId is data, never permission to resume.
     if (tool === "resume")
       throw new PolicyError(
-        "Retomada exige decisão humana pela solicitação exibida na conversa; use decide.",
+        "Resuming requires a human decision on the request shown in the conversation; use decide.",
       );
     const id = mcpTaskCallId(conversationId, taskId);
     const existing = this.store.get<McpCall>(
@@ -1180,14 +1179,16 @@ export class McpCalls {
         existing.tool !== tool ||
         existing.args !== JSON.stringify(args)
       )
-        throw new PolicyError("Identidade MCP usada com outro conteúdo");
+        throw new PolicyError(
+          "MCP identity already used with different content",
+        );
       if (
         ["done", "failed", "paused", "skipped"].includes(existing.state) &&
         existing.result
       )
         return JSON.parse(existing.result) as CallToolResult;
       throw new PolicyError(
-        "Resultado MCP incerto ou em andamento; a chamada não será reenviada automaticamente",
+        "The MCP call is still running or its outcome is uncertain. The call will not be resent automatically.",
       );
     }
     // A pending decision blocks actions, not diagnosis: the Executor's read tools
@@ -1204,7 +1205,7 @@ export class McpCalls {
       )
     )
       throw new McpNotSentError(
-        "Verifique e registre o resultado MCP incerto antes de executar outra chamada neste servidor",
+        "Verify and record the uncertain MCP outcome before making another call to this server",
       );
     if (
       !this.isRead(server, tool, args) &&
@@ -1214,13 +1215,13 @@ export class McpCalls {
       )
     )
       throw new McpNotSentError(
-        "Aguarde a chamada ou retomada MCP em andamento; nenhuma nova ferramenta foi enviada",
+        "Wait for the MCP call or resume to finish. No new tool call was sent.",
       );
     this.gateway.assertDirect(server, tool);
     const binding = await this.gateway.connectionBinding(server);
-    if (this.closed) throw new PolicyError("Aplicação encerrando");
+    if (this.closed) throw new PolicyError("Application is shutting down");
     if (signal?.aborted)
-      throw new McpNotSentError("Chamada MCP cancelada antes do envio.");
+      throw new McpNotSentError("MCP call canceled before dispatch.");
     this.store.run(
       "INSERT INTO mcp_calls VALUES (?,?,?,?,?,'running',NULL,?,?)",
       id,
@@ -1249,7 +1250,7 @@ export class McpCalls {
       this.callControllers.get(call.id)?.abort();
       this.forceRelease(
         call,
-        `A chamada ${call.server}/${call.tool} passou de ${Math.round(deadline / 1000)}s sem retorno. ${timeoutTail(this.callIsReadOnly(call))}${longJobHint()}`,
+        `The call to ${call.server}/${call.tool} exceeded ${Math.round(deadline / 1000)} seconds without a response. ${timeoutTail(this.callIsReadOnly(call))}${longJobHint()}`,
       );
       void this.gateway.releaseSession(call.server);
     }
@@ -1265,7 +1266,7 @@ export class McpCalls {
       if (!interaction) {
         this.forceRelease(
           call,
-          `A chamada ${call.server}/${call.tool} ficou pausada sem retomada pendente. A trava foi liberada.`,
+          `The call to ${call.server}/${call.tool} was paused without a pending resume. The lock was released.`,
           ["running", "paused"],
           "failed",
         );
@@ -1287,7 +1288,7 @@ export class McpCalls {
       );
       this.forceRelease(
         call,
-        `A retomada de ${call.server}/${call.tool} expirou. A trava foi liberada; nenhuma chamada nova ficou presa.`,
+        `Resuming ${call.server}/${call.tool} timed out. The lock was released; no new call was blocked.`,
         ["running", "paused"],
         "failed",
       );
@@ -1403,7 +1404,7 @@ export class McpCalls {
     try {
       if (this.closed)
         throw new McpNotSentError(
-          "Aplicação encerrando; nenhuma chamada MCP foi enviada",
+          "Application is shutting down. No MCP call was sent.",
         );
       // The gateway deadline is the timeout. A second race here only duplicated it.
       const result = await this.gateway.callDirect(call.server, tool, args, {
@@ -1437,7 +1438,7 @@ export class McpCalls {
         result.content = [
           {
             type: "text",
-            text: "Executor em modo Browser requer seu fluxo externo seguro. Configure modo MODEL ou NATIVE compatível. Nenhuma retomada ou repetição automática foi enviada.",
+            text: "Executor Browser mode requires its secure external flow. Configure a compatible MODEL or NATIVE mode. No automatic resume or retry was sent.",
           },
         ];
       }
@@ -1520,7 +1521,7 @@ export class McpCalls {
         result.isError = true;
         result.content.push({
           type: "text",
-          text: "Servidor informou uma pausa em formato incompatível. A execução não foi considerada concluída e não será repetida automaticamente.",
+          text: "The server reported a pause in an unsupported format. The run was not marked complete and will not be retried automatically.",
         });
       }
       this.store.db.exec("BEGIN IMMEDIATE");
@@ -1594,8 +1595,8 @@ export class McpCalls {
                 (error instanceof PolicyError || error instanceof McpError
                   ? error.message
                   : uncertain
-                    ? "Resultado MCP incerto. Verifique o serviço antes de tentar outra execução."
-                    : "A chamada MCP falhou antes do envio. A trava foi liberada.")),
+                    ? "The MCP outcome is uncertain. Check the service before trying another run."
+                    : "The MCP call failed before dispatch. The lock was released.")),
           },
         ],
       };
@@ -1637,7 +1638,7 @@ export class McpCalls {
         if (gaveUp) {
           const text =
             result.content.find((item) => item.type === "text")?.text ??
-            "A chamada MCP falhou e a trava foi liberada.";
+            "The MCP call failed and the lock was released.";
           this.onReleased?.({
             conversationId: call.conversationId,
             callId: id,
@@ -1655,7 +1656,7 @@ export class McpCalls {
             content: [
               {
                 type: "text",
-                text: "Não foi possível salvar as solicitações MCP. Verifique o resultado da chamada no serviço; ela não será repetida automaticamente.",
+                text: "Could not save the MCP requests. Check the result in the service. The call will not be retried automatically.",
               },
             ],
           }),
@@ -1671,7 +1672,7 @@ export class McpCalls {
       // failed), the conversation must not stay locked.
       this.forceRelease(
         call,
-        `A chamada ${call.server}/${call.tool} não terminou dentro do prazo. ${timeoutTail(this.callIsReadOnly(call))}${longJobHint()}`,
+        `The call to ${call.server}/${call.tool} did not finish before the deadline. ${timeoutTail(this.callIsReadOnly(call))}${longJobHint()}`,
         ["running"],
       );
       // SDK may finish a tools/call while a withdrawn elicitation handler is still pending.
@@ -1726,7 +1727,7 @@ export class McpCalls {
         message:
           typeof value.message === "string" && value.message.trim()
             ? value.message
-            : "Confirme esta ação no Executor.",
+            : "Confirm this action in Executor.",
         requestedSchema: { type: "object", properties: {} },
       };
     }
@@ -1845,15 +1846,15 @@ export class McpCalls {
     action: "accept" | "decline" | "cancel",
     content?: Record<string, unknown>,
   ) {
-    if (this.closed) throw new PolicyError("Aplicação encerrando");
+    if (this.closed) throw new PolicyError("Application is shutting down");
     if (!["accept", "decline", "cancel"].includes(action))
-      throw new PolicyError("Decisão MCP inválida");
+      throw new PolicyError("Invalid MCP decision");
     const interaction = this.store.get<McpInteraction>(
       "SELECT * FROM mcp_interactions WHERE id=? AND conversationId=?",
       id,
       conversationId,
     );
-    if (!interaction) throw new PolicyError("Solicitação MCP não encontrada");
+    if (!interaction) throw new PolicyError("MCP request not found");
     if (interaction.state !== "pending") return interaction;
     const payload = JSON.parse(interaction.payload) as Record<string, unknown>;
     const urlRequired =
@@ -1877,7 +1878,7 @@ export class McpCalls {
         );
       });
       throw new PolicyError(
-        "Solicitação expirada ou protocolo incompatível; nenhuma chamada foi repetida.",
+        "The request expired or the protocol is incompatible. No call was retried.",
       );
     }
     if (
@@ -1888,7 +1889,7 @@ export class McpCalls {
         interaction.kind === "resume" && object(payload.elicitation)
           ? payload.elicitation.requestedSchema
           : payload.requestedSchema;
-      if (!object(schema)) throw new PolicyError("Formulário MCP inválido");
+      if (!object(schema)) throw new PolicyError("Invalid MCP form");
       const validation = new AjvJsonSchemaValidator().getValidator(schema)(
         content ?? {},
       );
@@ -1898,7 +1899,7 @@ export class McpCalls {
     const waiter = this.waiters.get(id);
     if (interaction.kind !== "resume" && !urlRequired && !waiter)
       throw new PolicyError(
-        "Esta solicitação MCP expirou; ela não pode ser aceita após reinício",
+        "This MCP request expired and cannot be accepted after a restart",
       );
     const call = this.store.get<McpCall>(
       "SELECT * FROM mcp_calls WHERE id=?",
@@ -1912,7 +1913,7 @@ export class McpCalls {
     }
     if (!sameBinding && action === "accept")
       throw new PolicyError(
-        "Endpoint ou credenciais MCP mudaram; a chamada não será retomada",
+        "The MCP endpoint or credentials changed. The call will not resume.",
       );
     if (!sameBinding && interaction.kind === "resume")
       return this.abandon(interaction, call, action);
@@ -1930,7 +1931,7 @@ export class McpCalls {
       } catch {
         if (action === "accept")
           throw new PolicyError(
-            "Retomada bloqueada pelas restrições MCP. Recuse ou cancele esta espera para ajustar a conexão.",
+            "MCP restrictions blocked resuming. Decline or cancel the wait to adjust the connection.",
           );
         return this.abandon(interaction, call, action);
       }
@@ -2008,7 +2009,7 @@ export class McpCalls {
             content: [
               {
                 type: "text",
-                text: "A tarefa de escrita não foi aprovada. Nada foi disparado.",
+                text: "The write task was not approved. Nothing started.",
               },
             ],
           }),
@@ -2028,7 +2029,7 @@ export class McpCalls {
     if (action === "accept") {
       await this.serialize(conversationId, async () => {
         let state: "done" | "failed" = "failed";
-        let text = "A tarefa de escrita não foi disparada.";
+        let text = "The write task did not start.";
         try {
           const result = this.deferredDispatch
             ? await this.deferredDispatch(spec)
@@ -2104,7 +2105,7 @@ export class McpCalls {
             content: [
               {
                 type: "text",
-                text: "A espera local foi encerrada. A execução permanece pausada no serviço; nenhuma chamada resume foi enviada.",
+                text: "The local wait ended. The run remains paused in the service; no resume call was sent.",
               },
             ],
           }),
@@ -2122,10 +2123,10 @@ export class McpCalls {
     )!;
   }
   reconcile(conversationId: string, id: string, note: string) {
-    if (this.closed) throw new PolicyError("Aplicação encerrando");
+    if (this.closed) throw new PolicyError("Application is shutting down");
     if (!note.trim())
       throw new PolicyError(
-        "Informe o resultado verificado no serviço externo",
+        "Record the outcome verified in the external service",
       );
     if (
       this.store.get(
@@ -2135,7 +2136,7 @@ export class McpCalls {
       )
     )
       throw new PolicyError(
-        "Conclua, recuse ou cancele as solicitações MCP pendentes antes de registrar o resultado verificado",
+        "Complete, decline, or cancel the pending MCP requests before recording the verified outcome",
       );
     const current = this.store.get<McpCall>(
       "SELECT * FROM mcp_calls WHERE id=? AND conversationId=?",

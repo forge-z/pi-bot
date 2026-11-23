@@ -511,7 +511,7 @@ test("a delivered approval requires a claimed human decision before resume", asy
         requestId: "apr_e80c716c",
         response: { action: "accept" },
       }),
-      /decisão humana/,
+      /human decision/,
     );
     assert.equal(f.calls.filter((call) => call.tool === "resume").length, 0);
     await f.app.mcpCalls.decide(
@@ -1006,7 +1006,7 @@ test("configuration only registers API credentials and validates endpoint/model 
       users: ["42"],
       chats: ["999"],
     }) ?? "",
-    /id do bot/,
+    /bot ID/,
   );
   assert.equal(
     telegramAllowlistMisconfiguration(123, {
@@ -1026,11 +1026,11 @@ test("configuration only registers API credentials and validates endpoint/model 
   );
   await assert.rejects(
     () => environmentModels({ LLM_BASE_URL: "https://llm.example/v1" }),
-    /chave de API/,
+    /API key/,
   );
   await assert.rejects(
     () => environmentModels({ LLM_API_KEY: "synthetic-key" }),
-    /endpoint do provedor/,
+    /provider endpoint/,
   );
   await assert.rejects(
     () =>
@@ -1094,7 +1094,7 @@ test("configuration only registers API credentials and validates endpoint/model 
           throw error;
         },
       }),
-    /não respondeu em 10s/,
+    /did not respond within 10 seconds/,
   );
   await assert.rejects(
     () =>
@@ -1104,7 +1104,7 @@ test("configuration only registers API credentials and validates endpoint/model 
         async () =>
           new Response(JSON.stringify({ nope: true }), { status: 200 }),
       ),
-    /catálogo inválido/,
+    /invalid catalog/,
   );
   assert.equal(
     readConfig({
@@ -1232,7 +1232,9 @@ test("status after restart reconciles only the explicitly verified action withou
     assert.equal(answered.state, "failed");
     await f.bot.flush();
     assert.equal(
-      f.views.filter((view) => /Não sei se a chamada/.test(view.text)).length,
+      f.views.filter((view) =>
+        /Could not verify whether the call/.test(view.text),
+      ).length,
       0,
     );
     // A dropped write keeps no result. A second server stays blocked on its own.
@@ -1262,37 +1264,45 @@ test("status after restart reconciles only the explicitly verified action withou
     await f.send("/status");
     const card = f.views.findLast(
       (view) =>
-        /Não sei se a chamada ao executor \(execute\)/.test(view.text) &&
+        /Could not verify whether the call to executor \(execute\)/.test(
+          view.text,
+        ) &&
         view.markup?.inline_keyboard
           .flat()
-          .some((button) => button.text.includes("Registrar")),
+          .some((button) => button.text.includes("Record verification")),
     )!;
     assert.doesNotMatch(card.text, /<pre>/);
     assert.ok(
       f.views.some((view) =>
-        /Não sei se a chamada ao executor \(execute\)/.test(view.text),
+        /Could not verify whether the call to executor \(execute\)/.test(
+          view.text,
+        ),
       ),
     );
     assert.ok(
       f.views.some((view) =>
-        /Não sei se a chamada ao other-server \(write\)/.test(view.text),
+        /Could not verify whether the call to other-server \(write\)/.test(
+          view.text,
+        ),
       ),
     );
     const notices = f.views.filter((view) =>
-      /Não sei se a chamada/.test(view.text),
+      /Could not verify whether the call/.test(view.text),
     );
     await f.send("/status");
     assert.equal(
-      f.views.filter((view) => /Não sei se a chamada/.test(view.text)).length,
+      f.views.filter((view) =>
+        /Could not verify whether the call/.test(view.text),
+      ).length,
       notices.length,
     );
-    await f.click(f.button("Registrar", card), card);
+    await f.click(f.button("Record verification", card), card);
     const review = f.views.at(-1)!;
     assert.match(
       review.text,
-      /Confira no serviço se deu certo antes de confirmar/,
+      /Check the result in the service before confirming/,
     );
-    await f.click(f.button("Deu certo", review), review);
+    await f.click(f.button("Succeeded", review), review);
     assert.equal(
       f.app.mcpCalls.list(id).find((call) => call.id === answered.id)?.state,
       "reconciled",
@@ -1305,7 +1315,7 @@ test("status after restart reconciles only the explicitly verified action withou
     await f.app.mcpCalls.execute(id, 3, "executor", "execute", {});
     await assert.rejects(
       f.app.mcpCalls.execute(id, 4, "other-server", "execute", {}),
-      /resultado MCP incerto/i,
+      /(?:MCP outcome is uncertain|uncertain MCP outcome)/i,
     );
     assert.equal(
       f.calls.length,
@@ -2819,7 +2829,7 @@ test("flush delivers assistant replies before uncertain MCP side effects run", a
       "a resposta já enfileirada deve ser entregue",
     );
     assert.ok(
-      texts.some((t) => t.includes("Não sei se a chamada")),
+      texts.some((t) => t.includes("Could not verify whether the call")),
       "o aviso incerto deve ser entregue no mesmo flush",
     );
   } finally {
@@ -2851,7 +2861,7 @@ test("a returned tool error marked uncertain does not notify, and the reply stil
     await f.bot.flush();
     const texts = f.views.slice(before).map((v) => v.text);
     assert.equal(
-      texts.some((t) => t.includes("Não sei se a chamada")),
+      texts.some((t) => t.includes("Could not verify whether the call")),
       false,
     );
     assert.ok(

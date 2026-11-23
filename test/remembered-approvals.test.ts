@@ -104,7 +104,7 @@ test("a remembered read does not ask again, in a chat or a scheduled run", async
     const prompt = mcpApprovalPrompt(f.app, first)!;
     assert.deepEqual(
       prompt.choices.map((choice) => choice.label),
-      ["Aprovar uma vez", "Sempre permitir isto", "Decline"],
+      ["Approve once", "Always allow this", "Decline"],
     );
     const { rule } = await rememberAndAccept(f.app, first, "telegram");
     assert.equal(rule.server, "executor");
