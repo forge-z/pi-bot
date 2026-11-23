@@ -10,6 +10,8 @@ import {
 } from "./outbound.js";
 import { deterministicFailure, PendingJobs } from "./pending-jobs.js";
 import { redactSecretPatterns } from "./config.js";
+import { readWebKeys, resolveWebKeys } from "./web-config.js";
+import { createWebTools } from "./web-tools.js";
 import { deadlineFailure } from "./mcp-calls.js";
 import {
   createReadSkillTool,
@@ -613,6 +615,9 @@ export class Runtime {
       // scheduled runs, so the prefix stays cacheable.
       const operatorSkills = loadOperatorSkills(options.env ?? process.env);
       const operatorSkillPrompt = operatorSkillCatalog(operatorSkills);
+      const env = options.env ?? process.env;
+      const harnessConfig = loadHarnessConfig(env);
+      const webKeys = resolveWebKeys(env, readWebKeys(app.store.db));
       const registry = (app.registry = createRegistry());
       registry.install(
         defineExtension({
@@ -1012,6 +1017,7 @@ export class Runtime {
               },
             }),
             conversationUsageTool,
+            ...createWebTools(harnessConfig.web, webKeys),
             ...(operatorSkillPrompt
               ? [createReadSkillTool(operatorSkills)]
               : []),
@@ -1062,7 +1068,7 @@ export class Runtime {
         }),
       );
       // Off by default. Installed before MCP so guardToolExecutors wraps it too.
-      const subagents = loadHarnessConfig(options.env ?? process.env).subagents;
+      const { subagents } = harnessConfig;
       if (subagents.enabled)
         registry.install(createSubagentExtension(app, subagents));
       await app.refreshMcpTools();

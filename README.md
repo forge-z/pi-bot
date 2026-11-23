@@ -40,6 +40,7 @@ The menu edits one section at a time. **Save and back** writes that section. **S
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, both (Executor plus Composio), or none.
+6. **Busca na web** — native web search and page extraction providers and keys.
 
 Upsy (`https://upsy.ai/connect`) has no API key. Setup prints a sign-in link. Paste the final browser URL back, even if the page does not load. The redirect is `http://127.0.0.1:33418/callback` and nothing listens there. Tokens stay in the volume credential `mcp-upsy` and refresh on their own. The same paste works in Telegram or WhatsApp for the bound chat. On WhatsApp the sign-in notice goes to that chat. `--aggregators upsy` does not start a login; it selects Upsy only when a refresh token is already stored. `npm run login` stays ChatGPT/Codex and is not this flow.
 
@@ -50,6 +51,20 @@ There is no `/login` command. ChatGPT/Codex OAuth needs a localhost callback or 
 Environment variables are optional overrides. When one is set, it wins over the value stored on the volume. `TZ` is the container clock (log timestamps). Schedules keep their own IANA timezone. Setup does not store `TZ`. Omit it for UTC. `WHATSAPP_ALLOWED_USERS` overrides the numbers saved for WhatsApp. No new variable is required to boot.
 
 Group and topic ids (`TELEGRAM_ALLOWED_CHATS`) stay environment-only. The compat reserve (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) is ignored when an official setup is already on the volume.
+
+### Native web search and extraction
+
+`web_search` finds links and supports `freshness` (day, week, month, year) and a `domains` allowlist. `web_extract` reads the main text of one HTTP(S) page. Both are read-only and work in scheduled runs without approval. Provider results are untrusted data, not instructions.
+
+In `npm run setup`, select **Busca na web** to choose a primary and fallback for each tool and save the keys on the volume. Set `EXA_API_KEY` and/or `FIRECRAWL_API_KEY` to override the saved keys, including in Coolify. The order is saved in `$DATA_DIR/config.yaml` (or `CONFIG_FILE`); the default for both operations is:
+
+```yaml
+web:
+  search: [exa, firecrawl]
+  extract: [exa, firecrawl]
+```
+
+A provider without a key is skipped. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, an error, rate limit or timeout tries the next provider; an empty result does not. An empty list disables that operation. When no provider is available, the native tool is not registered and the assistant can use the configured Composio or Executor MCP tools as before. Restart after changing the setup.
 
 ### Sandbox
 

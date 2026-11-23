@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 pt-BR: subagentes e execuções agendadas só enviam uma chamada MCP que a lista do próprio servidor declara como leitura; um verbo de leitura no nome ou um programa `execute` não basta. O WhatsApp não baixa mais anexos por URL, a menos que o host esteja em `whatsapp.attachment_urls.hosts`.
 
+### Added
+
+- Native `web_search` and `web_extract` read tools, including in scheduled runs. The **Busca na web** setup section saves credentials and provider order; Exa is the default and Firecrawl handles failures. With neither provider configured, the assistant keeps using its MCP tools.
+
 ### Security
 
 - Subagents, the scheduled write gate, and the resend after a transport failure use a declared read: a `read` glob of the server's own list (or the Executor lists it inherits) and no `write` glob, or `readOnlyHint` on a `trusted` server. Name words, `execute` programs, and `call` targets written as code no longer count. A server with its own list must list `search`, `describe`, and `skills` itself.

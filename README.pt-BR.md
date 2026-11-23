@@ -32,6 +32,7 @@ O menu edita uma seção de cada vez. **Save and back** grava essa seção. **Sa
 3. **Image model**
 4. **Audio model**
 5. **MCP platform** — Composio, Executor, Upsy, Self-hosted, os dois (Executor e Composio), ou nenhum.
+6. **Busca na web** — provedores e chaves para busca e extração nativas.
 
 O Upsy (`https://upsy.ai/connect`) não tem chave de API. O setup imprime o link de login. Cole a URL final do navegador de volta, mesmo se a página não carregar. O redirect é `http://127.0.0.1:33418/callback` e nada escuta nessa porta. Os tokens ficam na credencial `mcp-upsy` do volume e são renovados sozinhos. A mesma cola funciona no Telegram ou no WhatsApp, no chat vinculado. No WhatsApp o aviso de login vai para esse chat. `--aggregators upsy` não inicia o login; só seleciona o Upsy quando já existe um refresh token. `npm run login` continua sendo ChatGPT/Codex e não é esse fluxo.
 
@@ -46,6 +47,20 @@ Não existe comando `/login`. O OAuth precisa de callback em localhost ou da URL
 Variáveis de ambiente são overrides opcionais. Quando uma está definida, ela vence o valor gravado no volume. `TZ` é o relógio do container (o horário dos logs). Cada agendamento guarda o próprio fuso IANA. O setup não grava `TZ`. Sem ela, o relógio fica em UTC. `WHATSAPP_ALLOWED_USERS` substitui os números gravados para o WhatsApp. Nenhuma variável nova é obrigatória para o container subir.
 
 Ids de grupo e tópico (`TELEGRAM_ALLOWED_CHATS`) ficam só no ambiente. A reserva compatível (`LLM_BASE_URL` / `LLM_API_KEY`, menu **Other**) é ignorada quando já existe um setup oficial no volume.
+
+### Busca e extração nativas
+
+`web_search` encontra links e aceita o filtro de período `freshness` (`day`, `week`, `month`, `year`) e uma lista de domínios em `domains`. `web_extract` lê o texto principal de uma página HTTP(S). As duas ferramentas são de leitura, funcionam em execuções agendadas sem aprovação e tratam a resposta externa como dados não confiáveis.
+
+Em `npm run setup`, abra **Busca na web** para escolher o provedor oficial e o fallback de cada função e gravar as chaves no volume. No Coolify ou em outro ambiente, `EXA_API_KEY` e `FIRECRAWL_API_KEY` sobrescrevem as chaves gravadas. A ordem fica em `$DATA_DIR/config.yaml` (ou `CONFIG_FILE`):
+
+```yaml
+web:
+  search: [exa, firecrawl]
+  extract: [exa, firecrawl]
+```
+
+Sem chave, o provedor é pulado. Com apenas um disponível, o `npm run doctor` avisa que não há fallback. Com dois, erro, timeout ou limite de taxa aciona o fallback; resultado vazio não aciona. Uma lista vazia desliga a função. Quando não há provedor disponível, a ferramenta nativa não é registrada e o assistente pode usar o MCP configurado do Composio ou Executor, como antes. Reinicie o bot para aplicar as mudanças.
 
 ### Sandbox
 

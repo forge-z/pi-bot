@@ -7,6 +7,8 @@ description: Explains when to choose TinyFish, Exa, or Parallel for web search, 
 
 This guide explains when to use **TinyFish**, **Exa**, or **Parallel** for search, page retrieval, and data gathering. This file is user-editable — tweak provider preferences, default limits, or local guidelines to fit your workflow.
 
+For ordinary public web search and page extraction, prefer the native `web_search` and `web_extract` tools when offered. They use Exa then Firecrawl by default. Use the MCP tools below when a native tool is unavailable or the task needs a more specialized capability.
+
 ## Quick Summary
 
 | Provider     | Best For                                                                  | Execution Style                                                       | Approval / Trust                                                                                      |
