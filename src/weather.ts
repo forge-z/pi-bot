@@ -16,6 +16,12 @@ const CACHE_TTL_MS = 10 * 60_000;
 const MAX_CACHE_ENTRIES = 200;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Same-name cities in other countries within this population ratio tie. */
+const TIE_RATIO = 0.5;
+/** Same-name cities in other countries above this ratio are mentioned. */
+const NOTE_RATIO = 0.1;
+/** Extra geocoding languages tried when English finds no populated match. */
+const MAX_EXTRA_LANGUAGES = 2;
 
 /** WMO weather interpretation codes used by Open-Meteo. */
 const WMO: Record<number, string> = {
@@ -121,12 +127,26 @@ type WeatherOptions = {
   now: () => number;
 };
 
-type Place = { label: string; latitude: number; longitude: number };
+type Place = {
+  label: string;
+  latitude: number;
+  longitude: number;
+  note?: string;
+};
 
-type Candidate = { item: Record<string, unknown>; place: Place };
+/** A geocoding result; `exact` when its name equals the requested city. */
+type Candidate = {
+  item: Record<string, unknown>;
+  place: Place;
+  exact: boolean;
+};
 
-/** Same-name cities in one country, when the input did not name a state. */
-type Ambiguity = { name: string; regions: string[] };
+/**
+ * Same-name cities the input did not tell apart: in one country (`regions`
+ * are states) or in several countries of similar size (`regions` are
+ * countries).
+ */
+type Ambiguity = { name: string; kind: "state" | "country"; regions: string[] };
 
 type Forecast = {
   timezone: string;
@@ -171,6 +191,20 @@ function countryCode(value: string) {
   if (!/^[a-z]{2}$/i.test(value)) return undefined;
   const code = new Intl.Locale(`und-${value}`).region!;
   return englishRegions.of(code) ? code : undefined;
+}
+
+function countryName(code: string) {
+  return englishRegions.of(code) ?? code;
+}
+
+/** Most likely language of a country ("PT" → "pt", "AT" → "de"). */
+function countryLanguage(code: string) {
+  if (!/^[A-Z]{2}$/.test(code)) return undefined;
+  try {
+    return new Intl.Locale(`und-${code}`).maximize().language;
+  } catch {
+    return undefined;
+  }
 }
 
 function localizedCountryCode(value: string) {
@@ -234,25 +268,56 @@ async function getJson(
   }
 }
 
+/** "São Paulo, São Paulo, Brazil": the state is kept even if it repeats. */
 function placeLabel(item: Record<string, unknown>) {
-  const parts = [text(item.name), text(item.admin1), text(item.country)];
-  return parts
-    .filter((part, i) => part && parts.indexOf(part) === i)
+  return [text(item.name), text(item.admin1), text(item.country)]
+    .filter(Boolean)
     .join(", ");
 }
 
 type PlaceFilter = {
+  /** ISO code; sent to Open-Meteo and enforced on the results. */
   country?: string;
-  region?: string;
-  preferBrazil?: boolean;
+  keep?: (candidate: Candidate) => boolean;
+  /** Retry in the country's language when English finds no good match. */
+  retry?: boolean;
 };
+
+function countryOf({ item }: Candidate) {
+  return text(item.country_code);
+}
+
+function population({ item }: Candidate) {
+  return number(item.population) ?? 0;
+}
+
+/** Whether a populated place with exactly the requested name was found. */
+function strong(places: Candidate[]) {
+  return places.some((place) => place.exact && population(place) > 0);
+}
+
+/** Append new results, keeping the first (English) copy of a repeated one. */
+function merge(places: Candidate[], more: Candidate[]) {
+  const key = ({ item, place }: Candidate) =>
+    number(item.id) ?? `${place.latitude},${place.longitude}`;
+  const merged = [...places];
+  const index = new Map(merged.map((place, i) => [key(place), i]));
+  for (const place of more) {
+    const i = index.get(key(place));
+    if (i === undefined) {
+      index.set(key(place), merged.length);
+      merged.push(place);
+    } else if (place.exact) merged[i] = { ...merged[i]!, exact: true };
+  }
+  return merged;
+}
 
 function matchesRegion(item: Record<string, unknown>, region: string) {
   const folded = fold(region);
   return [item.admin1, item.admin2].some((name) => fold(text(name)) === folded);
 }
 
-function candidates(results: unknown): Candidate[] {
+function candidates(results: unknown, target: string): Candidate[] {
   if (results === undefined) return [];
   if (!Array.isArray(results)) throw new WebError("invalid response");
   return results.flatMap((value) => {
@@ -268,17 +333,42 @@ function candidates(results: unknown): Candidate[] {
       !text(item.name)
     )
       return [];
-    return [{ item, place: { label: placeLabel(item), latitude, longitude } }];
+    return [
+      {
+        item,
+        place: { label: placeLabel(item), latitude, longitude },
+        exact: fold(text(item.name)) === target,
+      },
+    ];
   });
 }
 
-function pickPlace(places: Candidate[], filter: PlaceFilter) {
-  const inCountry = (code: string) =>
-    places.find(({ item }) => text(item.country_code) === code);
-  if (filter.country) return inCountry(filter.country);
-  if (filter.region)
-    return places.find(({ item }) => matchesRegion(item, filter.region!));
-  return (filter.preferBrazil && inCountry("BR")) || places[0];
+/**
+ * Open-Meteo's top result plus every exact-name match, most populous (then
+ * exact) first. The top result covers aliases ("München" → "Munich").
+ */
+function ranked(places: Candidate[]) {
+  return places
+    .filter((place, i) => i === 0 || place.exact)
+    .sort(
+      (a, b) =>
+        population(b) - population(a) || Number(b.exact) - Number(a.exact),
+    );
+}
+
+/** The most populous ranked place of each country other than the first's. */
+function foreignRivals(ranking: Candidate[]) {
+  const seen = new Set([countryOf(ranking[0]!)]);
+  return ranking.filter((place) => {
+    if (seen.has(countryOf(place))) return false;
+    seen.add(countryOf(place));
+    return true;
+  });
+}
+
+function rivalNote(name: string, rivals: Candidate[]) {
+  const example = `${name}, ${countryName(countryOf(rivals[0]!))}`;
+  return `Also found: ${rivals.map(({ place }) => place.label).join("; ")}. Add the country to pick another place, e.g. ${JSON.stringify(example)}.`;
 }
 
 function regionCode(item: Record<string, unknown>) {
@@ -308,10 +398,12 @@ function homonymRegions(places: Candidate[], chosen: Candidate) {
   return [...new Set(regions)];
 }
 
-function ambiguityText({ name, regions }: Ambiguity) {
-  const line = `Weather: ${JSON.stringify(name)} é ambíguo (${regions.join(", ")}). Passe o estado, ex.: ${JSON.stringify(`${name}, ${regions[0]}`)}.`;
-  // Region names outside Brazil come from Open-Meteo, so mark them untrusted.
-  return regions.every((region) => Object.hasOwn(BRAZIL_STATES, region))
+function ambiguityText({ name, kind, regions }: Ambiguity) {
+  const line = `weather: ${JSON.stringify(name)} is ambiguous (${regions.join(", ")}). Pass the ${kind}, e.g. ${JSON.stringify(`${name}, ${regions[0]}`)}.`;
+  // Country names come from Intl and UF codes from the table above; other
+  // region names come from Open-Meteo, so mark them untrusted.
+  return kind === "country" ||
+    regions.every((region) => Object.hasOwn(BRAZIL_STATES, region))
     ? line
     : wrapUntrustedToolResult("weather", line);
 }
@@ -378,6 +470,7 @@ function formatForecast(place: Place, forecast: Forecast) {
   const lines = [
     `Weather forecast for ${place.label} (${round(place.latitude, 2)}, ${round(place.longitude, 2)})`,
   ];
+  if (place.note) lines.push(place.note);
   const time = text(current.time, 32).replace("T", " ");
   lines.push(
     `Local time: ${time} (${forecast.timezone})`,
@@ -444,42 +537,133 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
   const places = new TtlCache<Place | Ambiguity | null>(options.now);
   const forecasts = new TtlCache<Forecast>(options.now);
 
+  /**
+   * Geocode `query` and keep the results that pass `filter`. Open-Meteo only
+   * matches names in English and in the requested language, so "Lisboa" or
+   * "Wien" need a second lookup in Portuguese or German: the country's
+   * language when one was given, else those of the countries English found.
+   */
   const searchPlaces = async (
-    name: string,
+    query: string,
+    target: string,
     filter: PlaceFilter,
     signal?: AbortSignal,
   ) => {
-    const url = new URL(GEOCODING_URL);
-    url.search = new URLSearchParams({
-      name,
-      count: "5",
-      language: "en",
-      format: "json",
-      ...(filter.country ? { countryCode: filter.country } : {}),
-    }).toString();
-    const response = await getJson(options, url, signal);
-    const found = candidates(response.results);
-    const chosen = pickPlace(found, filter);
-    return chosen && { chosen, places: found };
+    const lookup = async (language: string) => {
+      const url = new URL(GEOCODING_URL);
+      url.search = new URLSearchParams({
+        name: query,
+        count: "5",
+        language,
+        format: "json",
+        ...(filter.country ? { countryCode: filter.country } : {}),
+      }).toString();
+      const response = await getJson(options, url, signal);
+      return candidates(response.results, target);
+    };
+    const keep = (place: Candidate) =>
+      (!filter.country || countryOf(place) === filter.country) &&
+      (filter.keep?.(place) ?? true);
+    const found = await lookup("en");
+    let places = found.filter(keep);
+    if (!filter.retry || strong(places)) return places;
+    const codes = filter.country ? [filter.country] : found.map(countryOf);
+    const languages = [...new Set(codes.map(countryLanguage))].filter(
+      (language): language is string => Boolean(language && language !== "en"),
+    );
+    for (const language of languages.slice(0, MAX_EXTRA_LANGUAGES)) {
+      places = merge(places, (await lookup(language)).filter(keep));
+      if (strong(places)) break;
+    }
+    return places;
   };
 
-  /** Look up a city with at most one state or country qualifier. */
+  /**
+   * Look up a city with at most one state or country qualifier, restricted
+   * to `inCountry` when the input also named a country.
+   */
   const resolve = async (
     name: string,
     qualifier: string | undefined,
+    inCountry: string | undefined,
     signal?: AbortSignal,
   ) => {
-    const code = qualifier ? countryCode(qualifier) : undefined;
-    const query = qualifier && !code ? `${name}, ${qualifier}` : name;
-    const found = await searchPlaces(
-      query,
-      code ? { country: code } : { preferBrazil: !qualifier },
+    const target = fold(name);
+    if (!qualifier) return searchPlaces(name, target, { retry: true }, signal);
+    const code = countryCode(qualifier);
+    if (code)
+      return inCountry && inCountry !== code
+        ? []
+        : searchPlaces(name, target, { country: code, retry: true }, signal);
+    const named = localizedCountryCode(qualifier);
+    const asCountry =
+      named && (!inCountry || named === inCountry) ? named : undefined;
+    // Open-Meteo understands some "City, Region" queries, but a country
+    // qualifier must still rule out cities elsewhere ("Lisboa, Portugal").
+    const places = await searchPlaces(
+      `${name}, ${qualifier}`,
+      target,
+      {
+        keep: (place) =>
+          (!inCountry || countryOf(place) === inCountry) &&
+          (!asCountry ||
+            countryOf(place) === asCountry ||
+            matchesRegion(place.item, qualifier)),
+      },
       signal,
     );
-    if (found || !qualifier || code) return found;
-    const localized = localizedCountryCode(qualifier);
-    const filter = localized ? { country: localized } : { region: qualifier };
-    return searchPlaces(name, filter, signal);
+    if (strong(places)) return places;
+    const fallback: PlaceFilter = asCountry
+      ? { country: asCountry, retry: true }
+      : {
+          country: inCountry,
+          keep: (place) => matchesRegion(place.item, qualifier),
+          retry: Boolean(inCountry),
+        };
+    return merge(places, await searchPlaces(name, target, fallback, signal));
+  };
+
+  /**
+   * Choose among the results. Without any qualifier, a same-name city of
+   * similar size in another country makes the input ambiguous, and a smaller
+   * but still sizeable one is mentioned in the answer.
+   */
+  const choose = (
+    name: string,
+    qualifier: string | undefined,
+    byState: boolean,
+    found: Candidate[],
+  ): Place | Ambiguity | null => {
+    const ranking = ranked(found);
+    const chosen = ranking[0];
+    if (!chosen) return null;
+    // An unpopulated partial match ("Warszawa" → a historic district in Ohio)
+    // is a miss: better to ask for the country than to answer for it.
+    if (!qualifier && !chosen.exact && population(chosen) === 0) return null;
+    const rivals = qualifier ? [] : foreignRivals(ranking);
+    const tied = rivals.filter(
+      (place) => population(place) >= population(chosen) * TIE_RATIO,
+    );
+    if (tied.length)
+      return {
+        name,
+        kind: "country",
+        regions: [chosen, ...tied].map((place) =>
+          countryName(countryOf(place)),
+        ),
+      };
+    if (!byState && !(qualifier && matchesRegion(chosen.item, qualifier))) {
+      const regions = homonymRegions(found, chosen);
+      if (regions.length > 1) return { name, kind: "state", regions };
+    }
+    const mentioned = rivals.filter(
+      (place) =>
+        population(place) > 0 &&
+        population(place) >= population(chosen) * NOTE_RATIO,
+    );
+    return mentioned.length
+      ? { ...chosen.place, note: rivalNote(name, mentioned) }
+      : chosen.place;
   };
 
   const geocode = async (location: string, signal?: AbortSignal) => {
@@ -492,6 +676,13 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
     const key = fold(parts.join(", "));
     const cached = places.get(key);
     if (cached !== undefined) return cached;
+    // "City, State, Country": the state already disambiguates, so the country
+    // stays out of the text query, but every lookup is restricted to it, which
+    // rules out a city elsewhere (a UF that is also an ISO code: "Barcelona,
+    // ES, Brasil") and lets "Lisboa, Portugal, Portugal" retry in Portuguese.
+    const inCountry = country
+      ? (countryCode(country) ?? localizedCountryCode(country))
+      : undefined;
     // A Brazilian UF ("SC") or state name is resolved locally and wins over a
     // country with the same ISO code (SC is also Seychelles). If the city is
     // not in that state, a qualifier that is also a country code still works.
@@ -499,32 +690,12 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
       ? BRAZIL_STATE_KEYS.get(fold(qualifier))
       : undefined;
     let found = state
-      ? await resolve(name, BRAZIL_STATES[state], signal)
-      : undefined;
-    const byState = Boolean(found);
-    if (!found && (!state || countryCode(qualifier!)))
-      found = await resolve(name, qualifier, signal);
-    // "City, State, Country": the state already disambiguates, so the country
-    // is left out of the query and only rules out a city in another country
-    // (e.g. a UF that is also an ISO code: "Barcelona, ES, Brasil").
-    const inCountry = country
-      ? (countryCode(country) ?? localizedCountryCode(country))
-      : undefined;
-    if (
-      inCountry &&
-      found &&
-      text(found.chosen.item.country_code) !== inCountry
-    )
-      found = undefined;
-    let result: Place | Ambiguity | null = found?.chosen.place ?? null;
-    if (
-      found &&
-      !byState &&
-      !(qualifier && matchesRegion(found.chosen.item, qualifier))
-    ) {
-      const regions = homonymRegions(found.places, found.chosen);
-      if (regions.length > 1) result = { name, regions };
-    }
+      ? await resolve(name, BRAZIL_STATES[state], inCountry, signal)
+      : [];
+    const byState = found.length > 0;
+    if (!byState && (!state || countryCode(qualifier!)))
+      found = await resolve(name, qualifier, inCountry, signal);
+    const result = choose(name, qualifier, byState, found);
     places.set(key, result);
     return result;
   };

@@ -16,6 +16,7 @@ const GEOCODING = {
       country_code: "FR",
       country: "France",
       admin1: "Île-de-France Region",
+      population: 2138551,
     },
     {
       name: "Paris",
@@ -25,6 +26,7 @@ const GEOCODING = {
       country: "United States",
       admin1: "Texas",
       admin2: "Lamar County",
+      population: 24782,
     },
     {
       name: "Paris",
@@ -33,6 +35,7 @@ const GEOCODING = {
       country_code: "BR",
       country: "Brazil",
       admin1: "São Paulo",
+      population: 2100,
     },
   ],
   generationtime_ms: 0.5,
@@ -110,7 +113,7 @@ function weatherTool(
   };
 }
 
-test("weather geocodes a city, prefers Brazil and summarizes the forecast", async () => {
+test("weather geocodes a city, picks the most populous match and summarizes the forecast", async () => {
   const { fetch, urls } = mockFetch({
     geocoding: GEOCODING,
     forecast: FORECAST,
@@ -130,8 +133,8 @@ test("weather geocodes a city, prefers Brazil and summarizes the forecast", asyn
     "https://api.open-meteo.com/v1/forecast",
   );
   assert.deepEqual(Object.fromEntries(forecast!.searchParams), {
-    latitude: "-23.12",
-    longitude: "-47.46",
+    latitude: "48.85",
+    longitude: "2.35",
     daily:
       "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max",
     current:
@@ -145,7 +148,7 @@ test("weather geocodes a city, prefers Brazil and summarizes the forecast", asyn
   assert.ok(!result.text.trimStart().startsWith("{"), "not raw JSON");
   assert.match(
     result.text,
-    /Weather forecast for Paris, São Paulo, Brazil \(-23\.12, -47\.46\)/,
+    /Weather forecast for Paris, Île-de-France Region, France \(48\.85, 2\.35\)\nLocal time/,
   );
   assert.match(
     result.text,
@@ -260,14 +263,16 @@ test("weather asks for disambiguation instead of using a city outside the qualif
   );
 });
 
-test("weather picks the first result when there is no Brazilian match", async () => {
+test("weather does not prefer a small Brazilian homonym over a large city", async () => {
   const { fetch, urls } = mockFetch({
-    geocoding: { results: GEOCODING.results.slice(0, 2) },
+    geocoding: { results: [...GEOCODING.results].reverse() },
     forecast: FORECAST,
   });
   const result = await weatherTool(fetch)({ location: "Paris" });
   assert.equal(result.isError, false);
+  assert.equal(urls.length, 2);
   assert.equal(urls[1]!.searchParams.get("latitude"), "48.85");
+  assert.doesNotMatch(result.text, /Also found/, "Paris, Texas is too small");
 });
 
 test("weather accepts coordinates without geocoding and caches by rounded coordinates", async () => {
@@ -468,7 +473,7 @@ test("weather lists same-name cities instead of silently picking one", async () 
     const name = location.split(",")[0];
     assert.equal(
       result.text,
-      `Weather: "${name}" é ambíguo (AL, SC). Passe o estado, ex.: "${name}, AL".`,
+      `weather: "${name}" is ambiguous (AL, SC). Pass the state, e.g. "${name}, AL".`,
       location,
     );
     assert.ok(
@@ -629,7 +634,7 @@ test("weather ignores unpopulated homonyms and flags foreign ones as untrusted",
   assert.match(ambiguous.text, /^<untrusted_tool_result source="weather">/);
   assert.match(
     ambiguous.text,
-    /Weather: "Springfield" é ambíguo \(Missouri, Illinois\)\. Passe o estado, ex\.: "Springfield, Missouri"\./,
+    /weather: "Springfield" is ambiguous \(Missouri, Illinois\)\. Pass the state, e\.g\. "Springfield, Missouri"\./,
   );
   assert.equal(us.urls.length, 1);
 });
@@ -768,4 +773,230 @@ test("weather rejects empty or extra location qualifiers without requests", asyn
     );
   }
   assert.equal(urls.length, 0);
+});
+
+const LISBOA_PT = {
+  id: 2267057,
+  name: "Lisboa",
+  latitude: 38.72509,
+  longitude: -9.1498,
+  country_code: "PT",
+  country: "Portugal",
+  admin1: "Distrito de Lisboa",
+  population: 517802,
+};
+
+const LISBOA_ELSEWHERE = [
+  ["Sofala", "MZ", "Mozambique", -20.12056, 33.76583],
+  ["Manica Province", "MZ", "Mozambique", -16.48333, 33.58278],
+  ["", "GQ", "Equatorial Guinea", 1.08029, 9.69612],
+].map(([admin1, country_code, country, latitude, longitude], i) => ({
+  id: 1040000 + i,
+  name: "Lisboa",
+  latitude,
+  longitude,
+  country_code,
+  country,
+  ...(admin1 ? { admin1 } : {}),
+}));
+
+/**
+ * Open-Meteo matches names in English and in the requested language only, so
+ * the English search for "Lisboa" misses Lisbon, Portugal.
+ */
+function lisboaGeocoding(url: URL) {
+  const name = url.searchParams.get("name");
+  const code = url.searchParams.get("countryCode");
+  const portuguese = url.searchParams.get("language") === "pt";
+  // The "City, Country" text query lets a same-name village elsewhere through.
+  if (name === "Lisboa, Portugal") return { results: LISBOA_ELSEWHERE };
+  if (name !== "Lisboa") return {};
+  const results = portuguese
+    ? [LISBOA_PT, ...LISBOA_ELSEWHERE]
+    : LISBOA_ELSEWHERE;
+  return {
+    results: results.filter((item) => !code || item.country_code === code),
+  };
+}
+
+test("weather retries in the country's language and enforces the country", async () => {
+  for (const [location, queries] of [
+    [
+      "Lisboa",
+      [
+        ["Lisboa", "en", null],
+        ["Lisboa", "pt", null],
+      ],
+    ],
+    [
+      "Lisboa, Portugal",
+      [
+        ["Lisboa, Portugal", "en", null],
+        ["Lisboa", "en", "PT"],
+        ["Lisboa", "pt", "PT"],
+      ],
+    ],
+    [
+      "Lisboa, PT",
+      [
+        ["Lisboa", "en", "PT"],
+        ["Lisboa", "pt", "PT"],
+      ],
+    ],
+    [
+      "Lisboa, Portugal, Portugal",
+      [
+        ["Lisboa, Portugal", "en", null],
+        ["Lisboa", "en", "PT"],
+        ["Lisboa", "pt", "PT"],
+      ],
+    ],
+  ] as const) {
+    const { fetch, urls } = mockFetch({
+      geocoding: lisboaGeocoding,
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, false, location);
+    assert.deepEqual(
+      urls
+        .slice(0, -1)
+        .map((url) => [
+          url.searchParams.get("name"),
+          url.searchParams.get("language"),
+          url.searchParams.get("countryCode"),
+        ]),
+      queries,
+      location,
+    );
+    assert.equal(urls.at(-1)!.searchParams.get("latitude"), "38.73", location);
+    assert.match(
+      result.text,
+      /Weather forecast for Lisboa, Distrito de Lisboa, Portugal \(38\.73, -9\.15\)\nLocal time/,
+      location,
+    );
+  }
+
+  const { fetch, urls } = mockFetch({
+    geocoding: lisboaGeocoding,
+    forecast: FORECAST,
+  });
+  const run = weatherTool(fetch);
+  for (const location of ["Lisboa, Spain", "Lisboa, Sofala, Portugal"]) {
+    const result = await run({ location });
+    assert.equal(result.isError, true, location);
+    assert.match(result.text, /location not found/, location);
+  }
+  assert.ok(urls.every((url) => url.hostname !== "api.open-meteo.com"));
+});
+
+function city(
+  name: string,
+  country_code: string,
+  admin1: string,
+  population: number,
+  latitude: number,
+) {
+  return {
+    name,
+    latitude,
+    longitude: 0,
+    country_code,
+    country: country_code,
+    admin1,
+    population,
+  };
+}
+
+test("weather weighs same-name cities across countries by population", async () => {
+  const run = async (location: string, results: object[]) => {
+    const { fetch, urls } = mockFetch({
+      geocoding: { results },
+      forecast: FORECAST,
+    });
+    return { ...(await weatherTool(fetch)({ location })), urls };
+  };
+
+  const cordoba = await run("Córdoba", [
+    city("Córdoba", "AR", "Cordoba", 2106734, -31.41),
+    city("Córdoba", "ES", "Andalusia", 325708, 37.88),
+    city("Córdoba", "CO", "Quindío Department", 4063, 4.39),
+  ]);
+  assert.equal(cordoba.isError, false);
+  assert.equal(cordoba.urls.at(-1)!.searchParams.get("latitude"), "-31.41");
+  assert.match(
+    cordoba.text,
+    /Weather forecast for Córdoba, Cordoba, AR \(-31\.41, 0\)\nAlso found: Córdoba, Andalusia, ES\. Add the country to pick another place, e\.g\. "Córdoba, Spain"\.\n/,
+  );
+
+  const valencia = await run("Valencia", [
+    city("Valencia", "ES", "Valencia", 824340, 39.47),
+    city("Valencia", "VE", "Carabobo", 1619470, 10.16),
+    city("Valencia", "US", "California", 148456, 34.44),
+  ]);
+  assert.equal(valencia.isError, true);
+  assert.equal(
+    valencia.text,
+    'weather: "Valencia" is ambiguous (Venezuela, Spain). Pass the country, e.g. "Valencia, Venezuela".',
+  );
+  assert.equal(valencia.urls.length, 1, "no forecast request");
+
+  const villages = await run("Lisboa", LISBOA_ELSEWHERE);
+  assert.equal(villages.isError, true);
+  assert.equal(
+    villages.text,
+    'weather: "Lisboa" is ambiguous (Mozambique, Equatorial Guinea). Pass the country, e.g. "Lisboa, Mozambique".',
+  );
+  assert.deepEqual(
+    villages.urls.map((url) => url.searchParams.get("language")),
+    ["en", "pt", "es"],
+    "tries the languages of the countries found, at most two",
+  );
+
+  const partial = await run("Warszawa", [
+    {
+      ...city("Warszawa Neighborhood Historic District", "US", "Ohio", 0, 41),
+      population: undefined,
+    },
+  ]);
+  assert.equal(partial.isError, true);
+  assert.match(partial.text, /location not found: "Warszawa"/);
+
+  const brazil = await run("Curitiba", [
+    city("Curitiba", "BR", "Paraná", 1948626, -25.43),
+    city("Curitiba", "MX", "Puebla", 75, 19),
+  ]);
+  assert.equal(brazil.isError, false);
+  assert.doesNotMatch(brazil.text, /Also found/);
+});
+
+test("weather keeps the state in the label when it repeats the city name", async () => {
+  for (const [location, item, label] of [
+    [
+      "São Paulo, SP",
+      city("São Paulo", "BR", "São Paulo", 12400232, -23.55),
+      "São Paulo, São Paulo, BR",
+    ],
+    [
+      "Rio de Janeiro, RJ",
+      city("Rio de Janeiro", "BR", "Rio de Janeiro", 6747815, -22.91),
+      "Rio de Janeiro, Rio de Janeiro, BR",
+    ],
+    [
+      "Madrid, Spain",
+      city("Madrid", "ES", "Madrid", 3255944, 40.42),
+      "Madrid, Madrid, ES",
+    ],
+  ] as const) {
+    const { fetch } = mockFetch({
+      geocoding: { results: [item] },
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, false, location);
+    assert.ok(
+      result.text.includes(`Weather forecast for ${label} (`),
+      location,
+    );
+  }
 });
