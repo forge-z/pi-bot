@@ -70,6 +70,8 @@ export interface McpConfig {
    * expires. When set, the static `token` is not the session credential.
    */
   resolveToken?: () => Promise<string>;
+  oauth?: "executor";
+  oauthBinding?: () => string;
 }
 /** Omitted mode is direct, including the default Executor server. */
 function mcpServerMode(mode: McpConfig["mode"]): McpServerMode {
@@ -405,6 +407,8 @@ const configKeys = new Set([
   "tokenHeader",
   "userId",
   "resolveToken",
+  "oauth",
+  "oauthBinding",
 ]);
 function validateEntry(item: McpConfig) {
   if (!item || typeof item !== "object" || Array.isArray(item))
@@ -431,7 +435,9 @@ function validateEntry(item: McpConfig) {
     (item.userId !== undefined &&
       (typeof item.userId !== "string" ||
         !/^[\w.:@+-]{1,200}$/.test(item.userId))) ||
-    (item.resolveToken !== undefined && typeof item.resolveToken !== "function")
+    (item.resolveToken !== undefined &&
+      typeof item.resolveToken !== "function") ||
+    (item.oauthBinding !== undefined && typeof item.oauthBinding !== "function")
   )
     throw new PolicyError(
       "Invalid MCP configuration: token and tokenFile must be single-line text",
@@ -483,6 +489,7 @@ function credentialMaterial(config: McpConfig, token: string | undefined) {
     config.resolveToken ? "oauth" : token,
     config.tokenFile,
   ];
+  if (config.oauthBinding) material.push(config.oauthBinding());
   if (config.tokenHeader) material.push(config.tokenHeader);
   if (config.userId) material.push(config.userId);
   return JSON.stringify(material);
@@ -853,6 +860,11 @@ export class McpGateway implements ToolGateway {
    */
   private canSkipCatalogProbe(server: string, client: Client) {
     if (!this.metadata.has(client) || this.expired.has(client)) return false;
+    if (
+      this.config.find((config) => config.name === server)?.oauthBinding &&
+      this.bindings.get(client) !== this.credentialBinding(server)
+    )
+      return false;
     if ((this.active.get(server)?.size ?? 0) > 0) return true;
     return this.sessionFresh(client);
   }
@@ -1057,7 +1069,11 @@ export class McpGateway implements ToolGateway {
     let pending = this.clients.get(server);
     if (pending) {
       const cached = await pending;
-      if (this.expired.has(cached)) {
+      if (
+        this.expired.has(cached) ||
+        (config.oauthBinding &&
+          this.bindings.get(cached) !== this.credentialBinding(server))
+      ) {
         await this.discard(server, cached);
         pending = undefined;
       }
@@ -1114,6 +1130,14 @@ export class McpGateway implements ToolGateway {
             }
             if (/[\r\n]/.test(fresh))
               throw new PolicyError("Invalid MCP token");
+            if (
+              config.oauthBinding &&
+              this.bindings.get(requestClient) !==
+                this.credentialBinding(server)
+            )
+              throw new McpError(
+                "MCP connection credentials changed. Reconnect before calling tools.",
+              );
             const headers = new Headers(init?.headers);
             headers.set("Authorization", `Bearer ${fresh}`);
             this.secrets.set(requestClient, fresh);
