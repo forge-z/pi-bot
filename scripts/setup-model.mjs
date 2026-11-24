@@ -2484,7 +2484,7 @@ function saveMcp(draft) {
     upsyReady: Boolean(draft.upsySignedIn),
   });
   if (built.error) return built.error;
-  persistAggregators(
+  const error = persistAggregators(
     built.record,
     {
       ...(draft.newExecutor ? { executor: draft.newExecutor } : {}),
@@ -2493,6 +2493,7 @@ function saveMcp(draft) {
     },
     draft.newExecutorOauth,
   );
+  if (error) return error;
   draft.newExecutorOauth = undefined;
   return "";
 }
@@ -2828,18 +2829,17 @@ function persistAggregators(record, keys, executorOauth) {
     console.log(`(dry-run) MCP platform: ${record.choice}.`);
     return;
   }
-  if (record.executor?.auth === "oauth" && executorOauth) {
+  try {
     db.exec("BEGIN IMMEDIATE");
-    try {
+    if (record.executor?.auth === "oauth" && executorOauth)
       writeOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL, executorOauth);
-      writeStoredAggregators(db, record, keys, MODE);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } else {
     writeStoredAggregators(db, record, keys, MODE);
+    db.exec("COMMIT");
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    if (!(error instanceof Error) || error.code !== "ERR_SQLITE_ERROR")
+      throw error;
+    return `Could not save MCP settings to ${join(dir, "app.sqlite")}: ${error.errstr || error.message}. Check that the data volume is writable, then try again.`;
   }
   console.log(
     `MCP platform saved on the volume (${record.choice}). Keys are in credentials.`,
@@ -3038,7 +3038,8 @@ async function aggregatorsFromFlags() {
     upsyReady: Boolean(readOauthCredential(db, UPSY_OAUTH_CREDENTIAL)?.refresh),
   });
   if (built.error) fail(built.error);
-  persistAggregators(built.record, built.keys);
+  const error = persistAggregators(built.record, built.keys);
+  if (error) fail(error);
 }
 const writes =
   options.model !== undefined || options.effort !== undefined || functionFlags;
