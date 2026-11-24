@@ -1,6 +1,7 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { wrapUntrustedToolResult } from "./untrusted.js";
+import { createWeatherTool } from "./weather.js";
 import { resolveWebProviders, type WebKeys } from "./web-config.js";
 import {
   extractLocalPage,
@@ -657,5 +658,6 @@ export function createWebTools(
           }),
         ]
       : []),
+    createWeatherTool(options),
   ];
 }
