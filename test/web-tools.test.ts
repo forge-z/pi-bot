@@ -420,8 +420,8 @@ test("setup preserves unrelated YAML, stores keys separately and diagnoses actua
   const file = join(dir, "config.yaml");
   try {
     assert.deepEqual(describeWebSetup(dir, env), [
-      "web.search: all configured providers unavailable; missing API keys: exa (EXA_API_KEY), firecrawl (FIRECRAWL_API_KEY)",
-      "web.extract: all configured providers unavailable; missing API keys: exa (EXA_API_KEY), firecrawl (FIRECRAWL_API_KEY)",
+      "web.search: all configured providers unavailable; missing API keys: exa (EXA_API_KEY), context (CONTEXT_DEV_API_KEY)",
+      "web.extract: all configured providers unavailable; missing API keys: exa (EXA_API_KEY), context (CONTEXT_DEV_API_KEY)",
     ]);
     await writeFile(file, "# keep\nreaction_delay_ms: 0\n");
     const web: WebConfig = { search: ["firecrawl", "exa"], extract: ["exa"] };
