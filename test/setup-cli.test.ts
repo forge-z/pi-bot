@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { parse } from "yaml";
 import { mcpServersFromAggregators } from "../src/config.js";
+import { loadHarnessConfig } from "../src/harness-config.js";
 import {
   EXECUTOR_OAUTH_CREDENTIAL,
   readOauthCredential,
@@ -21,6 +22,7 @@ import {
   writeStoredSetup,
 } from "../src/setup.js";
 import { readVolumeWebKeys } from "../src/web-config.js";
+import { createWebTools } from "../src/web-tools.js";
 
 const hasPty =
   process.platform === "linux" &&
@@ -740,6 +742,72 @@ test(
         extract: ["local", "context"],
       });
       assert.deepEqual(readVolumeWebKeys(dir), { exa, context });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Web search saves and reloads Weather without writing on an untouched Save and back",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    const path = join(dir, "config.yaml");
+    const env = { DATA_DIR: dir };
+    const web = () => loadHarnessConfig(env).web;
+    const weatherRegistered = () =>
+      createWebTools(web(), {}).some(({ name }) => name === "weather");
+    try {
+      assert.equal(weatherRegistered(), true);
+      await runSetup(dir, [
+        [main, "6"],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      await assert.rejects(stat(path), { code: "ENOENT" });
+
+      const original = "# keep\nweb:\n  search: []\n  extract: []\n";
+      await writeFile(path, original);
+      const disabled = await runSetup(dir, [
+        [main, "6"],
+        [save, "5"],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      assert.match(
+        disabled,
+        /Weather \(Open-Meteo\): On[\s\S]*Weather \(Open-Meteo\): Off/,
+      );
+      assert.match(disabled, /Web settings saved\./);
+      assert.equal(web().weather, false);
+      assert.equal(weatherRegistered(), false);
+      const saved = await readFile(path, "utf8");
+      assert.match(saved, /^# keep\n/);
+      assert.deepEqual(parse(saved).web, {
+        search: [],
+        extract: [],
+        weather: false,
+      });
+
+      const reloaded = await runSetup(dir, [
+        [main, "6"],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      assert.match(reloaded, /Weather \(Open-Meteo\): Off/);
+      assert.doesNotMatch(reloaded, /Web settings saved\./);
+      assert.equal(await readFile(path, "utf8"), saved);
+      assert.equal(weatherRegistered(), false);
+
+      await runSetup(dir, [
+        [main, "6"],
+        [save, "5"],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      assert.equal(web().weather, true);
+      assert.equal(weatherRegistered(), true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

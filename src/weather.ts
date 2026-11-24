@@ -1,6 +1,7 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { wrapUntrustedToolResult } from "./untrusted.js";
+import { readJson, WebError } from "./web-response.js";
 
 const GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
@@ -13,39 +14,39 @@ const MAX_DAYS = 16;
 const MAX_TIMEOUT_MS = 9_000;
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_CACHE_ENTRIES = 200;
-const MAX_RESPONSE_CHARS = 256 * 1024;
-const WEEKDAYS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+const MAX_RESPONSE_BYTES = 256 * 1024;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** WMO weather interpretation codes used by Open-Meteo. */
 const WMO: Record<number, string> = {
-  0: "céu limpo",
-  1: "predominantemente limpo",
-  2: "parcialmente nublado",
-  3: "nublado",
-  45: "nevoeiro",
-  48: "nevoeiro com geada",
-  51: "garoa fraca",
-  53: "garoa moderada",
-  55: "garoa forte",
-  56: "garoa congelante fraca",
-  57: "garoa congelante forte",
-  61: "chuva fraca",
-  63: "chuva moderada",
-  65: "chuva forte",
-  66: "chuva congelante fraca",
-  67: "chuva congelante forte",
-  71: "neve fraca",
-  73: "neve moderada",
-  75: "neve forte",
-  77: "grãos de neve",
-  80: "pancadas de chuva fracas",
-  81: "pancadas de chuva moderadas",
-  82: "pancadas de chuva fortes",
-  85: "pancadas de neve fracas",
-  86: "pancadas de neve fortes",
-  95: "trovoada",
-  96: "trovoada com granizo fraco",
-  99: "trovoada com granizo forte",
+  0: "clear sky",
+  1: "mainly clear",
+  2: "partly cloudy",
+  3: "overcast",
+  45: "fog",
+  48: "depositing rime fog",
+  51: "light drizzle",
+  53: "moderate drizzle",
+  55: "heavy drizzle",
+  56: "light freezing drizzle",
+  57: "heavy freezing drizzle",
+  61: "light rain",
+  63: "moderate rain",
+  65: "heavy rain",
+  66: "light freezing rain",
+  67: "heavy freezing rain",
+  71: "light snow",
+  73: "moderate snow",
+  75: "heavy snow",
+  77: "snow grains",
+  80: "light rain showers",
+  81: "moderate rain showers",
+  82: "heavy rain showers",
+  85: "light snow showers",
+  86: "heavy snow showers",
+  95: "thunderstorm",
+  96: "thunderstorm with light hail",
+  99: "thunderstorm with heavy hail",
 };
 
 const WEATHER_PARAMETERS = Type.Object({
@@ -54,7 +55,7 @@ const WEATHER_PARAMETERS = Type.Object({
       minLength: 1,
       maxLength: 200,
       description:
-        'City name, optionally followed by a comma and a state or country to disambiguate, e.g. "Curitiba" or "Paris, França".',
+        'City name, optionally followed by a comma and a state or country to disambiguate, e.g. "Curitiba" or "Paris, France".',
     }),
   ),
   latitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
@@ -81,15 +82,16 @@ type Place = { label: string; latitude: number; longitude: number };
 type Forecast = {
   timezone: string;
   current: Record<string, unknown>;
-  daily: Record<string, unknown>;
+  daily: Record<string, unknown> & { time: string[] };
 };
 
-class WeatherError extends Error {}
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const LOCAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
 
 function record(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
-  throw new WeatherError("invalid response");
+  throw new WebError("invalid response");
 }
 
 function text(value: unknown, max = 200) {
@@ -106,9 +108,54 @@ function textResult(text: string, isError = false) {
   return { isError, output: [{ type: "text" as const, text }] };
 }
 
-/** Lowercase without accents, so "Franca" matches "França". */
 function fold(value: string) {
   return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+}
+
+const englishRegions = new Intl.DisplayNames("en", {
+  type: "region",
+  fallback: "none",
+});
+let countryAliases: Map<string, string | null> | undefined;
+
+function countryCode(value: string) {
+  if (!/^[a-z]{2}$/i.test(value)) return undefined;
+  const code = new Intl.Locale(`und-${value}`).region!;
+  return englishRegions.of(code) ? code : undefined;
+}
+
+function localizedCountryCode(value: string) {
+  if (!countryAliases) {
+    const alphabet = [..."abcdefghijklmnopqrstuvwxyz"];
+    const pairs = alphabet.flatMap((a) => alphabet.map((b) => a + b));
+    const codes = pairs
+      .map((pair) => pair.toUpperCase())
+      .filter((code) => countryCode(code) === code);
+    const locales = Intl.DisplayNames.supportedLocalesOf([
+      ...pairs,
+      ...pairs.flatMap((pair) => alphabet.map((letter) => pair + letter)),
+      "zh-Hant",
+      "sr-Latn",
+    ]);
+    countryAliases = new Map();
+    for (const locale of locales) {
+      const regions = new Intl.DisplayNames(locale, {
+        type: "region",
+        fallback: "none",
+      });
+      for (const code of codes) {
+        const name = regions.of(code);
+        if (!name) continue;
+        const key = fold(name);
+        const previous = countryAliases.get(key);
+        countryAliases.set(
+          key,
+          previous === undefined || previous === code ? code : null,
+        );
+      }
+    }
+  }
+  return countryAliases.get(fold(value)) ?? undefined;
 }
 
 async function getJson(
@@ -126,21 +173,15 @@ async function getJson(
       redirect: "error",
       signal,
     });
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => {});
-      throw new WeatherError(`HTTP ${response.status}`);
-    }
-    const body = await response.text();
-    if (body.length > MAX_RESPONSE_CHARS)
-      throw new WeatherError("response too large");
-    return record(JSON.parse(body));
+    const result = record(await readJson(response, MAX_RESPONSE_BYTES));
+    if (result.error === true) throw new WebError("invalid response");
+    return result;
   } catch (error) {
     abortSignal?.throwIfAborted();
-    if (timeout.aborted) throw new WeatherError("timed out");
-    if (error instanceof WeatherError) throw error;
-    if (error instanceof SyntaxError)
-      throw new WeatherError("invalid response");
-    throw new WeatherError("request failed");
+    if (timeout.aborted) throw new WebError("timed out");
+    if (error instanceof WebError) throw error;
+    if (error instanceof SyntaxError) throw new WebError("invalid response");
+    throw new WebError("request failed");
   }
 }
 
@@ -151,29 +192,40 @@ function placeLabel(item: Record<string, unknown>) {
     .join(", ");
 }
 
-/** Pick a geocoding match: the qualifier after a comma first, then Brazil, then the top hit. */
-function pickPlace(results: unknown, qualifier = ""): Place | undefined {
-  if (!Array.isArray(results)) return undefined;
+type PlaceFilter = {
+  country?: string;
+  region?: string;
+  preferBrazil?: boolean;
+};
+
+function pickPlace(results: unknown, filter: PlaceFilter) {
+  if (results === undefined) return undefined;
+  if (!Array.isArray(results)) throw new WebError("invalid response");
   const places = results.flatMap((value) => {
     if (!value || typeof value !== "object") return [];
     const item = value as Record<string, unknown>;
     const latitude = number(item.latitude);
     const longitude = number(item.longitude);
-    if (latitude === undefined || longitude === undefined || !text(item.name))
+    if (
+      latitude === undefined ||
+      Math.abs(latitude) > 90 ||
+      longitude === undefined ||
+      Math.abs(longitude) > 180 ||
+      !text(item.name)
+    )
       return [];
     return [{ item, place: { label: placeLabel(item), latitude, longitude } }];
   });
-  const wanted = fold(qualifier);
-  const matches = (item: Record<string, unknown>) =>
-    [item.country_code, item.country, item.admin1, item.admin2].some(
-      (value) => fold(text(value)) === wanted,
-    );
-  const chosen =
-    (wanted && places.find(({ item }) => matches(item))) ||
-    (places.length > 1 &&
-      places.find(({ item }) => text(item.country_code) === "BR")) ||
-    places[0];
-  return chosen ? chosen.place : undefined;
+  const inCountry = (code: string) =>
+    places.find(({ item }) => text(item.country_code) === code);
+  if (filter.country) return inCountry(filter.country)?.place;
+  if (filter.region) {
+    const region = fold(filter.region);
+    return places.find(({ item }) =>
+      [item.admin1, item.admin2].some((name) => fold(text(name)) === region),
+    )?.place;
+  }
+  return ((filter.preferBrazil && inCountry("BR")) || places[0])?.place;
 }
 
 function round(value: unknown, digits = 1) {
@@ -183,8 +235,8 @@ function round(value: unknown, digits = 1) {
 
 function describe(code: unknown) {
   const n = number(code);
-  if (n === undefined) return "condição desconhecida";
-  return WMO[n] ?? `código WMO ${n}`;
+  if (n === undefined) return "unknown conditions";
+  return WMO[n] ?? `WMO code ${n}`;
 }
 
 function at(values: unknown, index: number) {
@@ -198,38 +250,59 @@ function weekday(date: string) {
 
 /** Turn an Open-Meteo forecast response into the fields the summary uses. */
 function parseForecast(response: Record<string, unknown>): Forecast {
+  const current = record(response.current);
   const daily = record(response.daily);
-  if (!Array.isArray(daily.time)) throw new WeatherError("invalid response");
+  const timezone = text(response.timezone);
+  const dates = daily.time;
+  if (
+    !timezone ||
+    !LOCAL_TIME.test(text(current.time)) ||
+    number(current.temperature_2m) === undefined ||
+    number(current.weather_code) === undefined ||
+    !Array.isArray(dates) ||
+    !dates.length ||
+    dates.length > MAX_DAYS ||
+    !dates.every(
+      (date) =>
+        typeof date === "string" &&
+        DATE.test(date) &&
+        !Number.isNaN(Date.parse(date)),
+    ) ||
+    !["weather_code", "temperature_2m_min", "temperature_2m_max"].every(
+      (field) =>
+        dates.every(
+          (_, index) => number(at(daily[field], index)) !== undefined,
+        ),
+    )
+  )
+    throw new WebError("invalid response");
   return {
-    timezone:
-      [text(response.timezone), text(response.timezone_abbreviation)]
-        .filter(Boolean)
-        .join(" ") || "UTC",
-    current: record(response.current ?? {}),
-    daily,
+    timezone: [timezone, text(response.timezone_abbreviation)]
+      .filter(Boolean)
+      .join(" "),
+    current,
+    daily: { ...daily, time: dates },
   };
 }
 
 function formatForecast(place: Place, forecast: Forecast) {
   const { current, daily } = forecast;
   const lines = [
-    `Previsão do tempo para ${place.label} (${round(place.latitude, 2)}, ${round(place.longitude, 2)})`,
+    `Weather forecast for ${place.label} (${round(place.latitude, 2)}, ${round(place.longitude, 2)})`,
   ];
   const time = text(current.time, 32).replace("T", " ");
   lines.push(
-    `Hora local: ${time || "?"} (${forecast.timezone})`,
-    `Agora: ${describe(current.weather_code)}, ${round(current.temperature_2m)} °C (sensação ${round(current.apparent_temperature)} °C), umidade ${round(current.relative_humidity_2m, 0)}%, precipitação ${round(current.precipitation)} mm, vento ${round(current.wind_speed_10m)} km/h`,
-    "Próximos dias:",
+    `Local time: ${time} (${forecast.timezone})`,
+    `Now: ${describe(current.weather_code)}, ${round(current.temperature_2m)} °C (feels like ${round(current.apparent_temperature)} °C), humidity ${round(current.relative_humidity_2m, 0)}%, precipitation ${round(current.precipitation)} mm, wind ${round(current.wind_speed_10m)} km/h`,
+    "Upcoming days:",
   );
-  const dates = daily.time as unknown[];
-  dates.forEach((value, i) => {
-    const date = text(value, 10);
+  daily.time.forEach((date, i) => {
     const chance = number(at(daily.precipitation_probability_max, i));
     lines.push(
-      `- ${date}${weekday(date)}: ${describe(at(daily.weather_code, i))}, ${round(at(daily.temperature_2m_min, i))}–${round(at(daily.temperature_2m_max, i))} °C, chuva ${round(at(daily.precipitation_sum, i))} mm${chance === undefined ? "" : ` (${round(chance, 0)}%)`}, vento até ${round(at(daily.wind_speed_10m_max, i))} km/h`,
+      `- ${date}${weekday(date)}: ${describe(at(daily.weather_code, i))}, ${round(at(daily.temperature_2m_min, i))}–${round(at(daily.temperature_2m_max, i))} °C, rain ${round(at(daily.precipitation_sum, i))} mm${chance === undefined ? "" : ` (${round(chance, 0)}%)`}, wind up to ${round(at(daily.wind_speed_10m_max, i))} km/h`,
     );
   });
-  lines.push("Fonte: Open-Meteo (open-meteo.com)");
+  lines.push("Source: Open-Meteo (open-meteo.com)");
   return lines.join("\n");
 }
 
@@ -283,23 +356,48 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
   const places = new TtlCache<Place | null>(options.now);
   const forecasts = new TtlCache<Forecast>(options.now);
 
-  const geocode = async (location: string, signal?: AbortSignal) => {
-    const [name = "", ...rest] = location.split(",");
-    const qualifier = rest.join(",").trim();
-    const key = fold(location);
-    const cached = places.get(key);
-    if (cached !== undefined) return cached;
+  const searchPlaces = async (
+    name: string,
+    filter: PlaceFilter,
+    signal?: AbortSignal,
+  ) => {
     const url = new URL(GEOCODING_URL);
     url.search = new URLSearchParams({
-      name: name.trim(),
+      name,
       count: "5",
-      language: "pt",
+      language: "en",
       format: "json",
+      ...(filter.country ? { countryCode: filter.country } : {}),
     }).toString();
     const response = await getJson(options, url, signal);
-    const place = pickPlace(response.results ?? [], qualifier) ?? null;
-    places.set(key, place);
-    return place;
+    return pickPlace(response.results, filter);
+  };
+
+  const geocode = async (location: string, signal?: AbortSignal) => {
+    const [name = "", qualifier, ...extra] = location
+      .split(",")
+      .map((part) => part.trim());
+    if (!name || qualifier === "" || extra.length)
+      throw new WebError(
+        "pass a city and at most one state or country qualifier",
+      );
+    const key = fold(qualifier ? `${name}, ${qualifier}` : name);
+    const cached = places.get(key);
+    if (cached !== undefined) return cached;
+    const code = qualifier ? countryCode(qualifier) : undefined;
+    const query = qualifier && !code ? `${name}, ${qualifier}` : name;
+    let place = await searchPlaces(
+      query,
+      code ? { country: code } : { preferBrazil: !qualifier },
+      signal,
+    );
+    if (!place && qualifier && !code) {
+      const localized = localizedCountryCode(qualifier);
+      const filter = localized ? { country: localized } : { region: qualifier };
+      place = await searchPlaces(name, filter, signal);
+    }
+    places.set(key, place ?? null);
+    return place ?? null;
   };
 
   const forecast = async (place: Place, days: number, signal?: AbortSignal) => {
@@ -339,7 +437,7 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
         let place: Place | null;
         if (args.latitude !== undefined && args.longitude !== undefined) {
           place = {
-            label: args.location?.trim() || "coordenadas informadas",
+            label: args.location?.trim() || "provided coordinates",
             latitude: args.latitude,
             longitude: args.longitude,
           };
@@ -347,7 +445,7 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
           place = await geocode(args.location!.trim(), signal);
           if (!place)
             return textResult(
-              `weather: location not found: ${JSON.stringify(args.location!.trim())}. Try a simpler city name or pass latitude and longitude.`,
+              `weather: location not found: ${JSON.stringify(args.location!.trim())}. Check the city and state or country, or pass latitude and longitude.`,
               true,
             );
         }
@@ -359,7 +457,7 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
       } catch (error) {
         signal?.throwIfAborted();
         const reason =
-          error instanceof WeatherError ? error.message : "request failed";
+          error instanceof WebError ? error.message : "request failed";
         return textResult(`weather failed (${step}: ${reason}).`, true);
       }
     },

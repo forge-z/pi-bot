@@ -115,6 +115,7 @@ function writeWebConfig(env: Env, web: WebConfig) {
   if (isMap(existing)) {
     existing.set("search", doc.createNode(web.search));
     existing.set("extract", doc.createNode(web.extract));
+    if (web.weather !== undefined) existing.set("weather", web.weather);
   } else {
     doc.set("web", doc.createNode(web));
   }

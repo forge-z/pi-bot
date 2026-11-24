@@ -13,8 +13,8 @@ import type {
   WebConfig,
   WebProvider,
 } from "./web-providers.js";
+import { MAX_RESPONSE_BYTES, readJson, WebError } from "./web-response.js";
 
-const MAX_RESPONSE_BYTES = 512 * 1024;
 const MAX_PAGE_CHARS = 20_000;
 const FRESHNESS = {
   day: { days: 1, brave: "pd", context: "last_24_hours", tbs: "qdr:d" },
@@ -56,8 +56,6 @@ type RequestOptions = {
   localGet?: LocalGet;
 };
 
-class WebError extends Error {}
-
 const REMOTE = {
   brave: ["https://api.search.brave.com/res/v1", "X-Subscription-Token"],
   context: ["https://api.context.dev/v1/web", "Authorization"],
@@ -82,33 +80,6 @@ function rows(value: unknown) {
 
 function field(value: unknown, max: number) {
   return typeof value === "string" ? value.slice(0, max) : "";
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  if (!response.ok) {
-    void response.body?.cancel().catch(() => {});
-    throw new WebError(`HTTP ${response.status}`);
-  }
-  if (!response.body) throw new WebError("invalid response");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let size = 0;
-  let json = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        void reader.cancel().catch(() => {});
-        throw new WebError("response too large");
-      }
-      json += decoder.decode(value, { stream: true });
-    }
-    return JSON.parse(json + decoder.decode()) as unknown;
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 async function request(
@@ -658,6 +629,6 @@ export function createWebTools(
           }),
         ]
       : []),
-    createWeatherTool(options),
+    ...(config.weather === false ? [] : [createWeatherTool(options)]),
   ];
 }

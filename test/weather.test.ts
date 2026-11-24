@@ -14,23 +14,24 @@ const GEOCODING = {
       latitude: 48.85341,
       longitude: 2.3488,
       country_code: "FR",
-      country: "França",
-      admin1: "Ilha de França",
+      country: "France",
+      admin1: "Île-de-France Region",
     },
     {
       name: "Paris",
       latitude: 33.66094,
       longitude: -95.55551,
       country_code: "US",
-      country: "Estados Unidos",
+      country: "United States",
       admin1: "Texas",
+      admin2: "Lamar County",
     },
     {
       name: "Paris",
       latitude: -23.123,
       longitude: -47.456,
       country_code: "BR",
-      country: "Brasil",
+      country: "Brazil",
       admin1: "São Paulo",
     },
   ],
@@ -64,13 +65,20 @@ const FORECAST = {
   },
 };
 
-function mockFetch(routes: { geocoding?: unknown; forecast?: unknown }) {
+function mockFetch(routes: {
+  geocoding?: object | ((url: URL) => object);
+  forecast?: unknown;
+}) {
   const urls: URL[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     urls.push(url);
     if (url.hostname === "geocoding-api.open-meteo.com")
-      return Response.json(routes.geocoding ?? {});
+      return Response.json(
+        typeof routes.geocoding === "function"
+          ? routes.geocoding(url)
+          : (routes.geocoding ?? {}),
+      );
     if (url.hostname === "api.open-meteo.com")
       return routes.forecast === undefined
         ? new Response("unavailable", { status: 503 })
@@ -115,7 +123,7 @@ test("weather geocodes a city, prefers Brazil and summarizes the forecast", asyn
   assert.equal(urls.length, 2);
   assert.equal(
     geocoding!.href,
-    "https://geocoding-api.open-meteo.com/v1/search?name=Paris&count=5&language=pt&format=json",
+    "https://geocoding-api.open-meteo.com/v1/search?name=Paris&count=5&language=en&format=json",
   );
   assert.equal(
     forecast!.origin + forecast!.pathname,
@@ -137,37 +145,119 @@ test("weather geocodes a city, prefers Brazil and summarizes the forecast", asyn
   assert.ok(!result.text.trimStart().startsWith("{"), "not raw JSON");
   assert.match(
     result.text,
-    /Previsão do tempo para Paris, São Paulo, Brasil \(-23\.12, -47\.46\)/,
+    /Weather forecast for Paris, São Paulo, Brazil \(-23\.12, -47\.46\)/,
   );
   assert.match(
     result.text,
-    /Hora local: 2026-11-24 14:15 \(America\/Sao_Paulo GMT-3\)/,
+    /Local time: 2026-11-24 14:15 \(America\/Sao_Paulo GMT-3\)/,
   );
   assert.match(
     result.text,
-    /Agora: parcialmente nublado, 27\.3 °C \(sensação 29\.1 °C\), umidade 61%, precipitação 0 mm, vento 11\.2 km\/h/,
+    /Now: partly cloudy, 27\.3 °C \(feels like 29\.1 °C\), humidity 61%, precipitation 0 mm, wind 11\.2 km\/h/,
   );
   assert.match(
     result.text,
-    /- 2026-11-24 \(ter\): chuva fraca, 19\.2–30\.1 °C, chuva 3\.2 mm \(70%\), vento até 20\.4 km\/h/,
+    /- 2026-11-24 \(Tue\): light rain, 19\.2–30\.1 °C, rain 3\.2 mm \(70%\), wind up to 20\.4 km\/h/,
   );
   assert.match(
     result.text,
-    /- 2026-11-25 \(qua\): trovoada, 18\.6–28 °C, chuva 12\.5 mm, vento até 31 km\/h/,
+    /- 2026-11-25 \(Wed\): thunderstorm, 18\.6–28 °C, rain 12\.5 mm, wind up to 31 km\/h/,
   );
 });
 
 test("weather uses the qualifier after a comma to choose among matches", async () => {
+  for (const [qualifier, queries, latitude, label] of [
+    [
+      "France",
+      [["Paris, France", null]],
+      "48.85",
+      /Paris, Île-de-France Region, France/,
+    ],
+    ["FR", [["Paris", "FR"]], "48.85", /Paris, Île-de-France Region, France/],
+    [
+      "França",
+      [
+        ["Paris, França", null],
+        ["Paris", "FR"],
+      ],
+      "48.85",
+      /Paris, Île-de-France Region, France/,
+    ],
+    [
+      "Franca",
+      [
+        ["Paris, Franca", null],
+        ["Paris", "FR"],
+      ],
+      "48.85",
+      /Paris, Île-de-France Region, France/,
+    ],
+    [
+      "Frankreich",
+      [
+        ["Paris, Frankreich", null],
+        ["Paris", "FR"],
+      ],
+      "48.85",
+      /Paris, Île-de-France Region, France/,
+    ],
+    ["Texas", [["Paris, Texas", null]], "33.66", /Paris, Texas, United States/],
+    [
+      "Lamar County",
+      [
+        ["Paris, Lamar County", null],
+        ["Paris", null],
+      ],
+      "33.66",
+      /Paris, Texas, United States/,
+    ],
+  ] as const) {
+    const { fetch, urls } = mockFetch({
+      geocoding: (url) => {
+        const name = url.searchParams.get("name");
+        const code = url.searchParams.get("countryCode");
+        if (name === "Paris, France" || code === "FR")
+          return { results: GEOCODING.results.slice(0, 1) };
+        if (name === "Paris, Texas")
+          return { results: GEOCODING.results.slice(1, 2) };
+        if (name === "Paris") return GEOCODING;
+        return {};
+      },
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({
+      location: `Paris, ${qualifier}`,
+    });
+    assert.equal(result.isError, false, qualifier);
+    assert.deepEqual(
+      urls
+        .slice(0, -1)
+        .map((url) => [
+          url.searchParams.get("name"),
+          url.searchParams.get("countryCode"),
+        ]),
+      queries,
+      qualifier,
+    );
+    assert.equal(urls.at(-1)!.searchParams.get("latitude"), latitude);
+    assert.equal(urls.at(-1)!.searchParams.get("forecast_days"), "5");
+    assert.match(result.text, label);
+  }
+});
+
+test("weather asks for disambiguation instead of using a city outside the qualifier", async () => {
   const { fetch, urls } = mockFetch({
-    geocoding: GEOCODING,
+    geocoding: (url) =>
+      url.searchParams.get("name") === "Paris" ? GEOCODING : {},
     forecast: FORECAST,
   });
-  const result = await weatherTool(fetch)({ location: "Paris, Franca" });
-  assert.equal(result.isError, false);
-  assert.equal(urls[0]!.searchParams.get("name"), "Paris");
-  assert.equal(urls[1]!.searchParams.get("latitude"), "48.85");
-  assert.equal(urls[1]!.searchParams.get("forecast_days"), "5");
-  assert.match(result.text, /Paris, Ilha de França, França/);
+  const result = await weatherTool(fetch)({ location: "Paris, Not a State" });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Check the city and state or country/);
+  assert.deepEqual(
+    urls.map((url) => url.searchParams.get("name")),
+    ["Paris, Not a State", "Paris"],
+  );
 });
 
 test("weather picks the first result when there is no Brazilian match", async () => {
@@ -186,7 +276,7 @@ test("weather accepts coordinates without geocoding and caches by rounded coordi
   const run = weatherTool(fetch, () => now);
   const first = await run({ latitude: -25.4284, longitude: -49.2733, days: 3 });
   assert.equal(first.isError, false);
-  assert.match(first.text, /coordenadas informadas \(-25\.43, -49\.27\)/);
+  assert.match(first.text, /provided coordinates \(-25\.43, -49\.27\)/);
   assert.equal(urls.length, 1);
   assert.equal(urls[0]!.hostname, "api.open-meteo.com");
 
@@ -253,4 +343,56 @@ test("weather turns HTTP failures and timeouts into short errors", async () => {
   )({ latitude: 0, longitude: 0 });
   assert.equal(timedOut.isError, true);
   assert.equal(timedOut.text, "weather failed (forecast: timed out).");
+});
+
+test("weather rejects incomplete forecasts without caching them", async () => {
+  const responses = [
+    { timezone: "UTC", daily: { time: [] } },
+    { ...FORECAST, daily: undefined },
+    { ...FORECAST, daily: { ...FORECAST.daily, time: [] } },
+    { ...FORECAST, daily: { ...FORECAST.daily, weather_code: [61] } },
+    { ...FORECAST, current: { ...FORECAST.current, temperature_2m: null } },
+    {
+      ...FORECAST,
+      current: { ...FORECAST.current, apparent_temperature: null },
+      daily: { ...FORECAST.daily, wind_speed_10m_max: [null, null] },
+    },
+  ];
+  let requests = 0;
+  const run = weatherTool(async () => Response.json(responses[requests++]));
+  const args = { latitude: 0, longitude: 0, days: 2 };
+  for (let i = 0; i < responses.length - 1; i++) {
+    const result = await run(args);
+    assert.equal(result.isError, true);
+    assert.match(result.text, /forecast: invalid response/);
+  }
+  const valid = await run(args);
+  assert.equal(valid.isError, false);
+  assert.match(valid.text, /feels like \? °C/);
+  assert.match(valid.text, /wind up to \? km\/h/);
+  assert.deepEqual(await run(args), valid);
+  assert.equal(requests, responses.length);
+});
+
+test("weather cancels a forecast stream at the response byte limit", async () => {
+  let chunks = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      chunks++;
+      if (chunks <= 8) controller.enqueue(new Uint8Array(128 * 1024));
+      else controller.close();
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const result = await weatherTool(async () => new Response(stream))({
+    latitude: 0,
+    longitude: 0,
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.text, "weather failed (forecast: response too large).");
+  assert.ok(cancelled);
+  assert.ok(chunks < 8, "the remaining bytes are not consumed");
 });

@@ -88,6 +88,10 @@ Brave's LLM Context API returns excerpts from search results, not arbitrary-URL 
 
 A keyed provider without a key is skipped. On its first call after startup, each tool warns about skipped providers and names the missing environment variables. If all configured providers lack keys, the tool returns an explicit error and the assistant can use an available MCP tool. With one available provider, the tool works without fallback and `npm run doctor` warns. With two, the tool tries the fallback after an error, rate limit, timeout, zero search results, or empty or whitespace-only page content. If the fallback also returns an empty result, that result is returned normally. If no fallback is available or it fails, a successful empty result from the primary is still returned. An empty list disables that operation. Local is available only when explicitly selected. Restart after changing the setup.
 
+### Native weather
+
+`weather` uses [Open-Meteo](https://open-meteo.com/) for current conditions and up to 16 days of forecasts. It sends the requested city or coordinates to Open-Meteo. The tool is enabled by default and uses the keyless [free API, which is for non-commercial use only](https://open-meteo.com/en/pricing). For commercial deployments, disable this tool: in `npm run setup`, choose **Web search**, toggle **Weather (Open-Meteo)** to **Off**, then choose **Save and back**. You can also set `weather: false` under `web` in your config file. Restart the bot to apply the change.
+
 ### Sandbox
 
 The long-running code task is `sandbox_code_task` (Instabox by default). It is off until the operator configures it. Nothing in the shipped config names a machine, an account, or a repository.

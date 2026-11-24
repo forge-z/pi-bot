@@ -1007,8 +1007,9 @@ function sessionStatus(session, summary) {
     image: summary.imageOn && session.image.choice !== "off",
     audio: summary.audioOn && !session.audio.off,
     mcp: mcpOn,
-    web: Object.values(web).some(
-      (order) => resolveWebProviders(order, webKeys).available.length > 0,
+    web: ["search", "extract"].some(
+      (operation) =>
+        resolveWebProviders(web[operation], webKeys).available.length > 0,
     ),
   });
 }
@@ -2581,7 +2582,7 @@ async function chooseWebProvider(readline, operation, label, order, role) {
 
 async function webMenu(readline) {
   const { web } = loadHarnessConfig(process.env);
-  const draft = { search: [...web.search], extract: [...web.extract] };
+  const draft = { ...web, search: [...web.search], extract: [...web.extract] };
   const stored = readVolumeWebKeys(dir);
   const keys = {};
   for (;;) {
@@ -2596,10 +2597,25 @@ async function webMenu(readline) {
         `${index + 1} - ${label.padEnd(20)} ${name}${missing ? " (key not set)" : ""}`,
       );
     }
+    const weatherEnabled = draft.weather !== false;
+    console.log(`5 - Weather (Open-Meteo): ${weatherEnabled ? "On" : "Off"}`);
     printSectionEnd();
     const input = (await readline.question("Choice: ")).trim().toLowerCase();
     if (input === "b" || input === "back") return;
     if (["s", "save", "save and back"].includes(input)) {
+      const orderChanged = ["search", "extract"].some(
+        (operation) =>
+          web[operation].length !== draft[operation].length ||
+          web[operation].some(
+            (provider, index) => provider !== draft[operation][index],
+          ),
+      );
+      if (
+        !orderChanged &&
+        !Object.keys(keys).length &&
+        weatherEnabled === (web.weather !== false)
+      )
+        return;
       try {
         saveWebSetup(db, process.env, draft, keys);
         console.log("Web settings saved. Restart the bot to apply.");
@@ -2613,12 +2629,16 @@ async function webMenu(readline) {
         continue;
       }
     }
+    if (input === "5" || input === "weather") {
+      draft.weather = !weatherEnabled;
+      continue;
+    }
     const field = WEB_FIELDS.find(
       ([, , label], i) =>
         input === String(i + 1) || input === label.toLowerCase(),
     );
     if (!field) {
-      console.log("Unknown choice. Use 1, 2, 3, 4, b, or s.");
+      console.log("Unknown choice. Use 1, 2, 3, 4, 5, b, or s.");
       continue;
     }
     const [operation, role, label] = field;

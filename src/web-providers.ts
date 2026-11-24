@@ -28,6 +28,7 @@ export type WebProvider = RemoteWebProvider | "local";
 export type WebConfig = {
   search: readonly RemoteWebProvider[];
   extract: readonly (typeof WEB_EXTRACT_PROVIDERS)[number][];
+  weather?: boolean;
 };
 
 export const WEB_PROVIDER_LABELS: Record<WebProvider, string> = {

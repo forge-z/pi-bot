@@ -78,7 +78,7 @@ const WEB_DEFAULTS: WebConfig = {
 function webFrom(value: unknown): WebConfig {
   if (!isRecord(value)) return WEB_DEFAULTS;
   const order = <P extends WebProvider>(
-    operation: keyof WebConfig,
+    operation: keyof typeof WEB_CHOICES,
     choices: readonly P[],
     fallback: readonly P[],
   ): readonly P[] => {
@@ -93,9 +93,14 @@ function webFrom(value: unknown): WebConfig {
     console.error(`Pi-Agent: web.${operation} is invalid. Using the default.`);
     return fallback;
   };
+  if (value.weather !== undefined && typeof value.weather !== "boolean")
+    console.error(
+      "Pi-Agent: web.weather must be true or false. Using the default.",
+    );
   return {
     search: order("search", WEB_CHOICES.search, WEB_DEFAULTS.search),
     extract: order("extract", WEB_CHOICES.extract, WEB_DEFAULTS.extract),
+    ...(typeof value.weather === "boolean" ? { weather: value.weather } : {}),
   };
 }
 
