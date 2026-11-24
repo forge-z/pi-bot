@@ -188,7 +188,7 @@ test("Executor setup sends scope, validates its issuer, and only saves a scoped 
   assert.equal(result, "signed-in");
   assert.ok(
     notices.includes(
-      'In Executor, choose your scoped connection and select "Through your agent" or "In your client" for approvals.',
+      'In Executor, choose your scoped connection and select "Automatic", "Through your agent", or "In your client" for approvals.',
     ),
   );
   assert.equal(saved[0].access, undefined);
@@ -229,16 +229,16 @@ test("Executor rejects a mismatched issuer, full grants, and incompatible approv
     ],
     [{ ...scopedGrant, organization: {} }, /organization ID/],
     [
-      { ...scopedGrant, mode: "automatic" },
-      /Executor granted Automatic approval\. Sign in again and choose "Through your agent" or "In your client"\./,
+      { ...scopedGrant, mode: "browser" },
+      /Executor granted "In your browser" approval\. Sign in again and choose "Automatic", "Through your agent", or "In your client"\./,
     ],
     [
-      { ...scopedGrant, mode: "browser" },
-      /Executor granted "In your browser" approval\. Sign in again and choose "Through your agent" or "In your client"\./,
+      { ...scopedGrant, mode: "unknown" },
+      /did not report a recognized approval mode/,
     ],
     [
       { ...scopedGrant, mode: undefined },
-      /did not report a recognized approval mode\. Sign in again and choose "Through your agent" or "In your client"\./,
+      /did not report a recognized approval mode\. Sign in again and choose "Automatic", "Through your agent", or "In your client"\./,
     ],
     [{}, /did not report a scoped connection/],
     [new Response("not JSON"), /did not return a JSON object/],
@@ -258,6 +258,53 @@ test("Executor rejects a mismatched issuer, full grants, and incompatible approv
     executorFetch({ ...scopedGrant, mode: "native" }),
   );
   assert.ok(native.ok);
+});
+
+test("Executor accepts Automatic only for a verified scoped connection", async () => {
+  const grant = { ...scopedGrant, mode: "automatic" };
+  for (const resource of [
+    EXECUTOR_MCP_URL,
+    "https://executor.example/mcp?connection=conn-1&elicitation_mode=automatic",
+  ]) {
+    const fetchImpl = executorFetch(grant, resource);
+    const started = await beginMcpOauthLogin({
+      ...EXECUTOR_OAUTH_PROFILE,
+      resource,
+      fetchImpl,
+    });
+    const callback = `${REDIRECT}?code=ok&state=${started.credential.pending?.state}`;
+    const login = await completeOauthPaste(
+      started.credential,
+      callback,
+      fetchImpl,
+    );
+    assert.ok(login.ok);
+    assert.equal(login.credential.connectionId, "conn-1");
+    assert.ok(login.credential.grantBinding);
+
+    const fullAccess = await completeOauthPaste(
+      started.credential,
+      callback,
+      executorFetch({ ...grant, access: { kind: "all" } }, resource),
+    );
+    assert.ok(!fullAccess.ok);
+    assert.match(fullAccess.message, /granted full access/);
+    if (resource !== EXECUTOR_MCP_URL) {
+      const wrongConnection = await completeOauthPaste(
+        started.credential,
+        callback,
+        executorFetch(
+          { ...grant, access: { ...grant.access, id: "conn-other" } },
+          resource,
+        ),
+      );
+      assert.ok(!wrongConnection.ok);
+      assert.match(
+        wrongConnection.message,
+        /scoped connection does not match the MCP URL/,
+      );
+    }
+  }
 });
 
 test("Executor OAuth wins over saved and environment PATs only in OAuth mode", async () => {

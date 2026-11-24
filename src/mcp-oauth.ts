@@ -33,7 +33,8 @@ const NOT_WAITING = "That URL is not the sign-in this bot is waiting for.";
 const EXCHANGE_FAILED =
   "Sign-in failed. Open the latest link and paste the redirect URL again.";
 const COULD_NOT_START = "MCP sign-in could not start.";
-const executorApprovalChoices = '"Through your agent" or "In your client"';
+const executorApprovalChoices =
+  '"Automatic", "Through your agent", or "In your client"';
 const executorOauthDebug = debuglog("executor-oauth");
 
 export class McpOauthError extends Error {
@@ -133,6 +134,17 @@ function httpsUrl(value: unknown) {
   }
 }
 
+function executorApprovalLabel(mode: unknown) {
+  switch (mode) {
+    case "automatic":
+      return '"Automatic"';
+    case "model":
+      return '"Through your agent"';
+    case "native":
+      return '"In your client"';
+  }
+}
+
 export function executorOauthUrl(value: unknown) {
   const href = httpsUrl(value);
   if (!href) return undefined;
@@ -148,7 +160,7 @@ export function executorOauthUrl(value: unknown) {
     (searchParams.has("connection") &&
       !/^[\w-]{1,64}$/.test(searchParams.get("connection")!)) ||
     (searchParams.has("elicitation_mode") &&
-      !["model", "native"].includes(searchParams.get("elicitation_mode")!))
+      !executorApprovalLabel(searchParams.get("elicitation_mode")))
   )
     return undefined;
   url.pathname = "/mcp";
@@ -747,15 +759,15 @@ async function executorGrant(
     return rejectedGrant(
       "The granted scoped connection does not match the MCP URL.",
     );
-  if (reportedMode !== "model" && reportedMode !== "native")
+  if (!executorApprovalLabel(reportedMode))
     return rejectedGrant(
-      reportedMode === "missing" || reportedMode === "unrecognized"
-        ? `GET /mcp/whoami did not report a recognized approval mode. Sign in again and choose ${executorApprovalChoices}.`
-        : `Executor granted ${reportedMode === "automatic" ? "Automatic" : '"In your browser"'} approval. Sign in again and choose ${executorApprovalChoices}.`,
+      reportedMode === "browser"
+        ? `Executor granted "In your browser" approval. Sign in again and choose ${executorApprovalChoices}.`
+        : `GET /mcp/whoami did not report a recognized approval mode. Sign in again and choose ${executorApprovalChoices}.`,
     );
   if (mode !== null && mode !== reportedMode)
     return rejectedGrant(
-      `The granted approval mode does not match the MCP URL. Sign in again and choose ${mode === "model" ? '"Through your agent"' : '"In your client"'} for this URL.`,
+      `The granted approval mode does not match the MCP URL. Sign in again and choose ${executorApprovalLabel(mode)} for this URL.`,
     );
   return { ok: true as const, connectionId, organizationId };
 }
