@@ -2319,6 +2319,16 @@ async function audioMenu(readline, session) {
   }
 }
 
+function verifiedExecutorOauth(credential, url) {
+  return Boolean(
+    executorCredentialUrl(credential) === url &&
+    credential?.connectionId &&
+    credential.organizationId &&
+    credential.grantBinding &&
+    credential.refresh,
+  );
+}
+
 async function mcpFields(readline, draft) {
   if (draft.choice === "executor" || draft.choice === "both") {
     const defaultAuth = draft.executorAuth === "oauth" ? "2" : "1";
@@ -2343,13 +2353,15 @@ async function mcpFields(readline, draft) {
       draft.executorUrl = executorOauthUrl(entered || current);
       if (!draft.executorUrl) {
         console.log("Enter a valid HTTPS Executor MCP URL.");
-        return;
+        return false;
       }
       try {
-        let credential =
-          executorCredentialUrl(draft.executorOauth) === draft.executorUrl
-            ? draft.executorOauth
-            : undefined;
+        let credential = verifiedExecutorOauth(
+          draft.executorOauth,
+          draft.executorUrl,
+        )
+          ? draft.executorOauth
+          : undefined;
         const result = await promptMcpOauthLogin(
           { ...EXECUTOR_OAUTH_PROFILE, resource: draft.executorUrl },
           {
@@ -2370,6 +2382,7 @@ async function mcpFields(readline, draft) {
             ? error.message
             : "Executor sign-in failed.",
         );
+        return false;
       }
     } else {
       const current =
@@ -2464,6 +2477,7 @@ async function mcpFields(readline, draft) {
   }
   if (draft.choice === "none")
     console.log("MCP platform set to none. Saved credentials are kept.");
+  return true;
 }
 
 function saveMcp(draft) {
@@ -2497,7 +2511,7 @@ function saveMcp(draft) {
 }
 
 async function mcpMenu(readline, session) {
-  const draft = structuredClone(session.mcp);
+  let draft = structuredClone(session.mcp);
   let edited = false;
   for (;;) {
     console.log("\nMCP platform");
@@ -2528,9 +2542,11 @@ async function mcpMenu(readline, session) {
       session.mcp = draft;
       return;
     }
-    edited = true;
-    draft.choice = action;
-    await mcpFields(readline, draft);
+    const next = { ...draft, choice: action };
+    if (await mcpFields(readline, next)) {
+      draft = next;
+      edited = true;
+    }
   }
 }
 
@@ -2880,11 +2896,7 @@ function aggregatorFields({
       const url = executorOauthUrl(executorUrl);
       if (!url)
         return { error: "Executor OAuth requires a valid HTTPS MCP URL." };
-      if (
-        executorCredentialUrl(executorOauth) !== url ||
-        !executorOauth?.grantBinding ||
-        !executorOauth.refresh
-      )
+      if (!verifiedExecutorOauth(executorOauth, url))
         return {
           error:
             "Executor OAuth is not signed in. Choose Executor and complete sign-in.",

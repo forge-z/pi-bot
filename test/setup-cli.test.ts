@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { parse } from "yaml";
+import { mcpServersFromAggregators } from "../src/config.js";
 import {
   EXECUTOR_OAUTH_CREDENTIAL,
   readOauthCredential,
@@ -16,6 +17,7 @@ import {
   readStoredSetup,
   readStoredTelegram,
   readStoredWhatsapp,
+  writeStoredAggregators,
   writeStoredSetup,
 } from "../src/setup.js";
 import { readVolumeWebKeys } from "../src/web-config.js";
@@ -109,6 +111,185 @@ test(
         assert.equal(readStoredAggregators(dir).record, undefined);
       }
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Executor without an OAuth grant exits on untouched save and can switch to its retained token",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    const db = new DatabaseSync(join(dir, "app.sqlite"));
+    const oauthUrl = "https://executor.example/mcp?connection=bot";
+    const tokenUrl = "https://pat.example/mcp";
+    const token = "fixture-executor-token";
+    try {
+      writeStoredAggregators(
+        db,
+        { choice: "executor", executor: { url: oauthUrl, auth: "oauth" } },
+        { executor: token },
+      );
+      assert.equal(
+        readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
+        undefined,
+      );
+      const output = await runSetup(dir, [
+        [main, "5"],
+        [save, "s"],
+        [
+          main,
+          () => {
+            assert.equal(
+              readStoredAggregators(dir).record?.executor?.auth,
+              "oauth",
+            );
+            return "5";
+          },
+        ],
+        [save, "2"],
+        ["Executor authentication: 1 - Token, 2 - OAuth [2]: ", "1"],
+        ["Executor URL: ", tokenUrl],
+        ["Executor token [saved] (hidden, Enter keeps current): ", ""],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      assert.match(output, /MCP platform\r\n[^\r\n]+\r\nChoice: executor/);
+      assert.doesNotMatch(output, /Executor OAuth is not signed in/);
+      const stored = readStoredAggregators(dir);
+      assert.deepEqual(stored, {
+        record: { choice: "executor", executor: { url: tokenUrl } },
+        executorToken: token,
+      });
+      const executor = mcpServersFromAggregators({}, stored).find(
+        (server) => server.name === "executor",
+      );
+      assert.equal(executor?.url, tokenUrl);
+      assert.equal(executor?.token, token);
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Abandoning Executor OAuth keeps Token mode and Save and back exits",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    const db = new DatabaseSync(join(dir, "app.sqlite"));
+    const token = "fixture-executor-token";
+    const record = {
+      choice: "executor",
+      executor: { url: "https://pat.example/mcp" },
+    } as const;
+    try {
+      writeStoredAggregators(db, record, { executor: token });
+      const output = await runSetup(
+        dir,
+        [
+          [main, "5"],
+          [save, "2"],
+          ["Executor authentication: 1 - Token, 2 - OAuth [1]: ", "2"],
+          ["Executor MCP URL: ", "https://executor.example/mcp?connection=bot"],
+          ["Paste the final browser URL: ", ""],
+          [save, "s"],
+          [main, "q"],
+        ],
+        { SETUP_TEST_EXECUTOR: "1" },
+      );
+      assert.doesNotMatch(output, /Executor OAuth is not signed in/);
+      assert.deepEqual(readStoredAggregators(dir), {
+        record,
+        executorToken: token,
+      });
+      assert.equal(
+        readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
+        undefined,
+      );
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Executor switches from Token to verified OAuth and back without replacing the token",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    const db = new DatabaseSync(join(dir, "app.sqlite"));
+    const tokenUrl = "https://pat.example/mcp";
+    const oauthUrl = "https://executor.example/mcp?connection=bot";
+    const token = "fixture-executor-token";
+    const tokenRecord = {
+      choice: "executor",
+      executor: { url: tokenUrl },
+    } as const;
+    try {
+      writeStoredAggregators(db, tokenRecord, { executor: token });
+      await runSetup(
+        dir,
+        [
+          [main, "5"],
+          [save, "2"],
+          ["Executor authentication: 1 - Token, 2 - OAuth [1]: ", "2"],
+          ["Executor MCP URL: ", oauthUrl],
+          [
+            "Paste the final browser URL: ",
+            (transcript) => {
+              assert.deepEqual(readStoredAggregators(dir).record, tokenRecord);
+              assert.equal(
+                readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
+                undefined,
+              );
+              const link = transcript.match(
+                /https:\/\/executor\.example\/auth\/authorize\?[^\s]+/,
+              );
+              assert.ok(link);
+              const authorize = new URL(link[0]);
+              return `${authorize.searchParams.get("redirect_uri")}?code=test-code&state=${authorize.searchParams.get("state")}`;
+            },
+          ],
+          [save, "s"],
+          [main, "q"],
+        ],
+        { SETUP_TEST_EXECUTOR: "1" },
+      );
+      const oauth = readStoredAggregators(dir);
+      assert.deepEqual(oauth, {
+        record: {
+          choice: "executor",
+          executor: { url: oauthUrl, auth: "oauth" },
+        },
+        executorToken: token,
+      });
+      assert.equal(
+        readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL)?.connectionId,
+        "bot",
+      );
+      assert.deepEqual(mcpServersFromAggregators({}, oauth), [
+        { name: "executor", url: oauthUrl, mode: "direct", oauth: "executor" },
+      ]);
+
+      await runSetup(dir, [
+        [main, "5"],
+        [save, "2"],
+        ["Executor authentication: 1 - Token, 2 - OAuth [2]: ", "1"],
+        ["Executor URL: ", tokenUrl],
+        ["Executor token [saved] (hidden, Enter keeps current): ", ""],
+        [save, "s"],
+        [main, "q"],
+      ]);
+      assert.deepEqual(readStoredAggregators(dir), {
+        record: tokenRecord,
+        executorToken: token,
+      });
+    } finally {
+      db.close();
       await rm(dir, { recursive: true, force: true });
     }
   },
@@ -345,7 +526,6 @@ test(
       ["Executor authentication: 1 - Token, 2 - OAuth [1]: ", "2"],
       ["Executor MCP URL: ", ""],
       [save, "s"],
-      [save, "b"],
       [main, "q"],
     ];
     let output = "";
@@ -379,7 +559,7 @@ test(
         });
       });
       assert.match(output, /Enter a valid HTTPS Executor MCP URL/);
-      assert.match(output, /Executor OAuth requires a valid HTTPS MCP URL/);
+      assert.equal(readStoredAggregators(dir).record, undefined);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
