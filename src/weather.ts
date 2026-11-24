@@ -99,7 +99,7 @@ const WEATHER_PARAMETERS = Type.Object({
       minLength: 1,
       maxLength: 200,
       description:
-        'City name, optionally followed by a comma and a state, Brazilian UF code or country to disambiguate, e.g. "Curitiba", "Campo Alegre, SC" or "Paris, France".',
+        'City name, optionally followed by a comma and a state, Brazilian UF code or country to disambiguate, or by a state and then a country, e.g. "Curitiba", "Campo Alegre, SC", "João Pessoa, Paraíba, Brasil" or "Paris, France".',
     }),
   ),
   latitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
@@ -483,14 +483,13 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
   };
 
   const geocode = async (location: string, signal?: AbortSignal) => {
-    const [name = "", qualifier, ...extra] = location
-      .split(",")
-      .map((part) => part.trim());
-    if (!name || qualifier === "" || extra.length)
+    const parts = location.split(",").map((part) => part.trim());
+    const [name = "", qualifier, country, ...extra] = parts;
+    if (!name || qualifier === "" || country === "" || extra.length)
       throw new WebError(
-        "pass a city and at most one state or country qualifier",
+        "pass a city, optionally followed by a state or country, or by a state and a country",
       );
-    const key = fold(qualifier ? `${name}, ${qualifier}` : name);
+    const key = fold(parts.join(", "));
     const cached = places.get(key);
     if (cached !== undefined) return cached;
     // A Brazilian UF ("SC") or state name is resolved locally and wins over a
@@ -505,6 +504,18 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
     const byState = Boolean(found);
     if (!found && (!state || countryCode(qualifier!)))
       found = await resolve(name, qualifier, signal);
+    // "City, State, Country": the state already disambiguates, so the country
+    // is left out of the query and only rules out a city in another country
+    // (e.g. a UF that is also an ISO code: "Barcelona, ES, Brasil").
+    const inCountry = country
+      ? (countryCode(country) ?? localizedCountryCode(country))
+      : undefined;
+    if (
+      inCountry &&
+      found &&
+      text(found.chosen.item.country_code) !== inCountry
+    )
+      found = undefined;
     let result: Place | Ambiguity | null = found?.chosen.place ?? null;
     if (
       found &&

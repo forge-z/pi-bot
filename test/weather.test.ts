@@ -633,3 +633,139 @@ test("weather ignores unpopulated homonyms and flags foreign ones as untrusted",
   );
   assert.equal(us.urls.length, 1);
 });
+
+const JOAO_PESSOA = {
+  name: "João Pessoa",
+  latitude: -7.115,
+  longitude: -34.86306,
+  country_code: "BR",
+  country: "Brazil",
+  admin1: "Paraíba",
+  admin2: "João Pessoa",
+  population: 809015,
+};
+
+/** Open-Meteo filters by `countryCode` and finds João Pessoa only in Paraíba. */
+function joaoPessoaGeocoding(url: URL) {
+  const name = url.searchParams.get("name")?.toLowerCase();
+  const code = url.searchParams.get("countryCode");
+  if (code && code !== "BR") return {};
+  if (name === "joão pessoa" || name === "joão pessoa, paraíba")
+    return { results: [JOAO_PESSOA] };
+  return {};
+}
+
+test("weather accepts a state and a country, dropping the country from the query", async () => {
+  for (const [location, query] of [
+    ["Campo Alegre, Santa Catarina, Brasil", "Campo Alegre, Santa Catarina"],
+    ["Campo Alegre, SC, Brasil", "Campo Alegre, Santa Catarina"],
+    ["campo alegre, sc, Brazil", "campo alegre, Santa Catarina"],
+    ["Campo Alegre, SC, BR", "Campo Alegre, Santa Catarina"],
+  ] as const) {
+    const { fetch, urls } = mockFetch({
+      geocoding: campoAlegreGeocoding,
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, false, location);
+    assert.deepEqual(
+      urls.map((url) => [
+        url.hostname,
+        url.searchParams.get("name"),
+        url.searchParams.get("countryCode"),
+      ]),
+      [
+        ["geocoding-api.open-meteo.com", query, null],
+        ["api.open-meteo.com", null, null],
+      ],
+      location,
+    );
+    assert.match(
+      result.text,
+      /Weather forecast for Campo Alegre, Santa Catarina, Brazil \(-26\.19, -49\.27\)/,
+      location,
+    );
+  }
+
+  for (const location of [
+    "João Pessoa, Paraíba",
+    "João Pessoa, Paraíba, Brasil",
+    "João Pessoa, PB, Brasil",
+  ]) {
+    const { fetch, urls } = mockFetch({
+      geocoding: joaoPessoaGeocoding,
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, false, location);
+    assert.equal(urls[0]!.searchParams.get("name"), "João Pessoa, Paraíba");
+    assert.match(
+      result.text,
+      /Weather forecast for João Pessoa, Paraíba, Brazil \(-7\.12, -34\.86\)/,
+      location,
+    );
+  }
+});
+
+test("weather still rejects a city outside the given state or country", async () => {
+  for (const location of ["João Pessoa, PE", "João Pessoa, PE, Brasil"]) {
+    const { fetch, urls } = mockFetch({
+      geocoding: joaoPessoaGeocoding,
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, true, location);
+    assert.equal(
+      result.text,
+      `weather: location not found: ${JSON.stringify(location)}. Check the city and state or country, or pass latitude and longitude.`,
+    );
+    assert.ok(
+      urls.every((url) => url.hostname === "geocoding-api.open-meteo.com"),
+      `${location}: no forecast request`,
+    );
+  }
+
+  const barcelona = {
+    name: "Barcelona",
+    latitude: 41.38879,
+    longitude: 2.15899,
+    country_code: "ES",
+    country: "Spain",
+    admin1: "Catalonia",
+    population: 1620343,
+  };
+  const spain = (url: URL) =>
+    url.searchParams.get("countryCode") === "ES"
+      ? { results: [barcelona] }
+      : {};
+  const wrongCountry = mockFetch({ geocoding: spain, forecast: FORECAST });
+  const run = weatherTool(wrongCountry.fetch);
+  const brazil = await run({ location: "Barcelona, ES, Brasil" });
+  assert.equal(brazil.isError, true);
+  assert.match(brazil.text, /location not found: "Barcelona, ES, Brasil"/);
+  const spainResult = await run({ location: "Barcelona, ES, Spain" });
+  assert.equal(spainResult.isError, false);
+  assert.match(spainResult.text, /Barcelona, Catalonia, Spain/);
+});
+
+test("weather rejects empty or extra location qualifiers without requests", async () => {
+  const { fetch, urls } = mockFetch({
+    geocoding: campoAlegreGeocoding,
+    forecast: FORECAST,
+  });
+  const run = weatherTool(fetch);
+  for (const location of [
+    "Campo Alegre, , Brasil",
+    "Campo Alegre, SC,",
+    "Campo Alegre, SC, Brasil, América do Sul",
+  ]) {
+    const result = await run({ location });
+    assert.equal(result.isError, true, location);
+    assert.equal(
+      result.text,
+      "weather failed (geocoding: pass a city, optionally followed by a state or country, or by a state and a country).",
+      location,
+    );
+  }
+  assert.equal(urls.length, 0);
+});
