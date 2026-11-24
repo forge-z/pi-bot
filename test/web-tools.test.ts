@@ -190,7 +190,10 @@ test("a configured chain with no keys reports all missing keys without making re
     }
   }
   assert.equal(requests, 0);
-  assert.deepEqual(createWebTools({ search: [], extract: [] }, {}), []);
+  assert.deepEqual(
+    createWebTools({ search: [], extract: [] }, {}).map(({ name }) => name),
+    ["weather"],
+  );
 });
 
 test("the missing-key warning stays with the first call when a later call finishes sooner", async () => {
@@ -849,7 +852,7 @@ test("Local alone registers extraction without any key and reads text without re
   );
   assert.deepEqual(
     tools.map(({ name }) => name),
-    ["web_extract"],
+    ["web_extract", "weather"],
   );
   const result = await execute(tools, "web_extract", {
     url: `${pageUrl}#anchor`,

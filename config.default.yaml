@@ -43,6 +43,7 @@
 web:
   search: [exa, context]
   extract: [exa, context]
+  # Weather is enabled by default. Set weather: false to disable Open-Meteo.
 
 mcp_servers:
   # Map of MCP server names to their trust level and tool lists.
