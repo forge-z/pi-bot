@@ -41,8 +41,8 @@
 # explicitly selected "local" extractor needs no key. Use npm run setup
 # or provider API key variables instead of saving keys in this file.
 web:
-  search: [exa, firecrawl]
-  extract: [exa, firecrawl]
+  search: [exa, context]]
+  extract: [exa, context]]
 
 mcp_servers:
   # Map of MCP server names to their trust level and tool lists.
