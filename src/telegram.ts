@@ -50,11 +50,7 @@ import {
   commandRevoke,
   resumeReport,
 } from "./commands.js";
-import {
-  acceptStoredOauthPaste,
-  UPSY_OAUTH_CREDENTIAL,
-  vaultFromStore,
-} from "./mcp-oauth.js";
+import { acceptMcpOauthPaste, vaultFromStore } from "./mcp-oauth.js";
 import { SettingsError } from "./settings.js";
 import { TaskError } from "./tasks.js";
 import {
@@ -1221,9 +1217,8 @@ export class Telegram {
     }
     const reply = (message: string) =>
       queueControl(this.app, `telegram:clean:${updateId}`, owner, id, message);
-    const oauthPaste = await acceptStoredOauthPaste(
+    const oauthPaste = await acceptMcpOauthPaste(
       vaultFromStore(this.app.store),
-      UPSY_OAUTH_CREDENTIAL,
       text,
     );
     if (oauthPaste.handled) {

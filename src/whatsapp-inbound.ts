@@ -12,11 +12,7 @@ import {
 import { resolveFunctions } from "./functions.js";
 import { imageVerdict } from "./outbound.js";
 import { mcpUncertainNeedsNotice, type McpCall } from "./mcp-calls.js";
-import {
-  acceptStoredOauthPaste,
-  UPSY_OAUTH_CREDENTIAL,
-  vaultFromStore,
-} from "./mcp-oauth.js";
+import { acceptMcpOauthPaste, vaultFromStore } from "./mcp-oauth.js";
 import { isRetryableError, type Runtime } from "./runtime.js";
 import { childIds, queueWhatsApp } from "./store.js";
 import type { McpInteraction } from "./mcp-calls.js";
@@ -426,11 +422,8 @@ export async function acceptWhatsAppMessage(
       return;
     }
     const conversationId = await conversationFor(app, message);
-    // Same paste Telegram accepts. A loopback redirect finishes the Upsy login
-    // already in progress and is not sent to the model. The login itself is unchanged.
-    const oauthPaste = await acceptStoredOauthPaste(
+    const oauthPaste = await acceptMcpOauthPaste(
       vaultFromStore(app.store),
-      UPSY_OAUTH_CREDENTIAL,
       message.text,
     );
     if (oauthPaste.handled) {

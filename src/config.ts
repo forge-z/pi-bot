@@ -22,7 +22,11 @@ import type {
   ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
 import type { McpConfig } from "./mcp.js";
-import { UPSY_MCP_URL, UPSY_SERVER_NAME } from "./mcp-oauth.js";
+import {
+  EXECUTOR_MCP_URL,
+  UPSY_MCP_URL,
+  UPSY_SERVER_NAME,
+} from "./mcp-oauth.js";
 import {
   anySubscriptionAuthenticated,
   chatgptAuthMode,
@@ -163,16 +167,26 @@ export function mcpServersFromAggregators(
     composioUrl && operatorSecret(env, "COMPOSIO_API_KEY"),
   );
   const envSelf = Boolean(selfUrl);
+  const executorOauth = record?.executor?.auth === "oauth";
   const wantExecutor = legacy
     ? envExecutor
-    : choice === "executor" || choice === "both" || envExecutor;
+    : choice === "executor" ||
+      choice === "both" ||
+      (!executorOauth && envExecutor);
   const wantComposio = legacy
     ? envComposio
     : choice === "composio" || choice === "both" || envComposio;
   const wantSelf = legacy ? envSelf : choice === "self-hosted" || envSelf;
   const wantUpsy = !legacy && choice === "upsy";
   const servers: McpConfig[] = [];
-  if (wantExecutor) {
+  if (wantExecutor && executorOauth) {
+    servers.push({
+      name: "executor",
+      url: EXECUTOR_MCP_URL,
+      mode: "direct",
+      oauth: "executor",
+    });
+  } else if (wantExecutor) {
     const url = executorUrl || record?.executor?.url;
     if (url && executorToken)
       servers.push({

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFunctions } from "./functions.js";
 import {
+  EXECUTOR_MCP_URL,
   readOauthCredential,
   UPSY_OAUTH_CREDENTIAL,
   type McpOauthCredential,
@@ -278,7 +279,7 @@ export type AggregatorChoice =
 
 export interface AggregatorRecord {
   choice: AggregatorChoice;
-  executor?: { url: string };
+  executor?: { url: string; auth?: "oauth" };
   composio?: { url: string; userId: string };
   /** `header` omitted means `Authorization: Bearer`. */
   selfHosted?: { url: string; header?: string };
@@ -345,7 +346,11 @@ function usableAggregatorRecord(
   if (!value || !AGGREGATOR_CHOICES.has(value.choice)) return false;
   if (
     value.executor !== undefined &&
-    (typeof value.executor.url !== "string" || !value.executor.url)
+    (typeof value.executor.url !== "string" ||
+      !value.executor.url ||
+      (value.executor.auth !== undefined &&
+        (value.executor.auth !== "oauth" ||
+          value.executor.url !== EXECUTOR_MCP_URL)))
   )
     return false;
   if (value.composio !== undefined) {

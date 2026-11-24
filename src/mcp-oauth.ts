@@ -10,11 +10,18 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 export const UPSY_SERVER_NAME = "upsy";
 export const UPSY_MCP_URL = "https://upsy.ai/connect";
 export const UPSY_OAUTH_CREDENTIAL = "mcp-upsy";
+export const EXECUTOR_MCP_URL = "https://mcp.executor.sh/mcp";
+export const EXECUTOR_OAUTH_CREDENTIAL = "mcp-executor-oauth";
 export const MCP_OAUTH_REDIRECT_URI = "http://127.0.0.1:33418/callback";
 const LEGACY_REDIRECT_URI = "http://127.0.0.1/callback";
 export const UPSY_OAUTH_PROFILE = {
   name: "Upsy",
   resource: UPSY_MCP_URL,
+  redirectUri: MCP_OAUTH_REDIRECT_URI,
+};
+export const EXECUTOR_OAUTH_PROFILE = {
+  name: "Executor",
+  resource: EXECUTOR_MCP_URL,
   redirectUri: MCP_OAUTH_REDIRECT_URI,
 };
 
@@ -40,6 +47,11 @@ export interface McpOauthCredential {
   clientId?: string;
   authorizationEndpoint?: string;
   tokenEndpoint?: string;
+  issuer?: string;
+  scope?: string;
+  connectionId?: string;
+  organizationId?: string;
+  grantBinding?: string;
   resource?: string;
   redirectUri?: string;
   pending?: { state: string; verifier: string; createdAt: number };
@@ -61,6 +73,11 @@ const TEXT_KEYS = [
   "clientId",
   "authorizationEndpoint",
   "tokenEndpoint",
+  "issuer",
+  "scope",
+  "connectionId",
+  "organizationId",
+  "grantBinding",
   "resource",
   "redirectUri",
 ] as const;
@@ -240,6 +257,7 @@ function authorizationUrl(input: {
   codeChallenge: string;
   state: string;
   resource: string;
+  scope?: string;
 }) {
   const url = new URL(input.authorizationEndpoint);
   url.searchParams.set("response_type", "code");
@@ -249,6 +267,7 @@ function authorizationUrl(input: {
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", input.state);
   url.searchParams.set("resource", input.resource);
+  if (input.scope) url.searchParams.set("scope", input.scope);
   return url.href;
 }
 
@@ -356,6 +375,7 @@ function pendingAuthorizationUrl(
       .digest("base64url"),
     state: pending.state,
     resource: credential.resource,
+    scope: credential.scope,
   });
 }
 
@@ -442,6 +462,7 @@ async function discoverMcpOauth(resource: string, fetchImpl: FetchImpl) {
   const metadata = doc as {
     resource?: unknown;
     authorization_servers?: unknown[];
+    scopes_supported?: unknown[];
   };
   const published = httpsUrl(metadata.resource);
   // RFC 9728: a published resource identifier must be the one we asked for.
@@ -465,9 +486,18 @@ async function discoverMcpOauth(resource: string, fetchImpl: FetchImpl) {
   if (Array.isArray(authMethods) && !authMethods.includes("none"))
     throw new McpOauthError("This MCP server requires a client secret.");
   const registrationEndpoint = httpsUrl(as?.registration_endpoint);
+  const scopes = Array.isArray(metadata.scopes_supported)
+    ? metadata.scopes_supported.filter(
+        (value): value is string =>
+          typeof value === "string" &&
+          /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(value),
+      )
+    : [];
   return {
     authorizationEndpoint,
     tokenEndpoint,
+    issuer: publishedIssuer,
+    scope: scopes.join(" ") || undefined,
     ...(registrationEndpoint ? { registrationEndpoint } : {}),
     resource: httpsUrl(metadata.resource) ?? resource,
   };
@@ -477,6 +507,7 @@ async function registerPublicClient(
   endpoint: string,
   redirectUri: string,
   fetchImpl: FetchImpl,
+  scope?: string,
 ) {
   let response: Response;
   try {
@@ -493,6 +524,7 @@ async function registerPublicClient(
         response_types: ["code"],
         token_endpoint_auth_method: "none",
         application_type: "native",
+        ...(scope ? { scope } : {}),
       }),
       redirect: "error",
       signal: AbortSignal.timeout(15000),
@@ -577,7 +609,42 @@ export async function refreshOauthCredential(
   }
   const tokens = result.ok ? readTokenFields(result.json) : undefined;
   if (!tokens) return { ok: false, invalid: false };
+  if (credential.resource === EXECUTOR_MCP_URL) {
+    const grant = await executorGrant(tokens.access, fetchImpl);
+    if (
+      !grant ||
+      grant.connectionId !== credential.connectionId ||
+      grant.organizationId !== credential.organizationId
+    )
+      return { ok: false, invalid: true };
+  }
   return { ok: true, credential: withTokens(credential, tokens, now) };
+}
+
+async function executorGrant(access: string, fetchImpl: FetchImpl) {
+  const response = await fetchImpl(`${EXECUTOR_MCP_URL}/whoami`, {
+    headers: { accept: "application/json", authorization: `Bearer ${access}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => undefined);
+  if (!response?.ok) return undefined;
+  const body = (await response.json().catch(() => undefined)) as
+    | {
+        access?: { kind?: unknown; id?: unknown };
+        organization?: { id?: unknown };
+        mode?: unknown;
+      }
+    | undefined;
+  const connectionId = singleLine(body?.access?.id);
+  const organizationId = singleLine(body?.organization?.id);
+  if (
+    body?.access?.kind !== "connection" ||
+    !connectionId ||
+    !organizationId ||
+    (body.mode !== "model" && body.mode !== "native")
+  )
+    return undefined;
+  return { connectionId, organizationId };
 }
 
 export async function beginMcpOauthLogin(input: {
@@ -594,6 +661,10 @@ export async function beginMcpOauthLogin(input: {
   if (input.existing && reused)
     return { credential: input.existing, url: reused };
   const endpoints = await discoverMcpOauth(input.resource, fetchImpl);
+  const scope =
+    input.resource === EXECUTOR_MCP_URL
+      ? "mcp offline_access"
+      : endpoints.scope;
   let clientId = input.existing?.clientId;
   if (
     !clientId ||
@@ -608,6 +679,7 @@ export async function beginMcpOauthLogin(input: {
       endpoints.registrationEndpoint,
       input.redirectUri,
       fetchImpl,
+      scope,
     );
   }
   const random = input.random ?? randomBytes;
@@ -619,8 +691,12 @@ export async function beginMcpOauthLogin(input: {
     clientId,
     authorizationEndpoint: endpoints.authorizationEndpoint,
     tokenEndpoint: endpoints.tokenEndpoint,
+    issuer: endpoints.issuer,
+    scope,
     resource: endpoints.resource,
     redirectUri: input.redirectUri,
+    connectionId: input.existing?.connectionId,
+    organizationId: input.existing?.organizationId,
     pending: { state, verifier, createdAt: now },
   };
   return {
@@ -632,6 +708,7 @@ export async function beginMcpOauthLogin(input: {
       codeChallenge: challenge,
       state,
       resource: endpoints.resource,
+      scope: credential.scope,
     }),
   };
 }
@@ -649,12 +726,13 @@ export async function completeOauthPaste(
   { ok: true; credential: McpOauthCredential } | { ok: false; message: string }
 > {
   const parsed = parsePastedRedirect(text);
-  if (!parsed)
+  if (!parsed || (credential.resource === EXECUTOR_MCP_URL && !parsed.callback))
     return pasteFailed(
       "Paste the full redirect URL, including code and state.",
     );
   if (
     !credential.pending ||
+    now - credential.pending.createdAt > PENDING_MS ||
     !oauthStateMatches(credential.pending.state, parsed.state)
   )
     return pasteFailed(NOT_WAITING);
@@ -664,13 +742,13 @@ export async function completeOauthPaste(
     );
   const tokenEndpoint = httpsUrl(credential.tokenEndpoint);
   if (parsed.iss) {
-    let origin = "";
-    try {
-      origin = new URL(parsed.iss).origin;
-    } catch {
-      origin = "";
-    }
-    if (!tokenEndpoint || origin !== new URL(tokenEndpoint).origin)
+    const issuer =
+      credential.issuer ??
+      (credential.resource === UPSY_MCP_URL && tokenEndpoint
+        ? new URL(tokenEndpoint).origin
+        : undefined);
+    const expected = httpsUrl(issuer);
+    if (!expected || httpsUrl(parsed.iss) !== expected)
       return pasteFailed(NOT_WAITING);
   }
   if (
@@ -692,7 +770,18 @@ export async function completeOauthPaste(
     const result = await postForm(tokenEndpoint, body, fetchImpl);
     const tokens = result.ok ? readTokenFields(result.json) : undefined;
     if (!tokens) return pasteFailed(EXCHANGE_FAILED);
-    return { ok: true, credential: withTokens(credential, tokens, now) };
+    const next = withTokens(credential, tokens, now);
+    if (credential.resource === EXECUTOR_MCP_URL) {
+      const grant = await executorGrant(tokens.access, fetchImpl);
+      if (!grant || !tokens.refresh)
+        return pasteFailed(
+          "Executor sign-in was not verified. Choose a scoped connection and Model or Native approval mode, then try again.",
+        );
+      Object.assign(next, grant, {
+        grantBinding: randomBytes(16).toString("hex"),
+      });
+    }
+    return { ok: true, credential: next };
   } catch {
     return pasteFailed(EXCHANGE_FAILED);
   }
@@ -714,9 +803,33 @@ export async function acceptStoredOauthPaste(
         : { handled: false as const };
     const done = await completeOauthPaste(current, text, fetchImpl ?? fetch);
     if (!done.ok) return { handled: true as const, message: done.message };
+    if (
+      provider === EXECUTOR_OAUTH_CREDENTIAL &&
+      current.connectionId &&
+      (done.credential.connectionId !== current.connectionId ||
+        done.credential.organizationId !== current.organizationId)
+    )
+      return {
+        handled: true as const,
+        message:
+          "Choose the previous Executor scoped connection, or change it in npm run setup.",
+      };
     vault.write(provider, done.credential);
-    return { handled: true as const, message: "Upsy is signed in." };
+    const name = provider === EXECUTOR_OAUTH_CREDENTIAL ? "Executor" : "Upsy";
+    return { handled: true as const, message: `${name} is signed in.` };
   });
+}
+
+export async function acceptMcpOauthPaste(vault: OauthVault, text: string) {
+  const parsed = parsePastedRedirect(text);
+  if (!parsed) return { handled: false as const };
+  for (const provider of [UPSY_OAUTH_CREDENTIAL, EXECUTOR_OAUTH_CREDENTIAL]) {
+    if (oauthStateMatches(vault.read(provider)?.pending?.state, parsed.state))
+      return acceptStoredOauthPaste(vault, provider, text);
+  }
+  return parsed.callback
+    ? { handled: true as const, message: NOT_WAITING }
+    : { handled: false as const };
 }
 
 export async function promptMcpOauthLogin(
@@ -749,6 +862,10 @@ export async function promptMcpOauthLogin(
     ? { ...existing, ...started.credential }
     : started.credential;
   io.save(pending);
+  if (profile.resource === EXECUTOR_MCP_URL)
+    io.log(
+      "Choose your scoped connection and Model or Native approval mode in Executor.",
+    );
   io.log(oauthLoginNotice(profile.name, started.url, "terminal"));
   const done = await completeOauthPaste(
     pending,
@@ -777,6 +894,16 @@ export async function ensureMcpOauthAccess(input: {
     let current = input.vault.read(input.provider) ?? {
       type: "oauth" as const,
     };
+    if (input.resource === EXECUTOR_MCP_URL && current.access) {
+      if (
+        current.resource !== input.resource ||
+        !current.connectionId ||
+        !current.organizationId ||
+        !current.grantBinding
+      ) {
+        current = { type: "oauth" };
+      }
+    }
     if (accessTokenFresh(current, now) && current.access) return current.access;
     if (
       current.refresh &&
@@ -833,24 +960,38 @@ export async function ensureMcpOauthAccess(input: {
   });
 }
 
-export function withOauthBearer<T extends { name: string; url?: string }>(
+export function withOauthBearer<
+  T extends { name: string; url?: string; oauth?: "executor" },
+>(
   servers: T[],
   vault: OauthVault,
   notify: (text: string, id: string) => void,
   fetchImpl?: FetchImpl,
-): Array<T & { resolveToken?: () => Promise<string> }> {
+): Array<
+  T & { resolveToken?: () => Promise<string>; oauthBinding?: () => string }
+> {
   return servers.map((server) => {
-    if (server.name !== UPSY_SERVER_NAME || server.url !== UPSY_MCP_URL)
-      return server;
+    const executor =
+      server.oauth === "executor" &&
+      server.name === "executor" &&
+      server.url === EXECUTOR_MCP_URL;
+    const upsy =
+      server.name === UPSY_SERVER_NAME && server.url === UPSY_MCP_URL;
+    if (!executor && !upsy) return server;
+    const profile = executor ? EXECUTOR_OAUTH_PROFILE : UPSY_OAUTH_PROFILE;
+    const provider = executor
+      ? EXECUTOR_OAUTH_CREDENTIAL
+      : UPSY_OAUTH_CREDENTIAL;
     return {
       ...server,
+      ...(executor
+        ? { oauthBinding: () => vault.read(provider)?.grantBinding ?? "" }
+        : {}),
       resolveToken: () =>
         ensureMcpOauthAccess({
+          ...profile,
           vault,
-          provider: UPSY_OAUTH_CREDENTIAL,
-          resource: UPSY_MCP_URL,
-          redirectUri: MCP_OAUTH_REDIRECT_URI,
-          name: "Upsy",
+          provider,
           fetchImpl,
           notify,
         }),

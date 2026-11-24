@@ -100,6 +100,9 @@ import {
   writeChatgptAuthMode,
 } from "../dist/src/subscription-login.js";
 import {
+  EXECUTOR_MCP_URL,
+  EXECUTOR_OAUTH_CREDENTIAL,
+  EXECUTOR_OAUTH_PROFILE,
   McpOauthError,
   promptMcpOauthLogin,
   readOauthCredential,
@@ -908,6 +911,9 @@ function loadSession() {
     mcp: {
       choice: aggregators.record?.choice,
       executorUrl: aggregators.record?.executor?.url,
+      executorAuth: aggregators.record?.executor?.auth,
+      executorOauth: readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
+      newExecutorOauth: undefined,
       composioUrl: aggregators.record?.composio?.url,
       composioUser: aggregators.record?.composio?.userId,
       executorToken: aggregators.executorToken,
@@ -2199,20 +2205,62 @@ async function audioMenu(readline, session) {
 
 async function mcpFields(readline, draft) {
   if (draft.choice === "executor" || draft.choice === "both") {
-    const current =
-      process.env.EXECUTOR_MCP_URL?.trim() || draft.executorUrl || "";
-    draft.executorUrl =
-      (
-        await readline.question(
-          `Executor URL${current ? ` [${current}]` : ""}: `,
-        )
-      ).trim() || current;
-    const typed = await askSecret(
-      readline,
-      "Executor token",
-      Boolean(draft.executorToken || draft.newExecutor),
-    );
-    if (typed) draft.newExecutor = typed;
+    const defaultAuth = draft.executorAuth === "oauth" ? "2" : "1";
+    let auth;
+    do {
+      auth =
+        (
+          await readline.question(
+            `Executor authentication: 1 - Token, 2 - OAuth [${defaultAuth}]: `,
+          )
+        ).trim() || defaultAuth;
+      if (auth !== "1" && auth !== "2") console.log("Choose 1 or 2.");
+    } while (auth !== "1" && auth !== "2");
+    if (auth === "2") {
+      try {
+        let credential = draft.executorOauth;
+        const result = await promptMcpOauthLogin(
+          EXECUTOR_OAUTH_PROFILE,
+          {
+            log: (line) => console.log(line),
+            ask: (prompt) => readline.question(prompt),
+            save: (value) => {
+              credential = value;
+            },
+          },
+          credential,
+        );
+        if (result === "signed-in") draft.newExecutorOauth = credential;
+        draft.executorOauth = credential;
+        draft.executorAuth = "oauth";
+        console.log("Save and back turns Executor OAuth on.");
+      } catch (error) {
+        draft.executorAuth = "oauth";
+        console.log(
+          error instanceof McpOauthError
+            ? error.message
+            : "Executor sign-in failed.",
+        );
+      }
+    } else {
+      const current =
+        process.env.EXECUTOR_MCP_URL?.trim() ||
+        (draft.executorAuth !== "oauth" ? draft.executorUrl : "") ||
+        "";
+      draft.executorUrl =
+        (
+          await readline.question(
+            `Executor URL${current ? ` [${current}]` : ""}: `,
+          )
+        ).trim() || current;
+      draft.executorAuth = undefined;
+      const typed = await askSecret(
+        readline,
+        "Executor token",
+        Boolean(draft.executorToken || draft.newExecutor),
+      );
+      if (typed) draft.newExecutor = typed;
+    }
   }
   if (draft.choice === "composio" || draft.choice === "both") {
     const current =
@@ -2295,6 +2343,8 @@ function saveMcp(draft) {
   const built = aggregatorFields({
     choice: draft.choice,
     executorUrl: draft.executorUrl,
+    executorAuth: draft.executorAuth,
+    executorOauth: draft.executorOauth,
     executorToken: draft.newExecutor || draft.executorToken,
     composioUrl: draft.composioUrl,
     composioUser: draft.composioUser,
@@ -2305,11 +2355,16 @@ function saveMcp(draft) {
     upsyReady: Boolean(draft.upsySignedIn),
   });
   if (built.error) return built.error;
-  persistAggregators(built.record, {
-    ...(draft.newExecutor ? { executor: draft.newExecutor } : {}),
-    ...(draft.newComposio ? { composio: draft.newComposio } : {}),
-    ...(draft.newSelfHosted ? { selfHosted: draft.newSelfHosted } : {}),
-  });
+  persistAggregators(
+    built.record,
+    {
+      ...(draft.newExecutor ? { executor: draft.newExecutor } : {}),
+      ...(draft.newComposio ? { composio: draft.newComposio } : {}),
+      ...(draft.newSelfHosted ? { selfHosted: draft.newSelfHosted } : {}),
+    },
+    draft.newExecutorOauth,
+  );
+  draft.newExecutorOauth = undefined;
   return "";
 }
 
@@ -2592,7 +2647,7 @@ function aggregatorLabel() {
     );
   if (stored.record.executor)
     parts.push(
-      `executor ${stored.record.executor.url}${stored.executorToken ? " (token on volume)" : ""}${executorOn ? "" : " (off)"}`,
+      `executor ${stored.record.executor.url}${stored.record.executor.auth === "oauth" ? " (OAuth)" : stored.executorToken ? " (token on volume)" : ""}${executorOn ? "" : " (off)"}`,
     );
   if (stored.record.composio)
     parts.push(
@@ -2639,12 +2694,24 @@ function persistWhatsapp(users) {
   );
 }
 
-function persistAggregators(record, keys) {
+function persistAggregators(record, keys, executorOauth) {
   if (options.dryRun) {
     console.log(`(dry-run) MCP platform: ${record.choice}.`);
     return;
   }
-  writeStoredAggregators(db, record, keys, MODE);
+  if (record.executor?.auth === "oauth" && executorOauth) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      writeOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL, executorOauth);
+      writeStoredAggregators(db, record, keys, MODE);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } else {
+    writeStoredAggregators(db, record, keys, MODE);
+  }
   console.log(
     `MCP platform saved on the volume (${record.choice}). Keys are in credentials.`,
   );
@@ -2662,6 +2729,8 @@ function warnIfNoAggregator() {
 function aggregatorFields({
   choice,
   executorUrl,
+  executorAuth,
+  executorOauth,
   executorToken,
   composioUrl,
   composioUser,
@@ -2674,7 +2743,17 @@ function aggregatorFields({
   try {
     const record = { choice };
     const keys = {};
-    if (choice === "executor" || choice === "both") {
+    if (
+      (choice === "executor" || choice === "both") &&
+      executorAuth === "oauth"
+    ) {
+      if (!executorOauth?.grantBinding || !executorOauth.refresh)
+        return {
+          error:
+            "Executor OAuth is not signed in. Choose Executor and complete sign-in.",
+        };
+      record.executor = { url: EXECUTOR_MCP_URL, auth: "oauth" };
+    } else if (choice === "executor" || choice === "both") {
       if (!executorUrl) return { error: "Executor URL is missing." };
       record.executor = { url: validatePublicEndpoint(executorUrl) };
       if (executorToken) keys.executor = executorToken;
@@ -2791,6 +2870,10 @@ async function aggregatorsFromFlags() {
   }
   const built = aggregatorFields({
     choice,
+    executorAuth: options.executorTokenStdin
+      ? undefined
+      : stored.record?.executor?.auth,
+    executorOauth: readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
     executorUrl:
       options.executorUrl ||
       process.env.EXECUTOR_MCP_URL?.trim() ||
