@@ -2467,8 +2467,6 @@ async function mcpFields(readline, draft) {
 }
 
 function saveMcp(draft) {
-  if (!draft.choice)
-    return "Choose Composio, Executor, Upsy, Self-hosted, both, or none.";
   const built = aggregatorFields({
     choice: draft.choice,
     executorUrl: draft.executorUrl,
@@ -2500,6 +2498,7 @@ function saveMcp(draft) {
 
 async function mcpMenu(readline, session) {
   const draft = structuredClone(session.mcp);
+  let edited = false;
   for (;;) {
     console.log("\nMCP platform");
     console.log(
@@ -2520,6 +2519,7 @@ async function mcpMenu(readline, session) {
     }
     if (action === "back") return;
     if (action === "save") {
+      if (!edited) return;
       const error = saveMcp(draft);
       if (error) {
         console.log(error);
@@ -2528,6 +2528,7 @@ async function mcpMenu(readline, session) {
       session.mcp = draft;
       return;
     }
+    edited = true;
     draft.choice = action;
     await mcpFields(readline, draft);
   }

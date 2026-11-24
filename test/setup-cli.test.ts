@@ -85,6 +85,36 @@ function runSetup(dir: string, steps: readonly SetupStep[], env = {}) {
 }
 
 test(
+  "MCP Save and back exits an untouched menu without recording a platform choice",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    try {
+      for (const env of [
+        {},
+        {
+          EXECUTOR_MCP_URL: "https://executor.example/mcp",
+          EXECUTOR_TOKEN: "fixture-env-pat",
+        },
+      ]) {
+        await runSetup(
+          dir,
+          [
+            [main, "5"],
+            [save, "s"],
+            [main, "q"],
+          ],
+          env,
+        );
+        assert.equal(readStoredAggregators(dir).record, undefined);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Executor OAuth Save and back reports a rejected volume write and allows retry",
   { skip: !hasPty },
   async () => {
