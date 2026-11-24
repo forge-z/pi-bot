@@ -100,9 +100,10 @@ import {
   writeChatgptAuthMode,
 } from "../dist/src/subscription-login.js";
 import {
-  EXECUTOR_MCP_URL,
   EXECUTOR_OAUTH_CREDENTIAL,
   EXECUTOR_OAUTH_PROFILE,
+  executorCredentialUrl,
+  executorOauthUrl,
   McpOauthError,
   promptMcpOauthLogin,
   readOauthCredential,
@@ -2332,10 +2333,25 @@ async function mcpFields(readline, draft) {
       if (auth !== "1" && auth !== "2") console.log("Choose 1 or 2.");
     } while (auth !== "1" && auth !== "2");
     if (auth === "2") {
+      const current = draft.executorAuth === "oauth" ? draft.executorUrl : "";
+      const entered = (
+        await readline.question(
+          `Executor MCP URL${current ? ` [${current}]` : ""}: `,
+        )
+      ).trim();
+      draft.executorAuth = "oauth";
+      draft.executorUrl = executorOauthUrl(entered || current);
+      if (!draft.executorUrl) {
+        console.log("Enter a valid HTTPS Executor MCP URL.");
+        return;
+      }
       try {
-        let credential = draft.executorOauth;
+        let credential =
+          executorCredentialUrl(draft.executorOauth) === draft.executorUrl
+            ? draft.executorOauth
+            : undefined;
         const result = await promptMcpOauthLogin(
-          EXECUTOR_OAUTH_PROFILE,
+          { ...EXECUTOR_OAUTH_PROFILE, resource: draft.executorUrl },
           {
             log: (line) => console.log(line),
             ask: (prompt) => readline.question(prompt),
@@ -2347,10 +2363,8 @@ async function mcpFields(readline, draft) {
         );
         if (result === "signed-in") draft.newExecutorOauth = credential;
         draft.executorOauth = credential;
-        draft.executorAuth = "oauth";
         console.log("Save and back turns Executor OAuth on.");
       } catch (error) {
-        draft.executorAuth = "oauth";
         console.log(
           error instanceof McpOauthError
             ? error.message
@@ -2862,12 +2876,19 @@ function aggregatorFields({
       (choice === "executor" || choice === "both") &&
       executorAuth === "oauth"
     ) {
-      if (!executorOauth?.grantBinding || !executorOauth.refresh)
+      const url = executorOauthUrl(executorUrl);
+      if (!url)
+        return { error: "Executor OAuth requires a valid HTTPS MCP URL." };
+      if (
+        executorCredentialUrl(executorOauth) !== url ||
+        !executorOauth?.grantBinding ||
+        !executorOauth.refresh
+      )
         return {
           error:
             "Executor OAuth is not signed in. Choose Executor and complete sign-in.",
         };
-      record.executor = { url: EXECUTOR_MCP_URL, auth: "oauth" };
+      record.executor = { url, auth: "oauth" };
     } else if (choice === "executor" || choice === "both") {
       if (!executorUrl) return { error: "Executor URL is missing." };
       record.executor = { url: validatePublicEndpoint(executorUrl) };
@@ -2991,7 +3012,8 @@ async function aggregatorsFromFlags() {
     executorOauth: readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL),
     executorUrl:
       options.executorUrl ||
-      process.env.EXECUTOR_MCP_URL?.trim() ||
+      ((!stored.record?.executor?.auth || options.executorTokenStdin) &&
+        process.env.EXECUTOR_MCP_URL?.trim()) ||
       stored.record?.executor?.url,
     executorToken,
     composioUrl:

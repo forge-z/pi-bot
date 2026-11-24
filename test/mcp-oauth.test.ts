@@ -97,15 +97,21 @@ const scopedGrant = {
   mode: "model",
 };
 
-function executorFetch(grant: unknown = scopedGrant): typeof fetch {
+function executorFetch(
+  grant: unknown = scopedGrant,
+  endpoint = EXECUTOR_MCP_URL,
+  audience = endpoint,
+): typeof fetch {
+  const { origin, pathname, search } = new URL(endpoint);
   return async (input, init) => {
     const url = String(input);
     assert.equal(init?.redirect, "error");
     if (
-      url === "https://mcp.executor.sh/.well-known/oauth-protected-resource/mcp"
+      url ===
+      `${origin}/.well-known/oauth-protected-resource${pathname}${search}`
     )
       return jsonResponse(200, {
-        resource: EXECUTOR_MCP_URL,
+        resource: audience,
         authorization_servers: [EXECUTOR_ISSUER],
         scopes_supported: ["mcp", "offline_access"],
       });
@@ -127,14 +133,14 @@ function executorFetch(grant: unknown = scopedGrant): typeof fetch {
     }
     if (url === EXECUTOR_AUTH + "/token") {
       const body = new URLSearchParams(String(init?.body));
-      assert.equal(body.get("resource"), EXECUTOR_MCP_URL);
+      assert.equal(body.get("resource"), audience);
       return jsonResponse(200, {
         access_token: "executor-access",
         refresh_token: "executor-refresh",
         expires_in: 3600,
       });
     }
-    if (url === EXECUTOR_MCP_URL + "/whoami") {
+    if (url === `${origin}${pathname}/whoami${search}`) {
       assert.equal(
         new Headers(init?.headers).get("authorization"),
         "Bearer executor-access",
@@ -270,6 +276,66 @@ test("Executor OAuth wins over saved and environment PATs only in OAuth mode", a
   assert.equal(pat.url, env.EXECUTOR_MCP_URL);
   assert.equal(pat.token, env.EXECUTOR_TOKEN);
   assert.equal(pat.resolveToken, undefined);
+});
+
+test("Executor OAuth authorizes, persists and refreshes the entered scoped endpoint", async () => {
+  const resource =
+    "https://executor.example/mcp?connection=conn-1&elicitation_mode=model";
+  const audience = "https://executor.example/mcp?connection=conn-1";
+  const fetchImpl = executorFetch(scopedGrant, resource, audience);
+  const started = await beginMcpOauthLogin({
+    ...EXECUTOR_OAUTH_PROFILE,
+    resource,
+    fetchImpl,
+  });
+  assert.equal(new URL(started.url).searchParams.get("resource"), audience);
+  const callback = `${REDIRECT}?code=ok&state=${started.credential.pending?.state}`;
+  const wrong = await completeOauthPaste(
+    started.credential,
+    callback,
+    executorFetch(
+      { ...scopedGrant, access: { ...scopedGrant.access, id: "conn-other" } },
+      resource,
+      audience,
+    ),
+  );
+  assert.equal(wrong.ok, false);
+  const login = await completeOauthPaste(
+    started.credential,
+    callback,
+    fetchImpl,
+  );
+  assert.ok(login.ok);
+  const dir = await mkdtemp(join(tmpdir(), "pi-executor-oauth-"));
+  try {
+    const db = new DatabaseSync(join(dir, "app.sqlite"));
+    writeStoredAggregators(
+      db,
+      { choice: "executor", executor: { url: resource, auth: "oauth" } },
+      { executor: "saved-pat" },
+    );
+    db.close();
+    const servers = mcpServersFromAggregators(
+      { EXECUTOR_MCP_URL, EXECUTOR_TOKEN: "env-pat" },
+      readStoredAggregators(dir),
+    );
+    const vault = memoryVault({ ...login.credential, expires: 0 });
+    const [server] = withOauthBearer(servers, vault, () => {}, fetchImpl);
+    assert.equal(server.url, resource);
+    assert.equal(server.token, undefined);
+    assert.equal(await server.resolveToken!(), "executor-access");
+    new McpGateway([server]);
+
+    const [changed] = withOauthBearer(
+      [{ ...servers[0], url: EXECUTOR_MCP_URL }],
+      vault,
+      () => {},
+      () => assert.fail("Must not reuse credentials at a different MCP URL"),
+    );
+    await assert.rejects(changed.resolveToken!(), /Executor OAuth URL changed/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("authorization URL is PKCE S256 on the fixed loopback port and carries no secret", async () => {
