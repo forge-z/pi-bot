@@ -33,6 +33,7 @@ const NOT_WAITING = "That URL is not the sign-in this bot is waiting for.";
 const EXCHANGE_FAILED =
   "Sign-in failed. Open the latest link and paste the redirect URL again.";
 const COULD_NOT_START = "MCP sign-in could not start.";
+const executorApprovalChoices = '"Through your agent" or "In your client"';
 const executorOauthDebug = debuglog("executor-oauth");
 
 export class McpOauthError extends Error {
@@ -749,12 +750,12 @@ async function executorGrant(
   if (reportedMode !== "model" && reportedMode !== "native")
     return rejectedGrant(
       reportedMode === "missing" || reportedMode === "unrecognized"
-        ? "GET /mcp/whoami did not report a recognized approval mode."
-        : `Executor granted ${reportedMode} approval mode. Choose Model or Native during sign-in.`,
+        ? `GET /mcp/whoami did not report a recognized approval mode. Sign in again and choose ${executorApprovalChoices}.`
+        : `Executor granted ${reportedMode === "automatic" ? "Automatic" : '"In your browser"'} approval. Sign in again and choose ${executorApprovalChoices}.`,
     );
   if (mode !== null && mode !== reportedMode)
     return rejectedGrant(
-      "The granted approval mode does not match the MCP URL.",
+      `The granted approval mode does not match the MCP URL. Sign in again and choose ${mode === "model" ? '"Through your agent"' : '"In your client"'} for this URL.`,
     );
   return { ok: true as const, connectionId, organizationId };
 }
@@ -993,7 +994,7 @@ export async function promptMcpOauthLogin(
   io.save(pending);
   if (profile.executor)
     io.log(
-      "Choose your scoped connection and Model or Native approval mode in Executor.",
+      `In Executor, choose your scoped connection and select ${executorApprovalChoices} for approvals.`,
     );
   io.log(oauthLoginNotice(profile.name, started.url, "terminal"));
   const done = await completeOauthPaste(
