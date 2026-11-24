@@ -12,13 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Text model** setup offers an optional fallback model from the same or another official provider. The bot tries it when a text model request errors, times out, or is rate-limited, without changing the primary selection.
-- **MCP platform → Executor → OAuth** signs in to a scoped Executor Cloud connection. Setup verifies the grant before enabling tools, and credentials refresh automatically. Token sign-in remains available.
+- **MCP platform → Executor → OAuth** signs in to a scoped Executor connection. Setup verifies the grant before enabling tools, and credentials refresh automatically. Token sign-in remains available.
 - `web_extract` returns `publishedDate` from provider metadata, or `null` when no date is available.
 
 ### Changed
 
 - Package version is 0.5.3. The MCP client announces that same version.
 - Native web tools warn on their first call when they skip providers without API keys and name the missing environment variables. If none of the configured providers has the required key, the tool returns an explicit error so the assistant can use an available MCP tool.
+
+### Fixed
+
+- Executor OAuth setup asks for the HTTPS MCP URL from Executor and uses it for sign-in instead of assuming a default. The URL can include `?connection=<id>`.
 
 ## [0.5.2] - 2026-11-23
 
