@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-23
+
 ### Added
 
 - **Text model** setup offers an optional fallback model from the same or another official provider. The bot tries it when a text model request errors, times out, or is rate-limited, without changing the primary selection.
+- **MCP platform → Executor → OAuth** signs in to a scoped Executor connection. Setup verifies the grant before enabling tools, and credentials refresh automatically. Token sign-in remains available.
+- `web_extract` returns `publishedDate` from provider metadata, or `null` when no date is available.
+
+### Changed
+
+- Package version is 0.5.3. The MCP client announces that same version.
+- Native web tools warn on their first call when they skip providers without API keys and name the missing environment variables. If none of the configured providers has the required key, the tool returns an explicit error so the assistant can use an available MCP tool.
+
+### Fixed
+
+- Executor OAuth setup asks for the HTTPS MCP URL from Executor and uses it for sign-in instead of assuming a default. The URL can include `?connection=<id>`.
+- Executor setup keeps the previous authentication mode if OAuth sign-in is cancelled or fails verification. When Executor rejects the grant or verification fails, setup reports the specific reason instead of a generic error.
+- Executor OAuth accepts verified scoped connections using **Automatic** approval, which runs tools without approval prompts. Setup and verification errors use the consent-screen labels **Automatic**, **Through your agent**, and **In your client**.
+- **MCP platform → Save and back** returns to the main menu without writing settings when nothing was edited, leaving environment-only configuration untouched. If a save fails with a SQLite write error, setup reports it, rolls back partial settings and credential changes, and keeps the draft open so you can retry without signing in again.
 
 ## [0.5.2] - 2026-11-23
 
@@ -155,7 +171,8 @@ Alpha. At this commit the README still calls the project alpha.
 - An image a provider would refuse is dropped before it enters history, so one bad image does not fail later turns.
 - An in-flight MCP call unlocks when its deadline passes, and recording the same job run id twice keeps the tool result. ([#1](https://github.com/forge-z/pi-bot/pull/1))
 
-[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/forge-z/pi-bot/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/forge-z/pi-bot/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/forge-z/pi-bot/compare/v0.4.0...v0.5.2
 [0.4.0]: https://github.com/forge-z/pi-bot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/forge-z/pi-bot/compare/v0.2.0...v0.3.0
