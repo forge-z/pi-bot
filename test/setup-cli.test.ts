@@ -19,6 +19,71 @@ const exa = "fixture-setup-exa";
 const context = "fixture-setup-context";
 
 test(
+  "Executor OAuth setup requires an MCP URL rather than using the token environment",
+  { skip: !hasPty },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-pty-"));
+    const child = spawn(
+      "script",
+      ["-qefc", "node --import tsx test/setup-cli-child.ts", "/dev/null"],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          DATA_DIR: dir,
+          TERM: "dumb",
+          EXECUTOR_MCP_URL: "https://pat.example/mcp",
+        },
+      },
+    );
+    const steps = [
+      [main, "5"],
+      [save, "2"],
+      ["Executor authentication: 1 - Token, 2 - OAuth [1]: ", "2"],
+      ["Executor MCP URL: ", ""],
+      [save, "s"],
+      [save, "b"],
+      [main, "q"],
+    ];
+    let output = "";
+    let cursor = 0;
+    let step = 0;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => child.kill("SIGTERM"), 15_000);
+        child.stdin.on("error", reject);
+        child.on("error", reject);
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          if (code === 0 && step === steps.length) resolve();
+          else
+            reject(
+              new Error(
+                `Setup stopped at prompt ${step + 1} (exit ${code}):\n${output}`,
+              ),
+            );
+        });
+        child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+          output += chunk;
+          const next = steps[step];
+          if (!next) return;
+          const [prompt, input] = next;
+          const start = output.indexOf(prompt, cursor);
+          if (start === -1) return;
+          cursor = start + prompt.length;
+          step++;
+          child.stdin.write(`${input}\n`);
+        });
+      });
+      assert.match(output, /Enter a valid HTTPS Executor MCP URL/);
+      assert.match(output, /Executor OAuth requires a valid HTTPS MCP URL/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Text model setup saves an optional fallback and its separate key without changing the primary",
   { skip: !hasPty },
   async () => {

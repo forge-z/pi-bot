@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFunctions } from "./functions.js";
 import {
-  EXECUTOR_MCP_URL,
+  executorOauthUrl,
   readOauthCredential,
   UPSY_OAUTH_CREDENTIAL,
   type McpOauthCredential,
@@ -376,9 +376,7 @@ function usableAggregatorRecord(
     value.executor !== undefined &&
     (typeof value.executor.url !== "string" ||
       !value.executor.url ||
-      (value.executor.auth !== undefined &&
-        (value.executor.auth !== "oauth" ||
-          value.executor.url !== EXECUTOR_MCP_URL)))
+      (value.executor.auth !== undefined && value.executor.auth !== "oauth"))
   )
     return false;
   if (value.composio !== undefined) {
@@ -445,7 +443,11 @@ export function writeStoredAggregators(
   keys: { executor?: string; composio?: string; selfHosted?: string } = {},
   mode = "live",
 ) {
-  if (!usableAggregatorRecord(record))
+  if (
+    !usableAggregatorRecord(record) ||
+    (record.executor?.auth === "oauth" &&
+      !executorOauthUrl(record.executor.url))
+  )
     throw new Error("Invalid aggregator record.");
   db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)");
   db.exec(

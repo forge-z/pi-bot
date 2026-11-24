@@ -23,7 +23,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { McpConfig } from "./mcp.js";
 import {
-  EXECUTOR_MCP_URL,
+  executorOauthUrl,
   UPSY_MCP_URL,
   UPSY_SERVER_NAME,
 } from "./mcp-oauth.js";
@@ -180,12 +180,14 @@ export function mcpServersFromAggregators(
   const wantUpsy = !legacy && choice === "upsy";
   const servers: McpConfig[] = [];
   if (wantExecutor && executorOauth) {
-    servers.push({
-      name: "executor",
-      url: EXECUTOR_MCP_URL,
-      mode: "direct",
-      oauth: "executor",
-    });
+    const url = executorOauthUrl(record?.executor?.url);
+    if (url)
+      servers.push({
+        name: "executor",
+        url,
+        mode: "direct",
+        oauth: "executor",
+      });
   } else if (wantExecutor) {
     const url = executorUrl || record?.executor?.url;
     if (url && executorToken)

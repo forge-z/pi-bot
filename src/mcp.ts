@@ -19,7 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { McpOauthError } from "./mcp-oauth.js";
+import { executorOauthUrl, McpOauthError } from "./mcp-oauth.js";
 
 /** Compile each distinct output schema once across catalog probes. */
 class CachedSchemaValidator implements jsonSchemaValidator {
@@ -468,10 +468,17 @@ function validateEntry(item: McpConfig) {
     throw new PolicyError("Invalid MCP URL");
   }
   if (
+    item.oauth === "executor" &&
+    (item.name !== "executor" ||
+      !item.resolveToken ||
+      !executorOauthUrl(item.url))
+  )
+    throw new PolicyError("Invalid Executor OAuth MCP URL");
+  if (
     !["http:", "https:"].includes(url.protocol) ||
     url.username ||
     url.password ||
-    url.search ||
+    (url.search && item.oauth !== "executor") ||
     url.hash
   )
     throw new PolicyError(
