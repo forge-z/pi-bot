@@ -396,3 +396,240 @@ test("weather cancels a forecast stream at the response byte limit", async () =>
   assert.ok(cancelled);
   assert.ok(chunks < 8, "the remaining bytes are not consumed");
 });
+
+const CAMPO_ALEGRE = {
+  results: [
+    {
+      name: "Campo Alegre",
+      latitude: -9.78194,
+      longitude: -36.35083,
+      country_code: "BR",
+      country: "Brazil",
+      admin1: "Alagoas",
+      admin2: "Campo Alegre",
+      population: 32106,
+    },
+    {
+      name: "Campo Alegre",
+      latitude: -26.1925,
+      longitude: -49.26556,
+      country_code: "BR",
+      country: "Brazil",
+      admin1: "Santa Catarina",
+      admin2: "Campo Alegre",
+      population: 12501,
+    },
+    {
+      name: "Campo Alegre",
+      latitude: -9.05,
+      longitude: -39.2,
+      country_code: "BR",
+      country: "Brazil",
+      admin1: "Estado de Bahia",
+      admin2: "Chorrochó",
+    },
+    {
+      name: "Campo Alegre",
+      latitude: 3.18917,
+      longitude: -75.70361,
+      country_code: "CO",
+      country: "Colombia",
+      admin1: "Tolima Department",
+      population: 1052,
+    },
+  ],
+};
+
+/** Open-Meteo answers "City, State" with only the cities in that state. */
+function campoAlegreGeocoding(url: URL) {
+  const name = url.searchParams.get("name")?.toLowerCase();
+  if (name === "campo alegre, santa catarina")
+    return { results: CAMPO_ALEGRE.results.slice(1, 2) };
+  if (name === "campo alegre" || name === "campo alegre, brazil")
+    return CAMPO_ALEGRE;
+  return {};
+}
+
+test("weather lists same-name cities instead of silently picking one", async () => {
+  for (const location of [
+    "Campo Alegre",
+    "campo alegre",
+    "Campo Alegre, Brazil",
+    "Campo Alegre, Brasil",
+    "Campo Alegre, BR",
+  ]) {
+    const { fetch, urls } = mockFetch({
+      geocoding: campoAlegreGeocoding,
+      forecast: FORECAST,
+    });
+    const run = weatherTool(fetch);
+    const result = await run({ location });
+    assert.equal(result.isError, true, location);
+    const name = location.split(",")[0];
+    assert.equal(
+      result.text,
+      `Weather: "${name}" é ambíguo (AL, SC). Passe o estado, ex.: "${name}, AL".`,
+      location,
+    );
+    assert.ok(
+      urls.every((url) => url.hostname === "geocoding-api.open-meteo.com"),
+      `${location}: no forecast request`,
+    );
+    const requests = urls.length;
+    assert.deepEqual(await run({ location }), result);
+    assert.equal(urls.length, requests, `${location}: answer is cached`);
+  }
+});
+
+test("weather expands Brazilian UF codes and state names before geocoding", async () => {
+  for (const location of [
+    "Campo Alegre, SC",
+    "campo alegre, sc",
+    "Campo Alegre, Santa Catarina",
+    "Campo Alegre, santa catarina",
+  ]) {
+    const { fetch, urls } = mockFetch({
+      geocoding: campoAlegreGeocoding,
+      forecast: FORECAST,
+    });
+    const result = await weatherTool(fetch)({ location });
+    assert.equal(result.isError, false, location);
+    assert.deepEqual(
+      urls.map((url) => [
+        url.hostname,
+        url.searchParams.get("name"),
+        url.searchParams.get("countryCode"),
+      ]),
+      [
+        [
+          "geocoding-api.open-meteo.com",
+          `${location.split(",")[0]}, Santa Catarina`,
+          null,
+        ],
+        ["api.open-meteo.com", null, null],
+      ],
+      location,
+    );
+    assert.equal(urls[1]!.searchParams.get("latitude"), "-26.19", location);
+    assert.match(
+      result.text,
+      /Weather forecast for Campo Alegre, Santa Catarina, Brazil \(-26\.19, -49\.27\)/,
+      location,
+    );
+  }
+
+  const { fetch, urls } = mockFetch({
+    geocoding: (url) =>
+      url.searchParams.get("name") === "Brasília"
+        ? {
+            results: [
+              {
+                name: "Brasília",
+                latitude: -15.77972,
+                longitude: -47.92972,
+                country_code: "BR",
+                country: "Brazil",
+                admin1: "Federal District",
+                population: 2207718,
+              },
+            ],
+          }
+        : {},
+    forecast: FORECAST,
+  });
+  const brasilia = await weatherTool(fetch)({ location: "Brasília, DF" });
+  assert.equal(brasilia.isError, false);
+  assert.deepEqual(
+    urls.slice(0, -1).map((url) => url.searchParams.get("name")),
+    ["Brasília, Federal District", "Brasília"],
+    "DF matches Open-Meteo's English admin1 name",
+  );
+  assert.match(brasilia.text, /Brasília, Federal District, Brazil/);
+});
+
+test("weather falls back to the country when a UF code is also an ISO code", async () => {
+  const { fetch, urls } = mockFetch({
+    geocoding: (url) =>
+      url.searchParams.get("countryCode") === "ES"
+        ? {
+            results: [
+              {
+                name: "Barcelona",
+                latitude: 41.38879,
+                longitude: 2.15899,
+                country_code: "ES",
+                country: "Spain",
+                admin1: "Catalonia",
+                population: 1620343,
+              },
+            ],
+          }
+        : {},
+    forecast: FORECAST,
+  });
+  const result = await weatherTool(fetch)({ location: "Barcelona, ES" });
+  assert.equal(result.isError, false);
+  assert.deepEqual(
+    urls
+      .slice(0, -1)
+      .map((url) => [
+        url.searchParams.get("name"),
+        url.searchParams.get("countryCode"),
+      ]),
+    [
+      ["Barcelona, Espírito Santo", null],
+      ["Barcelona", null],
+      ["Barcelona", "ES"],
+    ],
+  );
+  assert.match(result.text, /Barcelona, Catalonia, Spain/);
+});
+
+test("weather ignores unpopulated homonyms and flags foreign ones as untrusted", async () => {
+  const curitiba = {
+    results: [
+      {
+        name: "Curitiba",
+        latitude: -25.42778,
+        longitude: -49.27306,
+        country_code: "BR",
+        country: "Brazil",
+        admin1: "Paraná",
+        population: 1948626,
+      },
+      {
+        name: "Curitiba",
+        latitude: -21.51839,
+        longitude: -42.01225,
+        country_code: "BR",
+        country: "Brazil",
+        admin1: "Rio de Janeiro",
+      },
+    ],
+  };
+  const { fetch } = mockFetch({ geocoding: curitiba, forecast: FORECAST });
+  const result = await weatherTool(fetch)({ location: "Curitiba" });
+  assert.equal(result.isError, false);
+  assert.match(result.text, /Weather forecast for Curitiba, Paraná, Brazil/);
+
+  const springfield = {
+    results: ["Missouri", "Illinois"].map((admin1, i) => ({
+      name: "Springfield",
+      latitude: 37 + i,
+      longitude: -93 + i,
+      country_code: "US",
+      country: "United States",
+      admin1,
+      population: 170_000 - i,
+    })),
+  };
+  const us = mockFetch({ geocoding: springfield, forecast: FORECAST });
+  const ambiguous = await weatherTool(us.fetch)({ location: "Springfield" });
+  assert.equal(ambiguous.isError, true);
+  assert.match(ambiguous.text, /^<untrusted_tool_result source="weather">/);
+  assert.match(
+    ambiguous.text,
+    /Weather: "Springfield" é ambíguo \(Missouri, Illinois\)\. Passe o estado, ex\.: "Springfield, Missouri"\./,
+  );
+  assert.equal(us.urls.length, 1);
+});

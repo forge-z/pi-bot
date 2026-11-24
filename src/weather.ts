@@ -49,13 +49,57 @@ const WMO: Record<number, string> = {
   99: "thunderstorm with heavy hail",
 };
 
+/**
+ * Brazilian states by UF code, spelled the way Open-Meteo's English geocoding
+ * names them in `admin1` (hence "Federal District").
+ */
+const BRAZIL_STATES: Record<string, string> = {
+  AC: "Acre",
+  AL: "Alagoas",
+  AP: "Amapá",
+  AM: "Amazonas",
+  BA: "Bahia",
+  CE: "Ceará",
+  DF: "Federal District",
+  ES: "Espírito Santo",
+  GO: "Goiás",
+  MA: "Maranhão",
+  MT: "Mato Grosso",
+  MS: "Mato Grosso do Sul",
+  MG: "Minas Gerais",
+  PA: "Pará",
+  PB: "Paraíba",
+  PR: "Paraná",
+  PE: "Pernambuco",
+  PI: "Piauí",
+  RJ: "Rio de Janeiro",
+  RN: "Rio Grande do Norte",
+  RS: "Rio Grande do Sul",
+  RO: "Rondônia",
+  RR: "Roraima",
+  SC: "Santa Catarina",
+  SP: "São Paulo",
+  SE: "Sergipe",
+  TO: "Tocantins",
+};
+
+/** Folded UF code, state name or Open-Meteo `admin1` spelling → UF code. */
+const BRAZIL_STATE_KEYS = new Map<string, string>([
+  ...Object.entries(BRAZIL_STATES).flatMap(([code, name]) => [
+    [fold(code), code] as const,
+    [fold(name), code] as const,
+  ]),
+  ["distrito federal", "DF"],
+  ["estado de bahia", "BA"],
+]);
+
 const WEATHER_PARAMETERS = Type.Object({
   location: Type.Optional(
     Type.String({
       minLength: 1,
       maxLength: 200,
       description:
-        'City name, optionally followed by a comma and a state or country to disambiguate, e.g. "Curitiba" or "Paris, France".',
+        'City name, optionally followed by a comma and a state, Brazilian UF code or country to disambiguate, e.g. "Curitiba", "Campo Alegre, SC" or "Paris, France".',
     }),
   ),
   latitude: Type.Optional(Type.Number({ minimum: -90, maximum: 90 })),
@@ -78,6 +122,11 @@ type WeatherOptions = {
 };
 
 type Place = { label: string; latitude: number; longitude: number };
+
+type Candidate = { item: Record<string, unknown>; place: Place };
+
+/** Same-name cities in one country, when the input did not name a state. */
+type Ambiguity = { name: string; regions: string[] };
 
 type Forecast = {
   timezone: string;
@@ -198,10 +247,15 @@ type PlaceFilter = {
   preferBrazil?: boolean;
 };
 
-function pickPlace(results: unknown, filter: PlaceFilter) {
-  if (results === undefined) return undefined;
+function matchesRegion(item: Record<string, unknown>, region: string) {
+  const folded = fold(region);
+  return [item.admin1, item.admin2].some((name) => fold(text(name)) === folded);
+}
+
+function candidates(results: unknown): Candidate[] {
+  if (results === undefined) return [];
   if (!Array.isArray(results)) throw new WebError("invalid response");
-  const places = results.flatMap((value) => {
+  return results.flatMap((value) => {
     if (!value || typeof value !== "object") return [];
     const item = value as Record<string, unknown>;
     const latitude = number(item.latitude);
@@ -216,16 +270,50 @@ function pickPlace(results: unknown, filter: PlaceFilter) {
       return [];
     return [{ item, place: { label: placeLabel(item), latitude, longitude } }];
   });
+}
+
+function pickPlace(places: Candidate[], filter: PlaceFilter) {
   const inCountry = (code: string) =>
     places.find(({ item }) => text(item.country_code) === code);
-  if (filter.country) return inCountry(filter.country)?.place;
-  if (filter.region) {
-    const region = fold(filter.region);
-    return places.find(({ item }) =>
-      [item.admin1, item.admin2].some((name) => fold(text(name)) === region),
-    )?.place;
-  }
-  return ((filter.preferBrazil && inCountry("BR")) || places[0])?.place;
+  if (filter.country) return inCountry(filter.country);
+  if (filter.region)
+    return places.find(({ item }) => matchesRegion(item, filter.region!));
+  return (filter.preferBrazil && inCountry("BR")) || places[0];
+}
+
+function regionCode(item: Record<string, unknown>) {
+  const admin1 = text(item.admin1);
+  return text(item.country_code) === "BR"
+    ? (BRAZIL_STATE_KEYS.get(fold(admin1)) ?? admin1)
+    : admin1;
+}
+
+/**
+ * States (UF codes in Brazil) holding a populated city with the chosen name in
+ * the chosen country. Unpopulated villages are left out so "Curitiba" is not
+ * ambiguous because of two hamlets in Rio de Janeiro.
+ */
+function homonymRegions(places: Candidate[], chosen: Candidate) {
+  const country = text(chosen.item.country_code);
+  const name = fold(text(chosen.item.name));
+  const regions = places
+    .filter(
+      ({ item }) =>
+        text(item.country_code) === country &&
+        fold(text(item.name)) === name &&
+        (number(item.population) ?? 0) > 0,
+    )
+    .map(({ item }) => regionCode(item))
+    .filter(Boolean);
+  return [...new Set(regions)];
+}
+
+function ambiguityText({ name, regions }: Ambiguity) {
+  const line = `Weather: ${JSON.stringify(name)} é ambíguo (${regions.join(", ")}). Passe o estado, ex.: ${JSON.stringify(`${name}, ${regions[0]}`)}.`;
+  // Region names outside Brazil come from Open-Meteo, so mark them untrusted.
+  return regions.every((region) => Object.hasOwn(BRAZIL_STATES, region))
+    ? line
+    : wrapUntrustedToolResult("weather", line);
 }
 
 function round(value: unknown, digits = 1) {
@@ -353,7 +441,7 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
     ...requestOptions,
     timeoutMs: Math.min(requestOptions.timeoutMs, MAX_TIMEOUT_MS),
   };
-  const places = new TtlCache<Place | null>(options.now);
+  const places = new TtlCache<Place | Ambiguity | null>(options.now);
   const forecasts = new TtlCache<Forecast>(options.now);
 
   const searchPlaces = async (
@@ -370,7 +458,28 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
       ...(filter.country ? { countryCode: filter.country } : {}),
     }).toString();
     const response = await getJson(options, url, signal);
-    return pickPlace(response.results, filter);
+    const found = candidates(response.results);
+    const chosen = pickPlace(found, filter);
+    return chosen && { chosen, places: found };
+  };
+
+  /** Look up a city with at most one state or country qualifier. */
+  const resolve = async (
+    name: string,
+    qualifier: string | undefined,
+    signal?: AbortSignal,
+  ) => {
+    const code = qualifier ? countryCode(qualifier) : undefined;
+    const query = qualifier && !code ? `${name}, ${qualifier}` : name;
+    const found = await searchPlaces(
+      query,
+      code ? { country: code } : { preferBrazil: !qualifier },
+      signal,
+    );
+    if (found || !qualifier || code) return found;
+    const localized = localizedCountryCode(qualifier);
+    const filter = localized ? { country: localized } : { region: qualifier };
+    return searchPlaces(name, filter, signal);
   };
 
   const geocode = async (location: string, signal?: AbortSignal) => {
@@ -384,20 +493,29 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
     const key = fold(qualifier ? `${name}, ${qualifier}` : name);
     const cached = places.get(key);
     if (cached !== undefined) return cached;
-    const code = qualifier ? countryCode(qualifier) : undefined;
-    const query = qualifier && !code ? `${name}, ${qualifier}` : name;
-    let place = await searchPlaces(
-      query,
-      code ? { country: code } : { preferBrazil: !qualifier },
-      signal,
-    );
-    if (!place && qualifier && !code) {
-      const localized = localizedCountryCode(qualifier);
-      const filter = localized ? { country: localized } : { region: qualifier };
-      place = await searchPlaces(name, filter, signal);
+    // A Brazilian UF ("SC") or state name is resolved locally and wins over a
+    // country with the same ISO code (SC is also Seychelles). If the city is
+    // not in that state, a qualifier that is also a country code still works.
+    const state = qualifier
+      ? BRAZIL_STATE_KEYS.get(fold(qualifier))
+      : undefined;
+    let found = state
+      ? await resolve(name, BRAZIL_STATES[state], signal)
+      : undefined;
+    const byState = Boolean(found);
+    if (!found && (!state || countryCode(qualifier!)))
+      found = await resolve(name, qualifier, signal);
+    let result: Place | Ambiguity | null = found?.chosen.place ?? null;
+    if (
+      found &&
+      !byState &&
+      !(qualifier && matchesRegion(found.chosen.item, qualifier))
+    ) {
+      const regions = homonymRegions(found.places, found.chosen);
+      if (regions.length > 1) result = { name, regions };
     }
-    places.set(key, place ?? null);
-    return place ?? null;
+    places.set(key, result);
+    return result;
   };
 
   const forecast = async (place: Place, days: number, signal?: AbortSignal) => {
@@ -442,12 +560,14 @@ export function createWeatherTool(requestOptions: WeatherOptions) {
             longitude: args.longitude,
           };
         } else {
-          place = await geocode(args.location!.trim(), signal);
-          if (!place)
+          const found = await geocode(args.location!.trim(), signal);
+          if (!found)
             return textResult(
               `weather: location not found: ${JSON.stringify(args.location!.trim())}. Check the city and state or country, or pass latitude and longitude.`,
               true,
             );
+          if ("regions" in found) return textResult(ambiguityText(found), true);
+          place = found;
         }
         step = "forecast";
         const result = await forecast(place, days, signal);
