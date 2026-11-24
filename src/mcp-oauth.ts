@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { debuglog } from "node:util";
 
 /**
  * OAuth 2.1 authorization-code + PKCE (S256) for a remote MCP with no API key
@@ -32,6 +33,7 @@ const NOT_WAITING = "That URL is not the sign-in this bot is waiting for.";
 const EXCHANGE_FAILED =
   "Sign-in failed. Open the latest link and paste the redirect URL again.";
 const COULD_NOT_START = "MCP sign-in could not start.";
+const executorOauthDebug = debuglog("executor-oauth");
 
 export class McpOauthError extends Error {
   constructor(message: string) {
@@ -664,7 +666,7 @@ export async function refreshOauthCredential(
   if (executorUrl) {
     const grant = await executorGrant(executorUrl, tokens.access, fetchImpl);
     if (
-      !grant ||
+      !grant.ok ||
       grant.connectionId !== credential.connectionId ||
       grant.organizationId !== credential.organizationId
     )
@@ -678,8 +680,12 @@ async function executorGrant(
   access: string,
   fetchImpl: FetchImpl,
 ) {
+  const rejectedGrant = (reason: string) => {
+    executorOauthDebug("GET /mcp/whoami rejected: %s", reason);
+    return { ok: false as const, reason };
+  };
   const endpoint = executorOauthUrl(resource);
-  if (!endpoint) return undefined;
+  if (!endpoint) return rejectedGrant("The Executor MCP URL is invalid.");
   const url = new URL(endpoint);
   const connection = url.searchParams.get("connection");
   const mode = url.searchParams.get("elicitation_mode");
@@ -689,7 +695,9 @@ async function executorGrant(
     redirect: "error",
     signal: AbortSignal.timeout(15000),
   }).catch(() => undefined);
-  if (!response?.ok) return undefined;
+  if (!response) return rejectedGrant("GET /mcp/whoami could not be reached.");
+  if (!response.ok)
+    return rejectedGrant(`GET /mcp/whoami returned HTTP ${response.status}.`);
   const body = (await response.json().catch(() => undefined)) as
     | {
         access?: { kind?: unknown; id?: unknown };
@@ -697,18 +705,58 @@ async function executorGrant(
         mode?: unknown;
       }
     | undefined;
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return rejectedGrant("GET /mcp/whoami did not return a JSON object.");
   const connectionId = singleLine(body?.access?.id);
   const organizationId = singleLine(body?.organization?.id);
-  if (
-    body?.access?.kind !== "connection" ||
-    !connectionId ||
-    !organizationId ||
-    (body.mode !== "model" && body.mode !== "native") ||
-    (connection !== null && connection !== connectionId) ||
-    (mode !== null && mode !== body.mode)
-  )
-    return undefined;
-  return { connectionId, organizationId };
+  const accessKind =
+    body.access?.kind === "connection" || body.access?.kind === "all"
+      ? body.access.kind
+      : body.access?.kind === undefined
+        ? "missing"
+        : "unrecognized";
+  const approvalMode = body.mode;
+  const reportedMode =
+    approvalMode === "model" ||
+    approvalMode === "native" ||
+    approvalMode === "automatic" ||
+    approvalMode === "browser"
+      ? approvalMode
+      : approvalMode === undefined
+        ? "missing"
+        : "unrecognized";
+  executorOauthDebug("GET /mcp/whoami redacted body: %j", {
+    access: { kind: accessKind, id: connectionId ? "[redacted]" : "missing" },
+    organization: { id: organizationId ? "[redacted]" : "missing" },
+    mode: reportedMode,
+  });
+  if (accessKind !== "connection")
+    return rejectedGrant(
+      accessKind === "all"
+        ? "Executor granted full access. Choose a scoped connection during sign-in."
+        : "GET /mcp/whoami did not report a scoped connection.",
+    );
+  if (!connectionId)
+    return rejectedGrant(
+      "GET /mcp/whoami did not report a scoped connection ID.",
+    );
+  if (!organizationId)
+    return rejectedGrant("GET /mcp/whoami did not report an organization ID.");
+  if (connection !== null && connection !== connectionId)
+    return rejectedGrant(
+      "The granted scoped connection does not match the MCP URL.",
+    );
+  if (reportedMode !== "model" && reportedMode !== "native")
+    return rejectedGrant(
+      reportedMode === "missing" || reportedMode === "unrecognized"
+        ? "GET /mcp/whoami did not report a recognized approval mode."
+        : `Executor granted ${reportedMode} approval mode. Choose Model or Native during sign-in.`,
+    );
+  if (mode !== null && mode !== reportedMode)
+    return rejectedGrant(
+      "The granted approval mode does not match the MCP URL.",
+    );
+  return { ok: true as const, connectionId, organizationId };
 }
 
 export async function beginMcpOauthLogin(input: {
@@ -844,11 +892,17 @@ export async function completeOauthPaste(
     const next = withTokens(credential, tokens, now);
     if (executorUrl) {
       const grant = await executorGrant(executorUrl, tokens.access, fetchImpl);
-      if (!grant || !tokens.refresh)
+      if (!grant.ok)
         return pasteFailed(
-          "Executor sign-in was not verified. Choose a scoped connection and Model or Native approval mode, then try again.",
+          `Executor sign-in was not verified. ${grant.reason}`,
         );
-      Object.assign(next, grant, {
+      if (!tokens.refresh)
+        return pasteFailed(
+          "Executor sign-in was not verified. The token response did not include a refresh token.",
+        );
+      Object.assign(next, {
+        connectionId: grant.connectionId,
+        organizationId: grant.organizationId,
         grantBinding: randomBytes(16).toString("hex"),
       });
     }
