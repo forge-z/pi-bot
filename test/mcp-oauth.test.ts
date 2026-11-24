@@ -145,7 +145,7 @@ function executorFetch(
         new Headers(init?.headers).get("authorization"),
         "Bearer executor-access",
       );
-      return jsonResponse(200, grant);
+      return grant instanceof Response ? grant : jsonResponse(200, grant);
     }
     assert.fail(`Unexpected request: ${url}`);
   };
@@ -202,7 +202,7 @@ test("Executor setup sends scope, validates its issuer, and only saves a scoped 
   assert.deepEqual(changed, { ok: false, invalid: true });
 });
 
-test("Executor rejects a mismatched issuer, full grants, and automatic approvals", async () => {
+test("Executor rejects a mismatched issuer, full grants, and incompatible approvals with specific errors", async () => {
   const started = await beginMcpOauthLogin({
     ...EXECUTOR_OAUTH_PROFILE,
     fetchImpl: executorFetch(),
@@ -214,19 +214,34 @@ test("Executor rejects a mismatched issuer, full grants, and automatic approvals
     () => assert.fail("Must not exchange a code from a different issuer"),
   );
   assert.equal(wrongIssuer.ok, false);
-  for (const grant of [
-    { ...scopedGrant, access: { kind: "all" } },
-    { ...scopedGrant, mode: "automatic" },
-    {},
-  ]) {
+  for (const [grant, reason] of [
+    [{ ...scopedGrant, access: { kind: "all" } }, /granted full access/],
+    [
+      { ...scopedGrant, access: { kind: "connection" } },
+      /scoped connection ID/,
+    ],
+    [{ ...scopedGrant, organization: {} }, /organization ID/],
+    [{ ...scopedGrant, mode: "automatic" }, /granted automatic approval mode/],
+    [{ ...scopedGrant, mode: "browser" }, /granted browser approval mode/],
+    [{ ...scopedGrant, mode: undefined }, /recognized approval mode/],
+    [{}, /did not report a scoped connection/],
+    [new Response("not JSON"), /did not return a JSON object/],
+    [new Response(null, { status: 403 }), /returned HTTP 403/],
+  ] as const) {
     const result = await completeOauthPaste(
       started.credential,
       callback,
       executorFetch(grant),
     );
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.message, /scoped connection/);
+    assert.ok(!result.ok);
+    assert.match(result.message, reason);
   }
+  const native = await completeOauthPaste(
+    started.credential,
+    callback,
+    executorFetch({ ...scopedGrant, mode: "native" }),
+  );
+  assert.ok(native.ok);
 });
 
 test("Executor OAuth wins over saved and environment PATs only in OAuth mode", async () => {
@@ -299,7 +314,8 @@ test("Executor OAuth authorizes, persists and refreshes the entered scoped endpo
       audience,
     ),
   );
-  assert.equal(wrong.ok, false);
+  assert.ok(!wrong.ok);
+  assert.match(wrong.message, /scoped connection does not match the MCP URL/);
   const login = await completeOauthPaste(
     started.credential,
     callback,

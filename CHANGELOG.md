@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Executor OAuth setup asks for the HTTPS MCP URL from Executor and uses it for sign-in instead of assuming a default. The URL can include `?connection=<id>`.
+- Executor setup keeps the previous authentication mode if OAuth sign-in is cancelled or fails verification. When Executor rejects the grant or verification fails, setup reports the specific reason instead of a generic error.
 - **MCP platform → Save and back** returns to the main menu without writing settings when nothing was edited, leaving environment-only configuration untouched. If a save fails with a SQLite write error, setup reports it, rolls back partial settings and credential changes, and keeps the draft open so you can retry without signing in again.
 
 ## [0.5.2] - 2026-11-23
