@@ -18,6 +18,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --import tsx --test --test-concurrency=2 test/*.test.ts",
+    "corpus:record": "node scripts/record-geocoding.mjs",
     "diagnose": "node scripts/diagnose-tg-runtime.mjs",
     "doctor": "npm run diagnose",
     "compose:up": "bash scripts/compose-up.sh"
