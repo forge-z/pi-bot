@@ -137,13 +137,16 @@ async function modelsOrWait(dir: string) {
       }
       // Waiting is the expected state, not a fault: keep the healthcheck green so the
       // platform does not restart the container that holds the terminal you need.
+      const path = join(dir, "health.json");
       writeFileSync(
-        join(dir, "health.json"),
+        `${path}.tmp`,
         JSON.stringify({
           at: Date.now(),
           waiting: setupNeedsLogin(error) ? "login" : "setup",
         }),
+        { mode: 0o600 },
       );
+      renameSync(`${path}.tmp`, path);
       await new Promise((done) => setTimeout(done, 10_000));
     }
   }

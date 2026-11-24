@@ -1006,7 +1006,7 @@ export function routeImageMenu(
   if (raw === "-" || raw === "disable") return "disable";
   if (raw === "text") return "use-text";
   if (chatSeesImages) {
-    if (raw === "1" || raw === "text") return "use-text";
+    if (raw === "1") return "use-text";
     if (raw === "2" || raw === "separate") return "separate";
     return undefined;
   }
