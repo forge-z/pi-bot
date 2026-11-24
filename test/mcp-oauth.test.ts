@@ -153,11 +153,13 @@ function executorFetch(
 
 test("Executor setup sends scope, validates its issuer, and only saves a scoped grant", async () => {
   const saved: McpOauthCredential[] = [];
+  const notices: string[] = [];
   let authorize: URL | undefined;
   const result = await promptMcpOauthLogin(
     EXECUTOR_OAUTH_PROFILE,
     {
       log(line) {
+        notices.push(line);
         if (line.includes("\nhttps://"))
           authorize = new URL(line.split("\n")[1]);
       },
@@ -184,6 +186,11 @@ test("Executor setup sends scope, validates its issuer, and only saves a scoped 
     executorFetch(),
   );
   assert.equal(result, "signed-in");
+  assert.ok(
+    notices.includes(
+      'In Executor, choose your scoped connection and select "Automatic", "Through your agent", or "In your client" for approvals.',
+    ),
+  );
   assert.equal(saved[0].access, undefined);
   const grant = saved[1];
   assert.equal(grant.connectionId, "conn-1");
@@ -221,9 +228,18 @@ test("Executor rejects a mismatched issuer, full grants, and incompatible approv
       /scoped connection ID/,
     ],
     [{ ...scopedGrant, organization: {} }, /organization ID/],
-    [{ ...scopedGrant, mode: "automatic" }, /granted automatic approval mode/],
-    [{ ...scopedGrant, mode: "browser" }, /granted browser approval mode/],
-    [{ ...scopedGrant, mode: undefined }, /recognized approval mode/],
+    [
+      { ...scopedGrant, mode: "browser" },
+      /Executor granted "In your browser" approval\. Sign in again and choose "Automatic", "Through your agent", or "In your client"\./,
+    ],
+    [
+      { ...scopedGrant, mode: "unknown" },
+      /did not report a recognized approval mode/,
+    ],
+    [
+      { ...scopedGrant, mode: undefined },
+      /did not report a recognized approval mode\. Sign in again and choose "Automatic", "Through your agent", or "In your client"\./,
+    ],
     [{}, /did not report a scoped connection/],
     [new Response("not JSON"), /did not return a JSON object/],
     [new Response(null, { status: 403 }), /returned HTTP 403/],
@@ -242,6 +258,53 @@ test("Executor rejects a mismatched issuer, full grants, and incompatible approv
     executorFetch({ ...scopedGrant, mode: "native" }),
   );
   assert.ok(native.ok);
+});
+
+test("Executor accepts Automatic only for a verified scoped connection", async () => {
+  const grant = { ...scopedGrant, mode: "automatic" };
+  for (const resource of [
+    EXECUTOR_MCP_URL,
+    "https://executor.example/mcp?connection=conn-1&elicitation_mode=automatic",
+  ]) {
+    const fetchImpl = executorFetch(grant, resource);
+    const started = await beginMcpOauthLogin({
+      ...EXECUTOR_OAUTH_PROFILE,
+      resource,
+      fetchImpl,
+    });
+    const callback = `${REDIRECT}?code=ok&state=${started.credential.pending?.state}`;
+    const login = await completeOauthPaste(
+      started.credential,
+      callback,
+      fetchImpl,
+    );
+    assert.ok(login.ok);
+    assert.equal(login.credential.connectionId, "conn-1");
+    assert.ok(login.credential.grantBinding);
+
+    const fullAccess = await completeOauthPaste(
+      started.credential,
+      callback,
+      executorFetch({ ...grant, access: { kind: "all" } }, resource),
+    );
+    assert.ok(!fullAccess.ok);
+    assert.match(fullAccess.message, /granted full access/);
+    if (resource !== EXECUTOR_MCP_URL) {
+      const wrongConnection = await completeOauthPaste(
+        started.credential,
+        callback,
+        executorFetch(
+          { ...grant, access: { ...grant.access, id: "conn-other" } },
+          resource,
+        ),
+      );
+      assert.ok(!wrongConnection.ok);
+      assert.match(
+        wrongConnection.message,
+        /scoped connection does not match the MCP URL/,
+      );
+    }
+  }
 });
 
 test("Executor OAuth wins over saved and environment PATs only in OAuth mode", async () => {
@@ -316,6 +379,16 @@ test("Executor OAuth authorizes, persists and refreshes the entered scoped endpo
   );
   assert.ok(!wrong.ok);
   assert.match(wrong.message, /scoped connection does not match the MCP URL/);
+  const wrongMode = await completeOauthPaste(
+    started.credential,
+    callback,
+    executorFetch({ ...scopedGrant, mode: "native" }, resource, audience),
+  );
+  assert.ok(!wrongMode.ok);
+  assert.match(
+    wrongMode.message,
+    /approval mode does not match the MCP URL\. Sign in again and choose "Through your agent" for this URL\./,
+  );
   const login = await completeOauthPaste(
     started.credential,
     callback,
