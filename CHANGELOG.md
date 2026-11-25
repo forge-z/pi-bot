@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The native `weather` tool provides current conditions and up to 16 days of forecasts from Open-Meteo. It uses the free non-commercial API and can be turned off in the **Web search** setup menu.
 
+### Changed
+
+- Updated the agent runtime to [Pi v1.6.1](https://github.com/earendil-works/pi/releases/tag/v1.6.1).
+
 ## [0.5.3] - 2026-11-23
 
 ### Added

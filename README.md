@@ -322,7 +322,7 @@ Rolling the image back without restoring the backup leaves the ledger on a shape
 
 ## Notes
 
-- The harness is Pi 1.6.0 (`pi-ai`, `pi-durable`, and `chord`). Conversations stay in `durable.sqlite`. The process is headless, so a turn runs without a Continue, Fork, or Cancel prompt. Deferred MCP search matches a tool whose parameters only name a model through a local `$ref`. The OpenAI, Azure, and Codex catalogs include GPT-6.2 Astra and GPT-6.2 Sol. `/thinking` does not offer `off` for those models. A conversation keeps the model it already saved.
+- The harness is Pi 1.6.1 (`pi-ai`, `pi-durable`, and `chord`). Conversations stay in `durable.sqlite`. The process is headless, so a turn runs without a Continue, Fork, or Cancel prompt. Deferred MCP search matches a tool whose parameters only name a model through a local `$ref`. The OpenAI, Azure, and Codex catalogs include GPT-6.2 Astra and GPT-6.2 Sol. `/thinking` does not offer `off` for those models. A conversation keeps the model it already saved.
 - Chat history, credentials, and the ledger are only as private as the volume and the host.
 - The assistant has no shell, file, patch, or browser of its own. MCP results are untrusted data.
 - `ask_user` posts one question in the same chat and topic and ends the turn. Up to six choices become buttons (`ask:<32 hex>:<index>`). A tap is the next message (`Answer to: … -> …`). Typing is a normal message and clears the buttons. A repeated or stale tap does nothing. Scheduled runs cannot ask. These buttons are not approval cards.
