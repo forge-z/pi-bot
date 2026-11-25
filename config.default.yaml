@@ -265,6 +265,8 @@ sandbox_code_task:
         description: "Complete instructions for the code task"
       branch:
         type: string
+        maxLength: 200
+        pattern: "^[A-Za-z0-9_][A-Za-z0-9_./-]*$"
         description: "Optional base or target branch (default agent/<jobId>)"
       writes:
         type: boolean

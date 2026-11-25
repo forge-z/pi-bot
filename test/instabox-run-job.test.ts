@@ -185,6 +185,41 @@ test("fail() grava FAILED no status.json e não perde o caminho no argv", async 
   }
 });
 
+test("run-job.sh rejects repo and branch values outside the allowed shapes", async () => {
+  const cases = [
+    { repo: "example/..", branch: "agent/x", error: /Invalid repo/ },
+    { repo: "example/app", branch: "--force", error: /Invalid branch/ },
+    { repo: "example/app", branch: "+main", error: /Invalid branch/ },
+    { repo: "example/app", branch: "agent/../main", error: /Invalid branch/ },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const box = await sandbox();
+    const jobId = `cj-badinput${index}`;
+    try {
+      const jobDir = join(box.home, "jobs", jobId);
+      await mkdir(jobDir, { recursive: true });
+      await writeFile(
+        join(jobDir, "request.json"),
+        JSON.stringify({
+          repo: entry.repo,
+          agent: "pi",
+          prompt: "x",
+          branch: entry.branch,
+          writes: true,
+        }),
+      );
+      const result = await run(RUN, [jobId], box.env);
+      assert.notEqual(result.code, 0);
+      const status = await readStatus(box.home, jobId);
+      assert.equal(status.state, "FAILED");
+      assert.match(status.error ?? "", entry.error);
+      await assert.rejects(access(join(box.home, "agent-args.txt")));
+    } finally {
+      await box.close();
+    }
+  }
+});
+
 test("start-job.sh solta o runner numa sessão nova que sobrevive ao fim do exec", async () => {
   const box = await sandbox();
   const jobId = "cj-detach1";

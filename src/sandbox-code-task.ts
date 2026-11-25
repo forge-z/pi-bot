@@ -95,9 +95,11 @@ export function sandboxTaskSteer(env: Env = process.env): string | undefined {
 
 /** `owner/*` matches an owner, `*` matches anything, otherwise an exact value. */
 export function isAllowed(value: string, patterns = ""): boolean {
-  const [owner] = value.split("/");
+  const parts = value.split("/");
+  const [owner] = parts;
   return (
     !!owner &&
+    !parts.some((part) => part === "." || part === "..") &&
     patterns.split(",").some((raw) => {
       const pattern = raw.trim().toLowerCase();
       if (pattern === "*" || pattern === "*/*") return true;
