@@ -292,7 +292,7 @@ function subagentsFrom(value: unknown): SubagentsConfig {
 function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
   const value = isRecord(raw) ? raw : {};
   const selection = isRecord(user.memory) ? user.memory : value;
-  const { backend, app } = selection;
+  const { backend, app, provider } = selection;
   const enabled = value.enabled !== false;
   if (
     (Object.hasOwn(user, "memory") && !isRecord(user.memory)) ||
@@ -300,9 +300,11 @@ function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
       typeof selection.enabled !== "boolean") ||
     (backend === "executor"
       ? !validMemorySlug(app)
-      : backend !== "local" &&
-        (Object.hasOwn(selection, "backend") ||
-          Object.hasOwn(selection, "app")))
+      : backend === "advanced"
+        ? provider !== "gemini" && provider !== "openai"
+        : backend !== "local" &&
+          (Object.hasOwn(selection, "backend") ||
+            Object.hasOwn(selection, "app")))
   ) {
     console.error(
       "Pi-Agent: memory configuration is invalid. Memory is disabled.",
@@ -311,6 +313,11 @@ function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
   }
   if (backend === "executor" && validMemorySlug(app))
     return { enabled, backend, app };
+  if (
+    backend === "advanced" &&
+    (provider === "gemini" || provider === "openai")
+  )
+    return { enabled, backend, provider };
   const config: MemoryConfig = {
     enabled,
     ...(backend === "local" ? { backend } : {}),
@@ -492,16 +499,24 @@ export function assertConfigCreationAccess(path: string) {
 
 export function saveMemoryBackend(
   env: Env,
-  selection: { backend: "local" } | { backend: "executor"; app: string },
+  selection:
+    | { backend: "local" }
+    | { backend: "executor"; app: string }
+    | { backend: "advanced"; provider: "gemini" | "openai" },
 ) {
   if (selection.backend === "executor" && !validMemorySlug(selection.app))
     throw new Error("Invalid memory app slug");
   updateUserConfig(env, (doc) => {
     if (!isMap(doc.get("memory", true))) doc.set("memory", doc.createNode({}));
     doc.setIn(["memory", "backend"], selection.backend);
-    if (selection.backend === "executor")
+    if (selection.backend === "executor") {
       doc.setIn(["memory", "app"], selection.app);
-    else doc.deleteIn(["memory", "app"]);
+    } else {
+      doc.deleteIn(["memory", "app"]);
+    }
+    if (selection.backend === "advanced")
+      doc.setIn(["memory", "provider"], selection.provider);
+    else doc.deleteIn(["memory", "provider"]);
   });
 }
 

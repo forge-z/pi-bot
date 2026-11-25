@@ -913,7 +913,11 @@ function routeSection<T extends string>(
 }
 
 export function routeMemoryMenu(answer: string) {
-  return routeSection(answer, { "1": "local", "2": "executor" } as const);
+  return routeSection(answer, {
+    "1": "local",
+    "2": "advanced",
+    "3": "executor",
+  } as const);
 }
 
 export function routeGatewayMenu(answer: string) {
