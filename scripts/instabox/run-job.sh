@@ -64,8 +64,17 @@ if [ -z "$REPO" ]; then
   fail "Missing repo field in request.json"
 fi
 
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || [[ "$REPO" =~ (^|/)\.\.?(/|$) ]]; then
+  fail "Invalid repo field in request.json"
+fi
+
 if [ -z "$BRANCH" ]; then
   BRANCH="agent/$JOB_ID"
+fi
+
+if [[ ! "$BRANCH" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$ ]] ||
+  [[ "$BRANCH" == *..* || "$BRANCH" == *//* || "$BRANCH" == */. || "$BRANCH" == */ || "$BRANCH" == *.lock || "$BRANCH" == */.* || "$BRANCH" == *. ]]; then
+  fail "Invalid branch field in request.json"
 fi
 
 WORK_DIR="$HOME/work/$REPO"

@@ -331,6 +331,8 @@ test("writes=true decline does not dispatch", async () => {
 test("validation rejects a disallowed repo, bad agent and empty prompt", async () => {
   assert.equal(isAllowed("example/repo", "example/*"), true);
   assert.equal(isAllowed("other/repo", "example/*"), false);
+  assert.equal(isAllowed("example/..", "example/*"), false);
+  assert.equal(isAllowed("example/.", "*"), false);
   const f = await createFixture();
   try {
     const convId = await f.app.create("Test Conv");
