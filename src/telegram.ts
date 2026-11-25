@@ -435,7 +435,8 @@ const CLEAN_HELP = [
   "/stop — stop this topic",
   "/compact — compact this topic (optional instructions)",
   "/memory — show saved memory",
-  "/forget <text> — remove matching lines from memory",
+  "/forget <text> — Markdown: matching lines; advanced: exact key",
+  "/remember <key> <fact> — save a fact under a stable key (advanced memory)",
   "/status — status, including tokens and cost",
   "/receipt [n] — turn receipt",
   "/approvals — reads that are always allowed",
@@ -1257,6 +1258,9 @@ export class Telegram {
       } else if (command === "forget") {
         this.app.telegramChats.authorize(id, owner);
         reply(this.app.forgetMemory(text.slice("/forget".length).trim()));
+      } else if (command === "remember") {
+        this.app.telegramChats.authorize(id, owner);
+        reply(this.app.rememberMemory(text.slice("/remember".length).trim()));
       } else if (command === "receipt") {
         reply(
           commandReceipt(

@@ -35,7 +35,8 @@ const HELP = [
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
   "/compact — compact this chat (optional instructions after the command)",
   "/memory — show saved memory",
-  "/forget <text> — remove matching lines from memory",
+  "/forget <text> — Markdown: matching lines; advanced: exact key",
+  "/remember <key> <fact> — save a fact under a stable key (advanced memory)",
   "/model — choose a model (reply with the number)",
   "/thinking — choose effort (reply with the number)",
   "/crons — schedules in this chat (reply with the number to turn one on or off)",
@@ -238,6 +239,7 @@ async function runCommand(
     name === "model" ||
     name === "thinking" ||
     name === "forget" ||
+    name === "remember" ||
     name === "receipt" ||
     name === "revoke";
   if (name && args && !takesArgs) {
@@ -317,6 +319,11 @@ async function runCommand(
     app.commands.authorize(conversationId, access);
     const text = name === "memory" ? app.showMemory() : app.forgetMemory(args);
     reply(app, message, conversationId, text);
+    return;
+  }
+  if (name === "remember") {
+    app.commands.authorize(conversationId, access);
+    reply(app, message, conversationId, app.rememberMemory(args));
     return;
   }
   if (name === "model" || name === "thinking") {

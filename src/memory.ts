@@ -19,7 +19,9 @@ interface LocalMemoryConfig {
 }
 
 export type MemoryConfig =
-  LocalMemoryConfig | { enabled: boolean; backend: "executor"; app: string };
+  | LocalMemoryConfig
+  | { enabled: boolean; backend: "executor"; app: string }
+  | { enabled: boolean; backend: "advanced"; provider: "gemini" | "openai" };
 
 const IDLE_MS = 30 * 60_000;
 const INPUT_LIMIT = 32_000;

@@ -872,9 +872,9 @@ test(
           save,
           (transcript) => {
             assert.match(transcript, /1 - Internal Markdown \(default\)/);
-            assert.match(transcript, /2 - Executor Bot Memory/);
-            assert.doesNotMatch(transcript, /SQLite/);
-            return "2";
+            assert.match(transcript, /2 - Internal Advanced \(SQLite\)/);
+            assert.match(transcript, /3 - Executor Bot Memory/);
+            return "3";
           },
         ],
         ["App slug (Enter cancels): ", "foo-bar"],
@@ -941,11 +941,11 @@ test(
             return "7";
           },
         ],
-        [save, "2"],
+        [save, "3"],
         [slug, " foobar"],
-        [save, "2"],
+        [save, "3"],
         [slug, ""],
-        [save, "2"],
+        [save, "3"],
         [slug, "foobar"],
         [save, "s"],
         [main, "q"],
@@ -967,7 +967,7 @@ test(
       missingDir,
       [
         [main, "7"],
-        [save, "2"],
+        [save, "3"],
         [slug, "foobar"],
         [save, "s"],
         [main, "q"],
@@ -994,7 +994,7 @@ test(
       dir,
       [
         [main, "7"],
-        [save, "2"],
+        [save, "3"],
         ["App slug (Enter cancels): ", "foo-bar"],
         [save, "s"],
         [main, "q"],
@@ -1008,5 +1008,81 @@ test(
     assert.match(output, /configure.*scoped Executor/i);
     await assert.rejects(stat(trace), { code: "ENOENT" });
     await assert.rejects(stat(join(dir, "config.yaml")), { code: "ENOENT" });
+  },
+);
+
+test(
+  "Memory setup selects Internal Advanced with a provider, cancels safely and returns to Markdown",
+  { skip: !hasPty },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-memory-advanced-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const config = join(dir, "config.yaml");
+    const original =
+      "# keep this exactly\nmemory:\n  enabled: false\n  curator_model: {provider: faux, model_id: cheap}\n";
+    await writeFile(config, original);
+    const provider = "Embeddings provider (gemini or openai): ";
+    const output = await runSetup(
+      dir,
+      [
+        [main, "7"],
+        [
+          save,
+          (transcript) => {
+            assert.match(transcript, /2 - Internal Advanced \(SQLite\)/);
+            return "2";
+          },
+        ],
+        [provider, "claude"],
+        [save, "2"],
+        [provider, "openai"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      { CONFIG_FILE: config, OPENAI_API_KEY: "fixture-openai-key" },
+    );
+    assert.match(output, /Enter gemini or openai/);
+    assert.match(output, /OPENAI_API_KEY/);
+    assert.match(output, /lexical only/);
+    assert.match(output, /Memory settings saved/);
+    assert.deepEqual(parse(await readFile(config, "utf8")), {
+      memory: {
+        enabled: false,
+        curator_model: { provider: "faux", model_id: "cheap" },
+        backend: "advanced",
+        provider: "openai",
+      },
+    });
+    const cancelled = await runSetup(
+      dir,
+      [
+        [main, "7"],
+        [save, "2"],
+        [provider, ""],
+        [save, "b"],
+        [main, "q"],
+      ],
+      { CONFIG_FILE: config },
+    );
+    assert.match(cancelled, /Internal Advanced \(openai/);
+    assert.equal(
+      parse(await readFile(config, "utf8")).memory.backend,
+      "advanced",
+    );
+    await runSetup(
+      dir,
+      [
+        [main, "7"],
+        [save, "1"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      { CONFIG_FILE: config },
+    );
+    assert.deepEqual(parse(await readFile(config, "utf8")).memory, {
+      enabled: false,
+      curator_model: { provider: "faux", model_id: "cheap" },
+      backend: "local",
+    });
   },
 );

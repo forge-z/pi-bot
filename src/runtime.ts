@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Memory } from "./memory.js";
+import { AdvancedMemory } from "./memory-advanced.js";
 import {
   ExecutorMemory,
   executorMemoryConnection,
@@ -324,7 +325,7 @@ export function settleFailureReason(settled: {
   return detail ? `${category}: ${detail}` : category;
 }
 
-interface RuntimeOptions {
+export interface RuntimeOptions {
   dir: string;
   /** When set with externally built `models`, must be the same Store the credential adapter uses. */
   store?: Store;
@@ -343,6 +344,8 @@ interface RuntimeOptions {
   provider?: string;
   now?: () => number;
   env?: Record<string, string | undefined>;
+  /** Deadline for one memory embedding request. Tests use a short value. */
+  memoryEmbeddingDeadlineMs?: number;
   /**
    * How long a background MCP rediscovery may run before `/status` says it did
    * not answer. Defaults to one discovery page. Tests use a short value.
@@ -416,15 +419,32 @@ export class Runtime {
   readonly turnReceipts: TurnReceipts;
   readonly store: Store;
   readonly memory?: Memory;
+  readonly advancedMemory?: AdvancedMemory;
   private readonly executorMemoryApp?: string;
   private readonly executorMemory?: ExecutorMemory;
 
   showMemory() {
-    return this.memory?.show() ?? this.memoryManagementHint();
+    return (
+      this.memory?.show() ??
+      this.advancedMemory?.show() ??
+      this.memoryManagementHint()
+    );
   }
 
   forgetMemory(text: string) {
-    return this.memory?.forget(text) ?? this.memoryManagementHint();
+    return (
+      this.memory?.forget(text) ??
+      this.advancedMemory?.forget(text) ??
+      this.memoryManagementHint()
+    );
+  }
+
+  /** `/remember` stores only in Internal Advanced memory, explicitly by a human. */
+  rememberMemory(argument: string) {
+    if (this.advancedMemory) return this.advancedMemory.remember(argument);
+    return this.executorMemoryApp
+      ? `Retain facts in the private Executor app ${this.executorMemoryApp}.`
+      : "The /remember command needs Internal Advanced memory (setup: 7 - Memory, option 2).";
   }
 
   private memoryManagementHint() {
@@ -624,7 +644,20 @@ export class Runtime {
           memory.app,
           (text) => redactSecretPatterns(options.redact?.(text) ?? text),
         );
-    } else if (memory.enabled && memory.backend !== "executor")
+    } else if (memory.enabled && memory.backend === "advanced") {
+      this.advancedMemory = new AdvancedMemory(
+        options.dir,
+        memory.provider,
+        (text) => redactSecretPatterns(options.redact?.(text) ?? text),
+        options.env ?? process.env,
+        options.memoryEmbeddingDeadlineMs,
+        () => this.now(),
+      );
+    } else if (
+      memory.enabled &&
+      memory.backend !== "executor" &&
+      memory.backend !== "advanced"
+    )
       this.memory = new Memory(
         options.dir,
         this.store,
@@ -1126,26 +1159,45 @@ export class Runtime {
                     ? app!.memory.withContext(messages ?? request.messages)
                     : undefined;
                 const selected =
-                  !run.offer && app!.executorMemory
+                  !run.offer && (app!.executorMemory || app!.advancedMemory)
                     ? selectMemoryRequest(run.userRequests)
                     : undefined;
-                const external = selected
-                  ? await app!.executorMemory?.withContext(
-                      messages ?? request.messages,
-                      String(api.conversationId),
-                      selected,
-                      (await api.entry(selected.entry, ctx))?.model?.[0],
-                      async () =>
-                        (
-                          await app!.harness.conversation(
-                            api.conversationId,
-                            ctx,
-                          )
-                        )?.context(ctx),
-                    )
-                  : undefined;
-                if (memory || external || messages)
-                  return { messages: memory ?? external ?? messages! };
+                const external =
+                  selected && app!.executorMemory
+                    ? await app!.executorMemory?.withContext(
+                        messages ?? request.messages,
+                        String(api.conversationId),
+                        selected,
+                        (await api.entry(selected.entry, ctx))?.model?.[0],
+                        async () =>
+                          (
+                            await app!.harness.conversation(
+                              api.conversationId,
+                              ctx,
+                            )
+                          )?.context(ctx),
+                      )
+                    : undefined;
+                const advanced =
+                  selected && app!.advancedMemory
+                    ? await app!.advancedMemory.withContext(
+                        messages ?? request.messages,
+                        String(api.conversationId),
+                        selected,
+                        (await api.entry(selected.entry, ctx))?.model?.[0],
+                        async () =>
+                          (
+                            await app!.harness.conversation(
+                              api.conversationId,
+                              ctx,
+                            )
+                          )?.context(ctx),
+                      )
+                    : undefined;
+                if (memory || external || advanced || messages)
+                  return {
+                    messages: memory ?? external ?? advanced ?? messages!,
+                  };
               },
             }),
           ],
@@ -3118,6 +3170,7 @@ export class Runtime {
         .finally(() => {
           this.monitors.delete(key);
           this.executorMemory?.finish(conversationId, requestId);
+          this.advancedMemory?.finish(conversationId, requestId);
           this.progressBudgets.delete(`${conversationId}:${requestId}`);
           const stillMonitoring = [...this.monitors.keys()].some(
             (k) => k !== key && k.startsWith(`${conversationId}:`),
@@ -3159,7 +3212,7 @@ export class Runtime {
       );
       const source = row?.source;
       if (
-        this.executorMemory &&
+        (this.executorMemory || this.advancedMemory) &&
         row &&
         record.type === "input" &&
         record.entry !== undefined &&
@@ -3616,6 +3669,7 @@ export class Runtime {
   async close() {
     this.closing = true;
     await this.memory?.close();
+    await this.advancedMemory?.close();
     this.options.heartbeat?.close();
     this.disarmMcpDiscoveryDeadline();
     clearInterval(this.trashTimer);

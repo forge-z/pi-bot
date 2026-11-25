@@ -27,7 +27,14 @@ export const cleanCommands = [
   { command: "stop", description: "Stop this topic" },
   { command: "compact", description: "Compact this topic's history" },
   { command: "memory", description: "Show saved memory" },
-  { command: "forget", description: "Remove matching lines from memory" },
+  {
+    command: "forget",
+    description: "Markdown: matching lines; advanced: exact key",
+  },
+  {
+    command: "remember",
+    description: "Save a fact under a stable key (advanced memory)",
+  },
   { command: "status", description: "Model, usage, MCPs, run, and version" },
   { command: "receipt", description: "Show the turn receipt" },
   { command: "approvals", description: "Reads that are always allowed" },

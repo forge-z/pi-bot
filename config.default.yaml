@@ -306,13 +306,18 @@ whatsapp:
 skills:
   always: []
 
-# Long-term Markdown memory on the volume. Restart after changing this block.
+# Long-term memory on the volume. Restart after changing this block.
 # By default the curator uses the conversation's model; no extra model is required.
 memory:
   enabled: true
   # curator_model:
   #   provider: openai
   #   model_id: your-configured-model-id
+  # Internal Advanced (SQLite) instead of Markdown: facts are stored only via
+  # /remember, with lexical recall plus optional embeddings. The key is read from
+  # GEMINI_API_KEY or OPENAI_API_KEY in the environment, never from this file.
+  # backend: advanced
+  # provider: gemini
 
 # Subagents (docs/subagents.md). When enabled, the model may call the
 # `subagent` tool to hand self-contained read-only work to a child

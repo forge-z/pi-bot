@@ -2601,8 +2601,18 @@ function memoryLabel(memory) {
   const backend =
     memory.backend === "executor"
       ? `Executor Bot Memory: ${memory.app}`
-      : "Internal Markdown";
+      : memory.backend === "advanced"
+        ? advancedMemoryLabel(memory.provider)
+        : "Internal Markdown";
   return memory.enabled ? backend : `disabled, ${backend}`;
+}
+
+function advancedMemoryLabel(provider) {
+  const keyEnv = provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+  const missing = process.env[keyEnv]?.trim()
+    ? ""
+    : `, lexical only (no ${keyEnv} set)`;
+  return `Internal Advanced (${provider}${missing})`;
 }
 
 async function verifyMemoryApp(app) {
@@ -2654,7 +2664,8 @@ async function memoryMenu(readline) {
   for (;;) {
     console.log(`\nMemory (current: ${memoryLabel({ ...memory, ...draft })})`);
     console.log("1 - Internal Markdown (default)");
-    console.log("2 - Executor Bot Memory");
+    console.log("2 - Internal Advanced (SQLite)");
+    console.log("3 - Executor Bot Memory");
     printSectionEnd();
     const action = routeMemoryMenu(await readline.question("Choice: "));
     if (action === "back") return;
@@ -2672,7 +2683,24 @@ async function memoryMenu(readline) {
         );
       }
     } else if (action === "local") draft = { backend: "local" };
-    else if (action === "executor") {
+    else if (action === "advanced") {
+      const provider = (
+        await readline.question("Embeddings provider (gemini or openai): ")
+      )
+        .trim()
+        .toLowerCase();
+      if (!provider) continue;
+      if (provider !== "gemini" && provider !== "openai") {
+        console.log("Enter gemini or openai.");
+        continue;
+      }
+      const keyEnv =
+        provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+      console.log(
+        `Facts stay in the local SQLite store on the volume. Recall sends only the search query, and only the fact being stored, to the official ${provider} embeddings API over HTTPS, never credentials or history. Set ${keyEnv} in the environment for embeddings; without it, recall is lexical only.`,
+      );
+      draft = { backend: "advanced", provider };
+    } else if (action === "executor") {
       draft = undefined;
       const app = await readline.question("App slug (Enter cancels): ");
       if (!app) continue;

@@ -108,13 +108,23 @@ export async function discoverExecutorMemory(
     return paths;
 }
 
-const PAST_CONTEXT =
+export const PAST_CONTEXT =
   /\b(?:do you remember|what did (?:we|i) (?:decide|agree|say|choose)|as we (?:discussed|decided)|voc[eê] (?:se )?lembra|qual foi (?:a nossa |a )?decis[aã]o|o que (?:n[oó]s )?(?:combinamos|decidimos)|como (?:combinamos|falamos|decidimos))\b/iu;
 const MEMORY_OPT_OUT =
   /\b(?:do not use memory|don't use memory|without (?:using )?memory|n[aã]o (?:use|consulte) a mem[oó]ria|sem (?:usar a )?mem[oó]ria)\b/iu;
 const SECRET_LINE =
-  /\b(?:bearer\s+\S+|sk-[\w-]{8,}|(?:password|senha|api[ _-]?key|secret|credential|credencial)\s*(?:=|:|is\b|é\b)\s*\S+)/iu;
-const KEY = /^[a-z0-9][a-z0-9_.-]{0,63}$/u;
+  /\b(?:bearer\s+\S+|sk-[\w-]{8,}|(?:password|senha|api[ _-]?key|secret|credential|credencial)(?:\\?["'])?\s*(?:=|:|is\b|é\b)\s*(?:\\?["'])?\S+)/iu;
+/** Stable fact key both memory backends accept. */
+export const MEMORY_KEY = /^[a-z0-9][a-z0-9_.-]{0,63}$/u;
+
+/** Redacts and drops secret-shaped lines before text leaves a memory store. */
+export function memorySafeText(redact: (text: string) => string, text: string) {
+  return redact(text)
+    .split(/\r?\n/u)
+    .filter((line) => !SECRET_LINE.test(line))
+    .join("\n")
+    .trim();
+}
 
 export function selectMemoryRequest<T extends { text: string }>(
   requests: readonly T[],
@@ -147,11 +157,7 @@ export class ExecutorMemory {
   ) {}
 
   private safeText(text: string) {
-    return this.redact(text)
-      .split(/\r?\n/u)
-      .filter((line) => !SECRET_LINE.test(line))
-      .join("\n")
-      .trim();
+    return memorySafeText(this.redact, text);
   }
 
   private async recall(query: string, binding: string) {
@@ -204,7 +210,7 @@ export class ExecutorMemory {
           const fact = asRecord(rawFact);
           if (
             typeof fact?.key !== "string" ||
-            !KEY.test(fact.key) ||
+            !MEMORY_KEY.test(fact.key) ||
             typeof fact.text !== "string" ||
             !fact.text.trim() ||
             fact.text.length > 1_200 ||
