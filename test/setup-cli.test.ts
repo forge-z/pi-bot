@@ -11,6 +11,7 @@ import { loadHarnessConfig } from "../src/harness-config.js";
 import {
   EXECUTOR_OAUTH_CREDENTIAL,
   readOauthCredential,
+  writeOauthCredential,
 } from "../src/mcp-oauth.js";
 import {
   readPhoneGateway,
@@ -23,6 +24,7 @@ import {
 } from "../src/setup.js";
 import { readVolumeWebKeys } from "../src/web-config.js";
 import { createWebTools } from "../src/web-tools.js";
+import { executorFixtureUrl } from "./memory-executor-fixture.js";
 
 const hasPty =
   process.platform === "linux" &&
@@ -811,5 +813,200 @@ test(
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  },
+);
+
+function saveScopedMemoryFixture(dir: string) {
+  const db = new DatabaseSync(join(dir, "app.sqlite"));
+  try {
+    writeStoredAggregators(
+      db,
+      {
+        choice: "executor",
+        executor: { url: executorFixtureUrl, auth: "oauth" },
+      },
+      {},
+    );
+    writeOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL, {
+      type: "oauth",
+      executorUrl: executorFixtureUrl,
+      access: "fixture-scoped-access",
+      expires: Date.now() + 60_000,
+      connectionId: "fixture-connection",
+      organizationId: "fixture-org",
+      grantBinding: "fixture-grant",
+    });
+  } finally {
+    db.close();
+  }
+}
+
+test(
+  "Memory setup verifies the exact Executor paths before saving and can switch back to Markdown",
+  { skip: !hasPty },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-memory-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const config = join(dir, "custom.yaml");
+    const original =
+      "memory:\n  enabled: false\n  curator_model: {provider: faux, model_id: cheap}\nweb: {weather: false}\n";
+    await writeFile(config, original);
+    const paths = ['tools["foo-bar"].recall', 'tools["foo-bar"].retain'];
+    saveScopedMemoryFixture(dir);
+    const trace = join(dir, "mcp.jsonl");
+    const env = {
+      CONFIG_FILE: config,
+      SETUP_TEST_MEMORY: trace,
+    };
+    const output = await runSetup(
+      dir,
+      [
+        [
+          main,
+          (transcript) => {
+            assert.match(transcript, /7 - Memory\b/);
+            return "7";
+          },
+        ],
+        [
+          save,
+          (transcript) => {
+            assert.match(transcript, /1 - Internal Markdown \(default\)/);
+            assert.match(transcript, /2 - Executor Bot Memory/);
+            assert.doesNotMatch(transcript, /SQLite/);
+            return "2";
+          },
+        ],
+        ["App slug (Enter cancels): ", "foo-bar"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      env,
+    );
+    assert.match(output, /Memory settings saved/);
+    assert.deepEqual(JSON.parse(await readFile(trace, "utf8")), {
+      name: "describe",
+      args: { paths },
+    });
+    assert.deepEqual(parse(await readFile(config, "utf8")), {
+      memory: {
+        enabled: false,
+        curator_model: { provider: "faux", model_id: "cheap" },
+        backend: "executor",
+        app: "foo-bar",
+      },
+      web: { weather: false },
+    });
+    await runSetup(
+      dir,
+      [
+        [main, "7"],
+        [save, "1"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      env,
+    );
+    assert.deepEqual(parse(await readFile(config, "utf8")).memory, {
+      enabled: false,
+      curator_model: { provider: "faux", model_id: "cheap" },
+      backend: "local",
+    });
+  },
+);
+
+test(
+  "Memory setup leaves config untouched on cancellation, invalid slug, missing connection and ambiguous discovery",
+  { skip: !hasPty },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-memory-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const config = join(dir, "config.yaml");
+    const original = "# keep this exactly\nweb: {weather: false}\n";
+    await writeFile(config, original);
+    saveScopedMemoryFixture(dir);
+    const trace = join(dir, "mcp.jsonl");
+    const env = {
+      SETUP_TEST_MEMORY: trace,
+      SETUP_TEST_MEMORY_DUPLICATE: "1",
+    };
+    const slug = "App slug (Enter cancels): ";
+    const output = await runSetup(
+      dir,
+      [
+        [
+          main,
+          (transcript) => {
+            assert.match(transcript, /7 - Memory\b/);
+            return "7";
+          },
+        ],
+        [save, "2"],
+        [slug, " foobar"],
+        [save, "2"],
+        [slug, ""],
+        [save, "2"],
+        [slug, "foobar"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      env,
+    );
+    assert.match(output, /lowercase DNS slug/);
+    assert.match(output, /could not verify.*recall and retain/i);
+    assert.deepEqual(JSON.parse(await readFile(trace, "utf8")), {
+      name: "describe",
+      args: { paths: ["tools.foobar.recall", "tools.foobar.retain"] },
+    });
+    const missingDir = await mkdtemp(
+      join(tmpdir(), "pi-setup-memory-unlinked-"),
+    );
+    t.after(() => rm(missingDir, { recursive: true, force: true }));
+    const missingTrace = join(missingDir, "trace.jsonl");
+    const missing = await runSetup(
+      missingDir,
+      [
+        [main, "7"],
+        [save, "2"],
+        [slug, "foobar"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      { SETUP_TEST_MEMORY: missingTrace },
+    );
+    assert.match(missing, /configure.*Executor.*MCP platform/i);
+    await assert.rejects(stat(missingTrace), { code: "ENOENT" });
+    await assert.rejects(stat(join(missingDir, "config.yaml")), {
+      code: "ENOENT",
+    });
+    assert.equal(await readFile(config, "utf8"), original);
+  },
+);
+
+test(
+  "Memory setup rejects a bearer connection without calling describe",
+  { skip: !hasPty },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-setup-memory-bearer-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const trace = join(dir, "mcp.jsonl");
+    const output = await runSetup(
+      dir,
+      [
+        [main, "7"],
+        [save, "2"],
+        ["App slug (Enter cancels): ", "foo-bar"],
+        [save, "s"],
+        [main, "q"],
+      ],
+      {
+        EXECUTOR_MCP_URL: executorFixtureUrl,
+        EXECUTOR_TOKEN: "fixture-full-access",
+        SETUP_TEST_MEMORY: trace,
+      },
+    );
+    assert.match(output, /configure.*scoped Executor/i);
+    await assert.rejects(stat(trace), { code: "ENOENT" });
+    await assert.rejects(stat(join(dir, "config.yaml")), { code: "ENOENT" });
   },
 );

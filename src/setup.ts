@@ -784,7 +784,8 @@ export function secretPrompt(label: string, saved: boolean): string {
     : `${name} (hidden): `;
 }
 
-type SetupMenuSection = "gateway" | "text" | "image" | "audio" | "mcp" | "web";
+type SetupMenuSection =
+  "gateway" | "text" | "image" | "audio" | "mcp" | "web" | "memory";
 
 type SetupMenuCommand = SetupMenuSection | "restart" | "exit";
 
@@ -812,6 +813,8 @@ const MAIN_MENU: Record<string, SetupMenuCommand> = {
   "6": "web",
   web: "web",
   "web search": "web",
+  "7": "memory",
+  memory: "memory",
   s: "restart",
   save: "restart",
   "save and restart": "restart",
@@ -835,6 +838,7 @@ interface SetupMenuStatus {
   audio: SectionStatus;
   mcp: SectionStatus;
   web: SectionStatus;
+  memory: SectionStatus;
 }
 
 export function setupMenuStatus(input: {
@@ -844,6 +848,7 @@ export function setupMenuStatus(input: {
   audio: boolean;
   mcp: boolean;
   web: boolean;
+  memory?: boolean;
 }): SetupMenuStatus {
   const state = (on: boolean): SectionStatus => (on ? "configured" : "not set");
   return {
@@ -853,6 +858,7 @@ export function setupMenuStatus(input: {
     audio: state(input.audio),
     mcp: state(input.mcp),
     web: state(input.web),
+    memory: state(input.memory !== false),
   };
 }
 
@@ -863,6 +869,7 @@ const MENU_LABELS: Record<keyof SetupMenuStatus, string> = {
   audio: "Audio model",
   mcp: "MCP platform",
   web: "Web search",
+  memory: "Memory",
 };
 
 /** Main menu text. `detail` is a short parenthetical after configured / not set. */
@@ -883,6 +890,7 @@ export function formatSetupMenu(
     line(4, "audio"),
     line(5, "mcp"),
     line(6, "web"),
+    line(7, "memory"),
     "",
     `s - ${SAVE_AND_RESTART}`,
     "q - Exit without saving",
@@ -902,6 +910,10 @@ function routeSection<T extends string>(
   const key = answer.trim().toLowerCase();
   if (key === "b" || key === "back") return "back";
   return SAVE_BACK[key] ?? table[key];
+}
+
+export function routeMemoryMenu(answer: string) {
+  return routeSection(answer, { "1": "local", "2": "executor" } as const);
 }
 
 export function routeGatewayMenu(answer: string) {

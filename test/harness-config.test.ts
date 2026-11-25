@@ -535,3 +535,45 @@ test("WhatsApp attachment URLs are off by default and the list applies", async (
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Memory config keeps Markdown defaults and rejects invalid external selection", async (t) => {
+  const root = await dir();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [yaml, expected] of [
+    ["", { enabled: true }],
+    ["memory: {backend: local}", { enabled: true, backend: "local" }],
+    [
+      "memory: {backend: executor, app: foo-bar}",
+      { enabled: true, backend: "executor", app: "foo-bar" },
+    ],
+    [
+      "memory: {backend: executor, app: foobar, enabled: false}",
+      { enabled: false, backend: "executor", app: "foobar" },
+    ],
+    ["memory: {backend: executor}", { enabled: false }],
+    ["memory: {backend: executor, app: Foo-bar}", { enabled: false }],
+    ['memory: {backend: executor, app: " foo-bar "}', { enabled: false }],
+    ["memory: {backend: executor, app: fôo}", { enabled: false }],
+    ["memory: {backend: executor, app: -foo}", { enabled: false }],
+    ["memory: {backend: executor, app: foo-}", { enabled: false }],
+    [`memory: {backend: executor, app: ${"a".repeat(64)}}`, { enabled: false }],
+    ["memory: {backend: sqlite}", { enabled: false }],
+    ["memory: {backend: null}", { enabled: false }],
+    ["memory: {app: foobar}", { enabled: false }],
+    ["memory: disabled", { enabled: false }],
+    [
+      "memory: {backend: executor, app: foobar}\nmcp_servers: []",
+      { enabled: false },
+    ],
+  ].map(
+    ([yaml, expected], index) => [yaml as string, { expected, index }] as const,
+  )) {
+    const CONFIG_FILE = join(root, `config-${expected.index}.yaml`);
+    await writeFile(CONFIG_FILE, yaml);
+    assert.deepEqual(
+      loadHarnessConfig({ CONFIG_FILE }).memory,
+      expected.expected,
+      yaml,
+    );
+  }
+});

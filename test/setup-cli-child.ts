@@ -1,4 +1,6 @@
 import { registerHooks } from "node:module";
+import { appendFileSync } from "node:fs";
+import { executorFixture, executorReply } from "./memory-executor-fixture.js";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -47,6 +49,27 @@ if (process.env.SETUP_TEST_EXECUTOR === "1") {
         throw new Error(`Unexpected setup test fetch: ${url}`);
     }
   };
+}
+
+const trace = process.env.SETUP_TEST_MEMORY;
+if (trace) {
+  globalThis.fetch = executorFixture((name, args) => {
+    appendFileSync(trace, JSON.stringify({ name, args }) + "\n");
+    if (name !== "describe") throw new Error("Setup executed an app tool");
+    const tools = process.env.SETUP_TEST_MEMORY_DUPLICATE
+      ? [
+          { path: "tools.foobar.recall" },
+          { path: "tools.foobar.recall" },
+          { path: "tools.foobar.retain" },
+        ]
+      : [
+          { path: 'tools["foo-bar"].recall' },
+          { path: 'tools["foo-bar"].retain' },
+        ];
+    return executorReply({
+      result: JSON.stringify({ items: tools, namespaces: [], missing: [] }),
+    });
+  }).fetch;
 }
 
 await import(new URL("../scripts/setup-model.mjs", import.meta.url).href);

@@ -309,7 +309,10 @@ function parseMcpList(parsed: unknown, env: Env): McpConfig[] {
   });
 }
 
-function readMcpConfig(env: Env, stored?: StoredAggregators): McpConfig[] {
+export function readMcpConfig(
+  env: Env,
+  stored?: StoredAggregators,
+): McpConfig[] {
   const explicitMcp = env.MCP_SERVERS_JSON?.trim();
   const rawMcp = env.MCP_CONFIG_FILE
     ? readFileSync(env.MCP_CONFIG_FILE, "utf8")

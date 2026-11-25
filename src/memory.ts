@@ -12,10 +12,14 @@ import {
 import { hash, type Store } from "./store.js";
 import type { ModelSettings } from "./settings.js";
 
-export interface MemoryConfig {
+interface LocalMemoryConfig {
   enabled: boolean;
+  backend?: "local";
   curatorModel?: { provider: string; modelId: string };
 }
+
+export type MemoryConfig =
+  LocalMemoryConfig | { enabled: boolean; backend: "executor"; app: string };
 
 const IDLE_MS = 30 * 60_000;
 const INPUT_LIMIT = 32_000;
@@ -130,7 +134,7 @@ export class Memory {
   constructor(
     dir: string,
     private readonly store: Store,
-    private readonly config: MemoryConfig,
+    private readonly config: LocalMemoryConfig,
     private readonly models: Models,
     private readonly modelFor: (id: string) => Promise<ModelSettings>,
     private readonly answerFor: (

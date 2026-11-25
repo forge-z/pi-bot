@@ -1253,13 +1253,10 @@ export class Telegram {
         );
       } else if (text === "/memory") {
         this.app.telegramChats.authorize(id, owner);
-        reply(this.app.memory?.show() ?? "Memory is disabled.");
+        reply(this.app.showMemory());
       } else if (command === "forget") {
         this.app.telegramChats.authorize(id, owner);
-        reply(
-          this.app.memory?.forget(text.slice("/forget".length).trim()) ??
-            "Memory is disabled.",
-        );
+        reply(this.app.forgetMemory(text.slice("/forget".length).trim()));
       } else if (command === "receipt") {
         reply(
           commandReceipt(
