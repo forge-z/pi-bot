@@ -1,7 +1,16 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { parse } from "yaml";
+import { isMap, parse, parseDocument, type Document } from "yaml";
 import { DEFAULT_REACTION_DELAY_MS, reactionDelayMs } from "./reaction-ack.js";
+import { validMemorySlug } from "./memory-executor.js";
 import type { MemoryConfig } from "./memory.js";
 import {
   WEB_CHOICES,
@@ -280,9 +289,32 @@ function subagentsFrom(value: unknown): SubagentsConfig {
   return out;
 }
 
-function memoryFrom(raw: unknown): MemoryConfig {
+function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
   const value = isRecord(raw) ? raw : {};
-  const config: MemoryConfig = { enabled: value.enabled !== false };
+  const selection = isRecord(user.memory) ? user.memory : value;
+  const { backend, app } = selection;
+  const enabled = value.enabled !== false;
+  if (
+    (Object.hasOwn(user, "memory") && !isRecord(user.memory)) ||
+    (Object.hasOwn(selection, "enabled") &&
+      typeof selection.enabled !== "boolean") ||
+    (backend === "executor"
+      ? !validMemorySlug(app)
+      : backend !== "local" &&
+        (Object.hasOwn(selection, "backend") ||
+          Object.hasOwn(selection, "app")))
+  ) {
+    console.error(
+      "Pi-Agent: memory configuration is invalid. Memory is disabled.",
+    );
+    return { enabled: false };
+  }
+  if (backend === "executor" && validMemorySlug(app))
+    return { enabled, backend, app };
+  const config: MemoryConfig = {
+    enabled,
+    ...(backend === "local" ? { backend } : {}),
+  };
   if (value.curator_model != null) {
     const model = value.curator_model;
     if (
@@ -304,7 +336,10 @@ function memoryFrom(raw: unknown): MemoryConfig {
   return config;
 }
 
-function configFrom(raw: Record<string, unknown>): HarnessConfig {
+function configFrom(
+  raw: Record<string, unknown>,
+  memory: MemoryConfig,
+): HarnessConfig {
   const servers = isRecord(raw.mcp_servers) ? raw.mcp_servers : {};
   const mcpServers: Record<string, ServerTools> = {};
   for (const [name, value] of Object.entries(servers)) {
@@ -333,7 +368,7 @@ function configFrom(raw: Record<string, unknown>): HarnessConfig {
     turnReceiptFooter:
       isRecord(raw.turn_receipt) && raw.turn_receipt.footer === true,
     subagents: subagentsFrom(raw.subagents),
-    memory: memoryFrom(raw.memory),
+    memory,
     whatsappAttachmentUrls: attachmentUrlsFrom(
       isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,
     ),
@@ -406,6 +441,68 @@ export class HarnessConfigAccessError extends Error {
       `Cannot ${operation} config ${path} (${code ?? "I/O error"}; process UID ${process.getuid?.() ?? "unknown"}; ${owner}). Check volume permissions and run setup as the gateway user.`,
     );
   }
+}
+
+export function updateUserConfig(env: Env, edit: (doc: Document) => void) {
+  const path = userConfigPath(env);
+  let source = "";
+  try {
+    source = readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT")
+      throw new HarnessConfigAccessError(path, "read", code);
+    assertConfigCreationAccess(path);
+  }
+  const doc = parseDocument(source);
+  if (doc.errors.length || (doc.contents && !isMap(doc.contents)))
+    throw new Error("Invalid config.yaml");
+  edit(doc);
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, doc.toString(), { mode: 0o600 });
+  } catch (error) {
+    throw new HarnessConfigAccessError(
+      path,
+      "write",
+      (error as NodeJS.ErrnoException).code,
+    );
+  }
+}
+
+export function assertConfigCreationAccess(path: string) {
+  try {
+    const directory = configDirectory(path);
+    if (process.getuid?.() === 0 && statSync(directory).uid !== 0)
+      throw new HarnessConfigAccessError(
+        path,
+        "write",
+        "root cannot create a private config in a non-root directory",
+      );
+    accessSync(directory, constants.W_OK | constants.X_OK);
+  } catch (error) {
+    if (error instanceof HarnessConfigAccessError) throw error;
+    throw new HarnessConfigAccessError(
+      path,
+      "write",
+      (error as NodeJS.ErrnoException).code,
+    );
+  }
+}
+
+export function saveMemoryBackend(
+  env: Env,
+  selection: { backend: "local" } | { backend: "executor"; app: string },
+) {
+  if (selection.backend === "executor" && !validMemorySlug(selection.app))
+    throw new Error("Invalid memory app slug");
+  updateUserConfig(env, (doc) => {
+    if (!isMap(doc.get("memory", true))) doc.set("memory", doc.createNode({}));
+    doc.setIn(["memory", "backend"], selection.backend);
+    if (selection.backend === "executor")
+      doc.setIn(["memory", "app"], selection.app);
+    else doc.deleteIn(["memory", "app"]);
+  });
 }
 
 /** The tool list this server uses. No list of its own means executor's list. */
@@ -502,7 +599,14 @@ export function loadHarnessConfig(env: Env = process.env): HarnessConfig {
   const usableBase = base.problem || base.missing ? {} : base.doc;
   const usableUser = over.problem || over.missing ? {} : over.doc;
   const merged = merge(usableBase, usableUser);
-  const config = isRecord(merged) ? configFrom(merged) : EMPTY;
+  const config = isRecord(merged)
+    ? configFrom(
+        merged,
+        over.problem
+          ? { enabled: false }
+          : memoryFrom(merged.memory, usableUser),
+      )
+    : EMPTY;
   cache = { key, config };
   return config;
 }

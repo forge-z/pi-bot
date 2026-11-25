@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Memory } from "./memory.js";
+import {
+  ExecutorMemory,
+  executorMemoryConnection,
+  selectMemoryRequest,
+} from "./memory-executor.js";
 import { withTextModelFallback } from "./text-model-fallback.js";
 import { discardTelegramControls } from "./telegram-controls.js";
 import {
@@ -411,6 +416,23 @@ export class Runtime {
   readonly turnReceipts: TurnReceipts;
   readonly store: Store;
   readonly memory?: Memory;
+  private readonly executorMemoryApp?: string;
+  private readonly executorMemory?: ExecutorMemory;
+
+  showMemory() {
+    return this.memory?.show() ?? this.memoryManagementHint();
+  }
+
+  forgetMemory(text: string) {
+    return this.memory?.forget(text) ?? this.memoryManagementHint();
+  }
+
+  private memoryManagementHint() {
+    return this.executorMemoryApp
+      ? `Review or forget facts in the private Executor app ${this.executorMemoryApp}.`
+      : "Memory is disabled.";
+  }
+
   readonly models: MutableModels;
   readonly settings: Settings;
   readonly tasks: Tasks;
@@ -591,7 +613,18 @@ export class Runtime {
     options.initialize?.(this.store);
     this.commands = new Commands(this);
     const memory = loadHarnessConfig(options.env ?? process.env).memory;
-    if (memory.enabled)
+    if (memory.enabled && memory.backend === "executor") {
+      this.executorMemoryApp = memory.app;
+      if (
+        options.gateway instanceof McpGateway &&
+        executorMemoryConnection(options.gateway.config)
+      )
+        this.executorMemory = new ExecutorMemory(
+          options.gateway,
+          memory.app,
+          (text) => redactSecretPatterns(options.redact?.(text) ?? text),
+        );
+    } else if (memory.enabled && memory.backend !== "executor")
       this.memory = new Memory(
         options.dir,
         this.store,
@@ -1092,8 +1125,27 @@ export class Runtime {
                   )
                     ? app!.memory.withContext(messages ?? request.messages)
                     : undefined;
-                if (memory || messages)
-                  return { messages: memory ?? messages! };
+                const selected =
+                  !run.offer && app!.executorMemory
+                    ? selectMemoryRequest(run.userRequests)
+                    : undefined;
+                const external = selected
+                  ? await app!.executorMemory?.withContext(
+                      messages ?? request.messages,
+                      String(api.conversationId),
+                      selected,
+                      (await api.entry(selected.entry, ctx))?.model?.[0],
+                      async () =>
+                        (
+                          await app!.harness.conversation(
+                            api.conversationId,
+                            ctx,
+                          )
+                        )?.context(ctx),
+                    )
+                  : undefined;
+                if (memory || external || messages)
+                  return { messages: memory ?? external ?? messages! };
               },
             }),
           ],
@@ -3065,6 +3117,7 @@ export class Runtime {
         })
         .finally(() => {
           this.monitors.delete(key);
+          this.executorMemory?.finish(conversationId, requestId);
           this.progressBudgets.delete(`${conversationId}:${requestId}`);
           const stillMonitoring = [...this.monitors.keys()].some(
             (k) => k !== key && k.startsWith(`${conversationId}:`),
@@ -3092,23 +3145,38 @@ export class Runtime {
   ) {
     let offer = false;
     let requestId: string | undefined;
+    const userRequests: { requestId: string; text: string; entry: EntryId }[] =
+      [];
     for (const id of inputs) {
       const submission = await this.harness.submission(id, context);
       if (!submission) continue;
       const record = await submission.status(context);
       if (!record.requestId) continue;
-      const source = this.store.get<{ source: string }>(
-        "SELECT source FROM requests WHERE conversationId=? AND requestId=?",
+      const row = this.store.get<{ source: string; text: string }>(
+        "SELECT source, text FROM requests WHERE conversationId=? AND requestId=?",
         conversationId,
         record.requestId,
-      )?.source;
+      );
+      const source = row?.source;
+      if (
+        this.executorMemory &&
+        row &&
+        record.type === "input" &&
+        record.entry !== undefined &&
+        ["web", "telegram", "whatsapp"].includes(row.source)
+      )
+        userRequests.push({
+          requestId: record.requestId,
+          text: row.text,
+          entry: record.entry,
+        });
       if (source !== "task" && source !== "job") continue;
       if (source === "job" && this.pendingJobs.userDispatched(record.requestId))
         continue;
       offer = true;
       if (!requestId || source === "task") requestId = record.requestId;
     }
-    return { offer, requestId };
+    return { offer, requestId, userRequests };
   }
   /** Final text of a non-interactive run, so a missed alert stays in the log. */
   private logQuietRun(

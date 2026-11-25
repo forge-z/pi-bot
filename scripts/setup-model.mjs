@@ -15,6 +15,7 @@ import {
   composioSendsUserId,
   environmentModels,
   mcpServersFromAggregators,
+  readMcpConfig,
   officialModels,
   operatorSecret,
   SetupRequiredError,
@@ -54,6 +55,7 @@ import {
   routeGatewayMenu,
   routeImageMenu,
   routeMcpMenu,
+  routeMemoryMenu,
   routeSetupMenu,
   routeTelegramMenu,
   routeTextMenu,
@@ -81,6 +83,7 @@ import { Store, SqlCredentials } from "../dist/src/store.js";
 import {
   HarnessConfigAccessError,
   loadHarnessConfig,
+  saveMemoryBackend,
 } from "../dist/src/harness-config.js";
 import {
   readVolumeWebKeys,
@@ -100,9 +103,11 @@ import {
   writeChatgptAuthMode,
 } from "../dist/src/subscription-login.js";
 import {
+  accessTokenFresh,
   EXECUTOR_OAUTH_CREDENTIAL,
   EXECUTOR_OAUTH_PROFILE,
   executorCredentialUrl,
+  executorGrantBinding,
   executorOauthUrl,
   McpOauthError,
   promptMcpOauthLogin,
@@ -112,11 +117,20 @@ import {
   writeOauthCredential,
 } from "../dist/src/mcp-oauth.js";
 
+import { McpGateway } from "../dist/src/mcp.js";
+import {
+  currentMemoryBinding,
+  discoverExecutorMemory,
+  executorMemoryConnection,
+  memoryDeadline,
+  validMemorySlug,
+} from "../dist/src/memory-executor.js";
+
 const MODE = "live";
 const usage = `Usage: npm run setup -- [options]
 
   With no arguments, in a terminal, a menu edits one section at a time:
-  Setup gateway, text model, image model, audio model, MCP platform, web search.
+  Setup gateway, text model, image model, audio model, MCP platform, web search, memory.
   Save & exit writes the volume. Exit without saving leaves it unchanged.
 
   --list                      show the current state
@@ -993,7 +1007,7 @@ function sessionStatus(session, summary) {
       session.text.newKey),
   );
   const mcpOn = Boolean(session.mcp.choice && session.mcp.choice !== "none");
-  const { web } = loadHarnessConfig(process.env);
+  const { web, memory } = loadHarnessConfig(process.env);
   const webKeys = resolveWebKeys(process.env, readVolumeWebKeys(dir));
   return setupMenuStatus({
     gateway:
@@ -1007,6 +1021,7 @@ function sessionStatus(session, summary) {
     image: summary.imageOn && session.image.choice !== "off",
     audio: summary.audioOn && !session.audio.off,
     mcp: mcpOn,
+    memory: memory.enabled,
     web: ["search", "extract"].some(
       (operation) =>
         resolveWebProviders(web[operation], webKeys).available.length > 0,
@@ -1015,6 +1030,7 @@ function sessionStatus(session, summary) {
 }
 
 function printMain(session) {
+  const { memory } = loadHarnessConfig(process.env);
   const summary = summaryOf(session);
   console.log(
     `\n${formatSetupMenu(sessionStatus(session, summary), {
@@ -1024,6 +1040,7 @@ function printMain(session) {
       image: summary.imageOn ? summary.image : "",
       audio: summary.audioOn ? summary.audio : "",
       mcp: session.mcp.choice || "",
+      memory: memoryLabel(memory),
       gateway: session.phone === "whatsapp" ? "WhatsApp" : "Telegram",
     })}`,
   );
@@ -2580,6 +2597,96 @@ async function chooseWebProvider(readline, operation, label, order, role) {
   }
 }
 
+function memoryLabel(memory) {
+  const backend =
+    memory.backend === "executor"
+      ? `Executor Bot Memory: ${memory.app}`
+      : "Internal Markdown";
+  return memory.enabled ? backend : `disabled, ${backend}`;
+}
+
+async function verifyMemoryApp(app) {
+  const guidance =
+    "Configure a scoped Executor OAuth connection in MCP platform first.";
+  let server;
+  try {
+    server = executorMemoryConnection(
+      readMcpConfig(process.env, readStoredAggregators(dir)),
+    );
+  } catch {
+    return guidance;
+  }
+  if (!server) return guidance;
+  const credential = readOauthCredential(db, EXECUTOR_OAUTH_CREDENTIAL);
+  const grant = executorGrantBinding(server.url, credential);
+  if (!grant || !accessTokenFresh(credential, Date.now(), 5_000))
+    return guidance;
+  const gateway = new McpGateway([
+    {
+      ...server,
+      resolveToken: async () => credential.access,
+      oauthBinding: () => grant,
+    },
+  ]);
+  try {
+    const verified = await memoryDeadline(4_000, async (signal) => {
+      const [catalog] = await gateway.catalog();
+      if (
+        !catalog?.tools.some((tool) => tool.name === "call") ||
+        signal.aborted
+      )
+        return;
+      const binding = currentMemoryBinding(gateway);
+      if (binding) return discoverExecutorMemory(gateway, app, signal, binding);
+    });
+    if (verified) return;
+  } catch {
+    // Provider details may contain credentials.
+  } finally {
+    void gateway.close();
+  }
+  return "Could not verify the app's recall and retain tools on the configured Executor connection.";
+}
+
+async function memoryMenu(readline) {
+  const { memory } = loadHarnessConfig(process.env);
+  let draft;
+  for (;;) {
+    console.log(`\nMemory (current: ${memoryLabel({ ...memory, ...draft })})`);
+    console.log("1 - Internal Markdown (default)");
+    console.log("2 - Executor Bot Memory");
+    printSectionEnd();
+    const action = routeMemoryMenu(await readline.question("Choice: "));
+    if (action === "back") return;
+    if (action === "save") {
+      if (!draft) return;
+      try {
+        saveMemoryBackend(process.env, draft);
+        console.log("Memory settings saved. Restart the bot to apply.");
+        return;
+      } catch (error) {
+        console.log(
+          error instanceof HarnessConfigAccessError
+            ? error.message
+            : "Could not save memory settings. Check config.yaml and the volume.",
+        );
+      }
+    } else if (action === "local") draft = { backend: "local" };
+    else if (action === "executor") {
+      draft = undefined;
+      const app = await readline.question("App slug (Enter cancels): ");
+      if (!app) continue;
+      if (!validMemorySlug(app)) {
+        console.log("Enter an ASCII lowercase DNS slug (1–63 characters).");
+        continue;
+      }
+      const failure = await verifyMemoryApp(app);
+      if (failure) console.log(failure);
+      else draft = { backend: "executor", app };
+    }
+  }
+}
+
 async function webMenu(readline) {
   const { web } = loadHarnessConfig(process.env);
   const draft = { ...web, search: [...web.search], extract: [...web.extract] };
@@ -2773,6 +2880,7 @@ async function interactive() {
       else if (action === "audio") await audioMenu(readline, session);
       else if (action === "mcp") await mcpMenu(readline, session);
       else if (action === "web") await webMenu(readline);
+      else if (action === "memory") await memoryMenu(readline);
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {

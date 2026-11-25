@@ -315,9 +315,8 @@ async function runCommand(
   }
   if (name === "memory" || name === "forget") {
     app.commands.authorize(conversationId, access);
-    const text =
-      name === "memory" ? app.memory?.show() : app.memory?.forget(args);
-    reply(app, message, conversationId, text ?? "Memory is disabled.");
+    const text = name === "memory" ? app.showMemory() : app.forgetMemory(args);
+    reply(app, message, conversationId, text);
     return;
   }
   if (name === "model" || name === "thinking") {

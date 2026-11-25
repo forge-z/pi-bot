@@ -340,7 +340,12 @@ test("Executor OAuth wins over saved and environment PATs only in OAuth mode", a
   const pendingBinding = gateway.credentialBinding("executor");
   vault.write(
     EXECUTOR_OAUTH_CREDENTIAL,
-    credential({ grantBinding: "verified-grant" }),
+    credential({
+      executorUrl: EXECUTOR_MCP_URL,
+      connectionId: "fixture-connection",
+      organizationId: "fixture-org",
+      grantBinding: "verified-grant",
+    }),
   );
   assert.notEqual(gateway.credentialBinding("executor"), pendingBinding);
   const [pat] = withOauthBearer(

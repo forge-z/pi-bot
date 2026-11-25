@@ -175,6 +175,23 @@ export function executorCredentialUrl(credential?: McpOauthCredential) {
   );
 }
 
+/** Non-secret identity of the verified scoped grant for this exact endpoint. */
+export function executorGrantBinding(
+  url: string,
+  credential?: McpOauthCredential,
+) {
+  if (
+    executorCredentialUrl(credential) !== url ||
+    !credential?.connectionId ||
+    !credential.organizationId ||
+    !credential.grantBinding
+  )
+    return;
+  const expected = new URL(url).searchParams.get("connection");
+  if (expected !== null && expected !== credential.connectionId) return;
+  return credential.grantBinding;
+}
+
 function executorAudience(value: unknown) {
   const href = executorOauthUrl(value);
   if (!href) return undefined;
@@ -1137,7 +1154,10 @@ export function withOauthBearer<
     return {
       ...server,
       ...(executor
-        ? { oauthBinding: () => vault.read(provider)?.grantBinding ?? "" }
+        ? {
+            oauthBinding: () =>
+              executorGrantBinding(executor, vault.read(provider)) ?? "",
+          }
         : {}),
       resolveToken: () =>
         ensureMcpOauthAccess({

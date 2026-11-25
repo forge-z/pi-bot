@@ -1,19 +1,13 @@
-import {
-  accessSync,
-  constants,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { accessSync, constants } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { isMap, parseDocument } from "yaml";
+import { isMap } from "yaml";
 import { operatorSecret } from "./config.js";
 import {
-  configDirectory,
+  assertConfigCreationAccess,
   HarnessConfigAccessError,
   loadHarnessConfig,
+  updateUserConfig,
   userConfigPath,
 } from "./harness-config.js";
 import {
@@ -98,57 +92,16 @@ export function readVolumeWebKeys(dir: string): WebKeys {
 }
 
 function writeWebConfig(env: Env, web: WebConfig) {
-  const path = userConfigPath(env);
-  let source = "";
-  try {
-    source = readFileSync(path, "utf8");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT")
-      throw new HarnessConfigAccessError(path, "read", code);
-    assertConfigCreationAccess(path);
-  }
-  const doc = parseDocument(source);
-  if (doc.errors.length || (doc.contents && !isMap(doc.contents)))
-    throw new Error("Invalid config.yaml");
-  const existing = doc.get("web", true);
-  if (isMap(existing)) {
-    existing.set("search", doc.createNode(web.search));
-    existing.set("extract", doc.createNode(web.extract));
-    if (web.weather !== undefined) existing.set("weather", web.weather);
-  } else {
-    doc.set("web", doc.createNode(web));
-  }
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, doc.toString(), { mode: 0o600 });
-  } catch (error) {
-    throw new HarnessConfigAccessError(
-      path,
-      "write",
-      (error as NodeJS.ErrnoException).code,
-    );
-  }
-}
-
-function assertConfigCreationAccess(path: string) {
-  try {
-    const directory = configDirectory(path);
-    if (process.getuid?.() === 0 && statSync(directory).uid !== 0)
-      throw new HarnessConfigAccessError(
-        path,
-        "write",
-        "root cannot create a private config in a non-root directory",
-      );
-    accessSync(directory, constants.W_OK | constants.X_OK);
-  } catch (error) {
-    if (error instanceof HarnessConfigAccessError) throw error;
-    throw new HarnessConfigAccessError(
-      path,
-      "write",
-      (error as NodeJS.ErrnoException).code,
-    );
-  }
+  updateUserConfig(env, (doc) => {
+    const existing = doc.get("web", true);
+    if (isMap(existing)) {
+      existing.set("search", doc.createNode(web.search));
+      existing.set("extract", doc.createNode(web.extract));
+      if (web.weather !== undefined) existing.set("weather", web.weather);
+    } else {
+      doc.set("web", doc.createNode(web));
+    }
+  });
 }
 
 export function checkWebConfigWriteAccess(env: Env) {
