@@ -414,6 +414,7 @@ export function removeAppHistory(store: Store, id: string, now: number) {
     for (const table of [
       "task_creations",
       "task_delivery_changes",
+      "task_goals",
       "task_runs",
     ])
       store.run(

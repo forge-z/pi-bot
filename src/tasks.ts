@@ -11,6 +11,15 @@ import {
 } from "./task-telegram.js";
 import { logFailure } from "./log.js";
 import { MAX_TEXT, REQUEST_ID, truncateTaskSummary } from "./limits.js";
+import {
+  GOAL_ATTEMPTS_MAX,
+  GOAL_INTERVAL_MAX,
+  GOAL_INTERVAL_MIN,
+  observePrMerged,
+  type GoalFetcher,
+  type GoalTarget,
+  type PrObservation,
+} from "./goals.js";
 
 type TaskDelivery = "legacy" | "web" | "web_telegram" | "none";
 /**
@@ -25,6 +34,43 @@ const RUN_SWEEP_MS = 60 * 60 * 1000;
 /** How often stale in-flight runs are checked for timeout. */
 const RUN_WATCH_MS = 30 * 1000;
 const DEFAULT_RUN_TIMEOUT_MIN = 30;
+/** Goal checks per tick pass: ordinary admissions run first, the rest stays due. */
+const GOAL_CHECKS_PER_TICK = 2;
+const GOAL_LIST_LIMIT = 20;
+
+interface GoalRow {
+  taskId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  intervalMin: number;
+  maxAttempts: number;
+  attempts: number;
+  state: "pending" | "completed" | "blocked" | "cancelled";
+  reason: string | null;
+  lastResult: string | null;
+}
+/** A due goal read as one row: the task carries the frozen destination. */
+interface GoalTask {
+  id: string;
+  conversationId: string;
+  enabled: number;
+  nextRun: number | null;
+  destinationChat: string | null;
+  destinationUser: string | null;
+  destinationBotId: string | null;
+  destinationMessageThreadId: number | null;
+  destinationReason: string | null;
+  originSource: string | null;
+  originRequestId: string | null;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  intervalMin: number;
+  maxAttempts: number;
+  attempts: number;
+  goalState: string;
+}
 
 export class TaskError extends Error {
   constructor(message: string) {
@@ -153,11 +199,19 @@ export class Tasks {
   private timer?: ReturnType<typeof setInterval>;
   private closing = false;
   private ticking?: Promise<void>;
+  /** The one read-only GitHub GET of a goal check; replaced in tests. */
+  goalFetcher: GoalFetcher = (url, init) => fetch(url, init);
   constructor(
     private runtime: TaskRuntime,
     private clock = () => Date.now(),
   ) {
     runtime.store.db.exec(`
+      CREATE TABLE IF NOT EXISTS task_goals (
+        taskId TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL,
+        prNumber INTEGER NOT NULL, intervalMin INTEGER NOT NULL,
+        maxAttempts INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'pending', reason TEXT, lastResult TEXT
+      );
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL,
         conversationId TEXT NOT NULL, kind TEXT NOT NULL, schedule TEXT NOT NULL,
@@ -181,6 +235,16 @@ export class Tasks {
       CREATE TRIGGER IF NOT EXISTS archived_task_enable BEFORE UPDATE OF enabled ON tasks
       WHEN NEW.enabled=1 AND EXISTS (SELECT 1 FROM conversation_lifecycle WHERE conversationId=NEW.conversationId AND deletedAt IS NOT NULL)
       BEGIN SELECT RAISE(ABORT,'Conversation deleted'); END;
+      -- A pre-goal binary's INSERT omits state and relies on the default
+      -- 'pending'; only an explicit 'checking' row can represent a goal
+      -- attempt. The trigger persists in this SQLite schema and refuses the
+      -- exact pre-goal binary's default-pending INSERT (what the offline base
+      -- check measures); it replaces no backup restore, certifies no other
+      -- version, mixed use or schema change, and never undoes an admission,
+      -- delivery or effect that already happened.
+      CREATE TRIGGER IF NOT EXISTS task_goal_run_state BEFORE INSERT ON task_runs
+      WHEN NEW.state IS NOT 'checking' AND (SELECT kind FROM tasks WHERE id=NEW.taskId)='goal'
+      BEGIN SELECT RAISE(ABORT,'A goal check is admitted as checking only.'); END;
     `);
     if (
       !runtime.store
@@ -306,13 +370,19 @@ export class Tasks {
     `);
   }
   list(): Task[] {
+    // Goal rows are not ordinary schedules: they surface only through /goal list
+    // and /goal cancel, never through the generic task APIs or /crons.
     return this.runtime.store
-      .all<TaskRow>("SELECT * FROM tasks WHERE deleted=0 ORDER BY rowid")
+      .all<TaskRow>(
+        "SELECT * FROM tasks WHERE deleted=0 AND kind!='goal' ORDER BY rowid",
+      )
       .map(publicTask);
   }
   get(id: string): Task | undefined {
+    // A kind='goal' row is invisible here, so every generic edit/toggle/
+    // run-now/remove path (they all resolve through require()) refuses it.
     const row = this.runtime.store.get<TaskRow>(
-      "SELECT * FROM tasks WHERE id=? AND deleted=0",
+      "SELECT * FROM tasks WHERE id=? AND deleted=0 AND kind!='goal'",
       id,
     );
     return row ? publicTask(row) : undefined;
@@ -835,7 +905,7 @@ export class Tasks {
     for (const run of store.all<PendingRun & { timeoutNotified: number }>(
       `SELECT r.*,t.prompt FROM task_runs r JOIN tasks t ON t.id=r.taskId
        WHERE r.state='pending' AND r.startedAt IS NOT NULL AND r.finishedAt IS NULL
-         AND r.startedAt<?`,
+         AND t.kind!='goal' AND r.startedAt<?`,
       now - timeout,
     )) {
       const summary = `Run expired after ${Math.round(timeout / 60_000)} minutes without finishing.`;
@@ -864,10 +934,13 @@ export class Tasks {
       }
     }
   }
-  /** True while a run of this conversation is executing: a run must not start another. */
+  /** True while a run of this conversation is executing: a run must not start another.
+   * A goal read is not a model turn, so it never counts as in-flight here. */
   inFlight(conversationId: string) {
     return !!this.runtime.store.get(
-      "SELECT 1 FROM task_runs WHERE conversationId=? AND state='pending' AND startedAt IS NOT NULL",
+      `SELECT 1 FROM task_runs r JOIN tasks t ON t.id=r.taskId
+       WHERE r.conversationId=? AND r.state='pending' AND r.startedAt IS NOT NULL
+         AND t.kind!='goal'`,
       conversationId,
     );
   }
@@ -902,11 +975,12 @@ export class Tasks {
       if (this.runtime.store.credentialMutation) return;
       const now = this.clock();
       for (const task of this.runtime.store.all<TaskRow>(
-        "SELECT * FROM tasks WHERE deleted=0 AND enabled=1 AND nextRun<=? AND conversationId NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL) ORDER BY nextRun",
+        "SELECT * FROM tasks WHERE deleted=0 AND enabled=1 AND kind IN ('once','cron') AND nextRun<=? AND conversationId NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL) ORDER BY nextRun",
         now,
       ))
         this.claim(task.id, now, true);
       await this.dispatch();
+      await this.goalPass();
       this.watchStaleRuns();
       this.sweepRuns();
       this.refresh();
@@ -1072,7 +1146,7 @@ export class Tasks {
   private async dispatch() {
     const store = this.runtime.store;
     for (const run of store.all<PendingRun>(
-      "SELECT r.*,t.prompt FROM task_runs r JOIN tasks t ON t.id=r.taskId WHERE r.state='pending' ORDER BY r.rowid",
+      "SELECT r.*,t.prompt FROM task_runs r JOIN tasks t ON t.id=r.taskId WHERE r.state='pending' AND t.kind!='goal' ORDER BY r.rowid",
     )) {
       if (this.admitted.has(run.id)) continue;
       if (
@@ -1135,6 +1209,507 @@ export class Tasks {
       }
     }
   }
+  // ---- Persistent goals -------------------------------------------------
+  // A goal is a kind='goal' task row plus task_goals metadata. It rides the
+  // ordinary tick above: no second scheduler, no Runtime.submit for its runs,
+  // and the generic task APIs cannot see or mutate it (see get()/list()).
+  // /goal list and /goal cancel are its scoped controls.
+
+  private goalsOf(conversationId: string) {
+    return this.runtime.store.all<
+      GoalRow & {
+        conversationId: string;
+        enabled: number;
+        nextRun: number | null;
+      }
+    >(
+      `SELECT g.*,t.conversationId,t.enabled,t.nextRun FROM task_goals g
+       JOIN tasks t ON t.id=g.taskId
+       WHERE t.conversationId=? AND t.deleted=0 ORDER BY t.rowid`,
+      conversationId,
+    );
+  }
+
+  goalList(conversationId: string) {
+    const goals = this.goalsOf(conversationId);
+    if (!goals.length)
+      return "No goals in this chat. Use /goal pr owner/repo#123 <minutes> <max checks>.";
+    return goals
+      .map((goal, index) => {
+        const label = `${goal.owner}/${goal.repo}#${goal.prNumber}`;
+        const next =
+          goal.state === "pending" && goal.nextRun
+            ? `next check ${new Date(goal.nextRun).toISOString()}`
+            : (goal.reason ?? goal.lastResult ?? goal.state);
+        return `${index + 1}. ${label} — ${goal.state} — attempt ${goal.attempts}/${goal.maxAttempts} — ${next}`;
+      })
+      .join("\n");
+  }
+
+  cancelGoal(conversationId: string, index: number) {
+    if (!Number.isInteger(index) || index < 1)
+      throw new TaskError("Invalid goal number. Use /goal list.");
+    const goal = this.goalsOf(conversationId)[index - 1];
+    if (!goal) throw new TaskError("Invalid goal number. Use /goal list.");
+    if (goal.state !== "pending")
+      throw new TaskError(`That goal already ended: ${goal.state}.`);
+    // The due-goal selection requires state='pending', so this stops all
+    // future checks and even mid-flight results get discarded.
+    this.runtime.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.runtime.store.run(
+        "UPDATE task_goals SET state='cancelled' WHERE taskId=? AND state='pending'",
+        goal.taskId,
+      );
+      this.runtime.store.run(
+        "UPDATE tasks SET enabled=0,nextRun=NULL WHERE id=?",
+        goal.taskId,
+      );
+      this.runtime.store.db.exec("COMMIT");
+    } catch (error) {
+      this.runtime.store.db.exec("ROLLBACK");
+      throw error;
+    }
+    return `Goal cancelled: ${goal.owner}/${goal.repo}#${goal.prNumber}. No further checks or messages.`;
+  }
+
+  /** Creating a goal authorizes one read-only observer, never a model turn. */
+  createGoal(
+    conversationId: string,
+    origin: TaskOrigin,
+    target: GoalTarget,
+    intervalMin: number,
+    maxAttempts: number,
+  ): Promise<void> {
+    return this.serialize(async () => {
+      if (
+        origin.source !== "telegram" ||
+        origin.conversationId !== conversationId ||
+        !REQUEST_ID.test(origin.requestId)
+      )
+        throw new TaskError("The goal origin does not match this conversation");
+      // Durable receipt, same table as ordinary tasks: an update replayed after
+      // the commit but before Telegram's own update receipt confirms the same
+      // goal instead of creating a second one. A distinct update has a distinct
+      // key and is never suppressed.
+      const creationKey = `goal:${conversationId}:${origin.requestId}`;
+      const signature = JSON.stringify({
+        conversationId,
+        owner: target.owner,
+        repo: target.repo,
+        prNumber: target.prNumber,
+        intervalMin,
+        maxAttempts,
+      });
+      const receipt = this.runtime.store.get<{
+        taskId: string;
+        input: string;
+      }>(
+        "SELECT taskId,input FROM task_creations WHERE creationKey=?",
+        creationKey,
+      );
+      if (receipt) {
+        if (receipt.input !== signature)
+          throw new TaskError(
+            "A goal for this message was already saved with different content.",
+          );
+        return;
+      }
+      if (
+        !Number.isInteger(intervalMin) ||
+        intervalMin < GOAL_INTERVAL_MIN ||
+        intervalMin > GOAL_INTERVAL_MAX ||
+        !Number.isInteger(maxAttempts) ||
+        maxAttempts < 1 ||
+        maxAttempts > GOAL_ATTEMPTS_MAX
+      )
+        throw new TaskError("Invalid goal cadence or check limit");
+      await this.runtime.conversation(conversationId);
+      if (this.runtime.store.conversationDeleted(conversationId))
+        throw new TaskError(
+          "Conversation deleted. Restore it before creating a goal.",
+        );
+      if (this.goalsOf(conversationId).length >= GOAL_LIST_LIMIT)
+        throw new TaskError(
+          `Limit of ${GOAL_LIST_LIMIT} goals per chat reached.`,
+        );
+      // destination() freezes the chat/user/bot/topic captured for THIS
+      // request and refuses revoked routes.
+      const destination = this.destination("web_telegram", conversationId, {
+        ...origin,
+        source: "telegram",
+      });
+      const id = randomUUID();
+      this.runtime.store.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.runtime.store.run(
+          "INSERT INTO tasks(id,title,prompt,conversationId,kind,schedule,timezone,delivery,enabled,nextRun,destinationChat,destinationUser,destinationBotId,destinationMessageThreadId,destinationReason,originSource,originConversationId,originRequestId) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          id,
+          `GitHub PR ${target.owner}/${target.repo}#${target.prNumber} merged`,
+          `Persistent goal: notify this chat when ${target.owner}/${target.repo}#${target.prNumber} is merged.`,
+          conversationId,
+          "goal",
+          `every-${intervalMin}m`,
+          "UTC",
+          "web_telegram",
+          // Disabled at rest: a pre-goal binary never claims a goal row. The
+          // goal scheduler owns due-ness through nextRun while it stays disabled.
+          0,
+          this.clock(),
+          destination.destinationChat,
+          destination.destinationUser,
+          destination.destinationBotId,
+          destination.destinationMessageThreadId,
+          destination.destinationReason,
+          origin.source,
+          origin.conversationId,
+          origin.requestId,
+        );
+        this.runtime.store.run(
+          "INSERT INTO task_goals(taskId,owner,repo,prNumber,intervalMin,maxAttempts) VALUES (?,?,?,?,?,?)",
+          id,
+          target.owner,
+          target.repo,
+          target.prNumber,
+          intervalMin,
+          maxAttempts,
+        );
+        this.runtime.store.run(
+          "INSERT INTO task_creations VALUES (?,?,?)",
+          creationKey,
+          id,
+          signature,
+        );
+        this.runtime.store.db.exec("COMMIT");
+      } catch (error) {
+        this.runtime.store.db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  /** Bounded goal work in the ordinary tick; the rest stays due, uncounted. */
+  private async goalPass() {
+    const store = this.runtime.store;
+    // A volume runs one gateway: Telegram-only goals never fetch while
+    // WhatsApp is the active phone gateway.
+    if (this.runtime.options?.phoneGateway === "whatsapp") return;
+    this.recoverInterruptedGoalRuns();
+    const now = this.clock();
+    const due = store.all<GoalTask>(
+      `SELECT t.id,t.conversationId,t.enabled,t.nextRun,t.destinationChat,t.destinationUser,t.destinationBotId,t.destinationMessageThreadId,t.destinationReason,
+         g.owner,g.repo,g.prNumber,g.intervalMin,g.maxAttempts,g.attempts,g.state AS goalState
+       FROM task_goals g JOIN tasks t ON t.id=g.taskId
+       WHERE g.state='pending' AND t.deleted=0 AND t.nextRun<=?
+         AND t.conversationId NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL)
+       ORDER BY t.nextRun LIMIT ?`,
+      now,
+      GOAL_CHECKS_PER_TICK,
+    );
+    for (const task of due) await this.checkGoal(task);
+  }
+
+  /** Runs reserved before a crash are closed, never replayed with a second GET. */
+  private recoverInterruptedGoalRuns() {
+    const store = this.runtime.store;
+    const now = this.clock();
+    for (const run of store.all<{
+      id: string;
+      taskId: string;
+      requestId: string;
+      conversationId: string;
+    }>(
+      `SELECT r.id,r.taskId,r.requestId,r.conversationId FROM task_runs r
+       JOIN tasks t ON t.id=r.taskId
+       WHERE r.state IN ('pending','checking') AND t.kind='goal' AND r.startedAt IS NOT NULL`,
+    )) {
+      store.db.exec("BEGIN IMMEDIATE");
+      try {
+        const goal = store.get<GoalRow>(
+          "SELECT * FROM task_goals WHERE taskId=?",
+          run.taskId,
+        );
+        if (
+          store.get(
+            "SELECT 1 FROM task_runs WHERE id=? AND state IN ('pending','checking')",
+            run.id,
+          )
+        ) {
+          store.run(
+            "UPDATE task_runs SET state='failed',status='erro',error='The check was interrupted before it finished.',finishedAt=? WHERE id=?",
+            now,
+            run.id,
+          );
+          store.run(
+            "UPDATE task_goals SET lastResult='The check was interrupted before it finished.' WHERE taskId=? AND state='pending'",
+            run.taskId,
+          );
+          // The crashed attempt consumed the budget: no more GET, even now.
+          if (goal?.state === "pending" && goal.attempts >= goal.maxAttempts) {
+            const reason = `No definite answer after ${goal.maxAttempts} checks; the last check was interrupted.`;
+            store.run(
+              "UPDATE task_goals SET state='blocked',reason=? WHERE taskId=? AND state='pending'",
+              reason,
+              run.taskId,
+            );
+            store.run(
+              "UPDATE tasks SET enabled=0,nextRun=NULL,lastError=? WHERE id=?",
+              reason,
+              run.taskId,
+            );
+            queueTaskTelegram(
+              store,
+              run.conversationId,
+              run.requestId,
+              `Goal blocked: ${goal.owner}/${goal.repo}#${goal.prNumber} — ${reason} No further checks will run. Use /goal list.`,
+            );
+          }
+        }
+        store.db.exec("COMMIT");
+      } catch (error) {
+        store.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+  }
+
+  /** Revoked destination or archived conversation: no fetch, honest block. */
+  private goalBlockReason(task: GoalTask): string | null {
+    const store = this.runtime.store;
+    if (store.conversationDeleted(task.conversationId))
+      return "The conversation was deleted.";
+    if (task.destinationReason) return "The Telegram destination was revoked.";
+    const frozen: TelegramRoute | undefined =
+      task.destinationChat && task.destinationUser && task.destinationBotId
+        ? {
+            chat: task.destinationChat,
+            user: task.destinationUser,
+            botId: task.destinationBotId,
+            conversationId: task.conversationId,
+            messageThreadId: task.destinationMessageThreadId,
+          }
+        : undefined;
+    if (!frozen || !telegramRouteAuthorized(store, frozen))
+      return "The Telegram destination was revoked.";
+    return null;
+  }
+
+  /** Reserve/increment the attempt and the next check durably BEFORE the fetch:
+   * a crash consumes the attempt instead of repeating the read. */
+  private reserveGoalAttempt(taskId: string, now: number) {
+    const store = this.runtime.store;
+    store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const task = store.get<GoalTask>(
+        "SELECT * FROM tasks WHERE id=? AND deleted=0",
+        taskId,
+      );
+      const goal = store.get<GoalRow>(
+        "SELECT * FROM task_goals WHERE taskId=?",
+        taskId,
+      );
+      if (
+        !task ||
+        !goal ||
+        goal.state !== "pending" ||
+        task.nextRun === null ||
+        task.nextRun > now ||
+        goal.attempts >= goal.maxAttempts ||
+        store.get(
+          "SELECT 1 FROM task_runs WHERE taskId=? AND state IN ('pending','checking')",
+          taskId,
+        )
+      ) {
+        store.db.exec("COMMIT");
+        return undefined;
+      }
+      const run = {
+        id: randomUUID(),
+        requestId: `task:${randomUUID()}`,
+        conversationId: task.conversationId,
+      };
+      // 'checking' is invisible to a pre-goal binary's dispatch/refresh: a
+      // goal run is never eligible to the ordinary model pipeline at rest.
+      store.run(
+        "INSERT INTO task_runs(id,taskId,scheduledAt,state,requestId,scheduled,conversationId,delivery,destinationChat,destinationUser,destinationBotId,destinationMessageThreadId,destinationReason,originSource,originConversationId,originRequestId,startedAt) VALUES (?, ?,?,'checking',?,1,?,?,?,?,?,?,?,?,?,?,?)",
+        run.id,
+        taskId,
+        now,
+        run.requestId,
+        task.conversationId,
+        "web_telegram",
+        task.destinationChat,
+        task.destinationUser,
+        task.destinationBotId,
+        task.destinationMessageThreadId,
+        task.destinationReason,
+        task.originSource,
+        task.conversationId,
+        task.originRequestId,
+        now,
+      );
+      store.run(
+        "UPDATE task_goals SET attempts=? WHERE taskId=?",
+        goal.attempts + 1,
+        taskId,
+      );
+      // Cadence stays monotonic: every attempt schedules from its own now.
+      store.run(
+        "UPDATE tasks SET nextRun=? WHERE id=?",
+        now + goal.intervalMin * 60_000,
+        taskId,
+      );
+      store.db.exec("COMMIT");
+      return { task, goal, count: goal.attempts + 1, run };
+    } catch (error) {
+      store.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private async checkGoal(task: GoalTask) {
+    const attempt = this.reserveGoalAttempt(task.id, this.clock());
+    if (!attempt) return;
+    const block = this.goalBlockReason(attempt.task);
+    if (block)
+      return this.settleGoalAttempt(attempt, {
+        kind: "blocked",
+        reason: block,
+      });
+    const observation = await observePrMerged(
+      {
+        owner: attempt.goal.owner,
+        repo: attempt.goal.repo,
+        prNumber: attempt.goal.prNumber,
+      },
+      this.goalFetcher,
+    );
+    this.settleGoalAttempt(attempt, observation);
+  }
+
+  /** One atomic settle of the exact goal, run and terminal queueing. */
+  private settleGoalAttempt(
+    attempt: {
+      task: GoalTask;
+      goal: GoalRow;
+      count: number;
+      run: { id: string; requestId: string; conversationId: string };
+    },
+    outcome: PrObservation | { kind: "blocked"; reason: string },
+  ) {
+    const store = this.runtime.store;
+    const now = this.clock();
+    store.db.exec("BEGIN IMMEDIATE");
+    try {
+      const goal = store.get<GoalRow>(
+        "SELECT * FROM task_goals WHERE taskId=?",
+        attempt.task.id,
+      );
+      const run = store.get<{ state: string }>(
+        "SELECT state FROM task_runs WHERE id=? AND taskId=? AND requestId=? AND conversationId=?",
+        attempt.run.id,
+        attempt.task.id,
+        attempt.run.requestId,
+        attempt.run.conversationId,
+      );
+      // Discard late, cancelled or already-settled results: exact run identity,
+      // still in flight, and the same reserved attempt.
+      if (
+        !goal ||
+        goal.state !== "pending" ||
+        goal.attempts !== attempt.count ||
+        (run?.state !== "pending" && run?.state !== "checking")
+      ) {
+        if (run && (run.state === "pending" || run.state === "checking"))
+          store.run(
+            "UPDATE task_runs SET state='failed',error='Discarded: the goal is no longer pending.',finishedAt=? WHERE id=?",
+            now,
+            attempt.run.id,
+          );
+        store.db.exec("COMMIT");
+        return;
+      }
+      const label = `${goal.owner}/${goal.repo}#${goal.prNumber}`;
+      const terminal = (state: "completed" | "blocked", reason: string) => {
+        const message =
+          state === "completed"
+            ? `Goal reached: ${label} was merged.`
+            : `Goal blocked: ${label} — ${reason} No further checks will run. Use /goal list.`;
+        store.run(
+          "UPDATE task_goals SET state=?,reason=? WHERE taskId=? AND state='pending'",
+          state,
+          reason,
+          attempt.task.id,
+        );
+        store.run(
+          "UPDATE tasks SET enabled=0,nextRun=NULL,lastError=? WHERE id=?",
+          reason,
+          attempt.task.id,
+        );
+        store.run(
+          "UPDATE task_runs SET state='done',finishedAt=?,status=?,summary=?,error=? WHERE id=?",
+          now,
+          state === "completed" ? "ok" : "erro",
+          truncateTaskSummary(message, 1000),
+          state === "completed" ? null : reason,
+          attempt.run.id,
+        );
+        // Frozen task_runs route, revalidated at send; a skip is recorded, never claimed as delivery.
+        queueTaskTelegram(
+          store,
+          attempt.run.conversationId,
+          attempt.run.requestId,
+          message,
+        );
+      };
+      if (outcome.kind === "merged")
+        terminal("completed", "The pull request was merged.");
+      else if (outcome.kind === "blocked") terminal("blocked", outcome.reason);
+      else if (outcome.kind === "closed_unmerged")
+        terminal(
+          "blocked",
+          "The pull request was closed without being merged.",
+        );
+      // The budget check comes before the open branch: a valid open read on
+      // the last allowed attempt must settle terminally, not strand the goal
+      // pending forever. Transient outcomes keep the same exhausted message.
+      else if (attempt.count >= goal.maxAttempts)
+        terminal(
+          "blocked",
+          outcome.kind === "open"
+            ? `The pull request is still open after ${goal.maxAttempts} checks.`
+            : `No definite answer after ${goal.maxAttempts} checks (last: ${outcome.reason}).`,
+        );
+      else if (outcome.kind === "open") {
+        store.run(
+          "UPDATE task_runs SET state='done',finishedAt=?,status='silencioso',summary='The pull request is still open.' WHERE id=?",
+          now,
+          attempt.run.id,
+        );
+        store.run(
+          "UPDATE task_goals SET lastResult='The pull request is still open.' WHERE taskId=?",
+          attempt.task.id,
+        );
+      } else {
+        store.run(
+          "UPDATE task_runs SET state='done',finishedAt=?,status='silencioso',summary=? WHERE id=?",
+          now,
+          outcome.reason,
+          attempt.run.id,
+        );
+        store.run(
+          "UPDATE task_goals SET lastResult=? WHERE taskId=?",
+          outcome.reason,
+          attempt.task.id,
+        );
+      }
+      store.db.exec("COMMIT");
+    } catch (error) {
+      store.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   start() {
     if (this.closing) throw new TaskError("Scheduler is shutting down");
     if (this.timer) return;
