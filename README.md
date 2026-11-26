@@ -315,7 +315,15 @@ A persistent goal is a deterministic observer, not a recurring agent prompt: it 
 /goal pr torvalds/linux#123 60 24
 ```
 
-That watches for public PR `torvalds/linux#123` to be merged, re-checking every 60 minutes, at most 24 times, and notifies the chat and topic where the command was sent. `/goal list` shows status, next check and attempts; `/goal cancel <number>` stops it (silently). The cadence argument is 10–1440 minutes and the attempt limit is 1–200, both enforced in code.
+You can also say it in natural language, and both forms create the same goal:
+
+```
+/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada.
+```
+
+Any sentence naming exactly one GitHub PR and one check interval is parsed deterministically (no LLM at runtime): PR links like `https://github.com/OWNER/REPO/pull/123`, `/pulls` pages, `OWNER/REPO#123`, `PR 123` or `#123` identify the target, `a cada 5 minutos`, `de 10 em 10 minutos` or `every 3 hours` set the cadence, and `no maximo 50 verificacoes` / `max 7` optionally cap the checks. Conflicting references — two different PR numbers or two different repositories — are refused, never guessed. Only `https://github.com` links are accepted (no `http`, no other hosts, no links with credentials).
+
+That watches for public PR `torvalds/linux#123` to be merged, re-checking every 60 minutes, at most 24 times, and notifies the chat and topic where the command was sent. `/goal list` shows status, next check and attempts; `/goal cancel <number>` stops it (silently). The cadence argument is 5–1440 minutes (5 minutes = 12 requests/hour, below GitHub's 60/hour unauthenticated limit) and the attempt limit is 1–200, both enforced in code.
 
 Completion is proven only by the provider's own `merged: true` on the exact PR identity; anything else — an open PR, a failed, private, malformed or mismatched answer — retries on the next check and stays silent. A PR closed without being merged or an exhausted check budget ends the goal as `blocked`; a notification is queued through the existing Telegram delivery when the destination is still authorized, and honestly recorded as skipped (never claimed as sent) when the chat/topic link was revoked. Goals are not schedules: they do not appear in `/crons` and the generic task controls cannot edit, run or delete them — use `/goal list` and `/goal cancel` instead. Checks, attempts and state live in the app's SQLite store and survive restarts; an attempt interrupted by a restart is never replayed, and a goal never sends a second terminal notification.
 
