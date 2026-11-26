@@ -192,6 +192,49 @@ test("explicit check limits override the default of 200", () => {
   );
 });
 
+test("an accented 'até N verificações' cap is read, never silently defaulted", () => {
+  assert.deepEqual(
+    parseGoalCommand(
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos até 10 verificações",
+    ),
+    created(66, 60, 10),
+  );
+});
+
+test("an over-long check cap is refused, never truncated or defaulted", () => {
+  for (const phrase of ["no máximo 1000", "max 2000", "ate 1000 verificacoes"])
+    assert.throws(
+      () =>
+        parseGoalCommand(
+          `acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos ${phrase}`,
+        ),
+      /1 to 200/,
+      phrase,
+    );
+});
+
+test("an 'x' or 'vezes' suffix keeps the cap it qualifies", () => {
+  for (const phrase of ["no máximo 10x", "no máximo 10 vezes"]) {
+    assert.deepEqual(
+      parseGoalCommand(
+        `acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos ${phrase}`,
+      ),
+      created(66, 60, 10),
+      phrase,
+    );
+  }
+});
+
+test("a thousands separator in the cap is refused, never read as its first digit", () => {
+  assert.throws(
+    () =>
+      parseGoalCommand(
+        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos no máximo 1.000",
+      ),
+    /1 to 200/,
+  );
+});
+
 test("text with no PR reference at all is refused", () => {
   assert.throws(
     () => parseGoalCommand("acompanhe o deploy a cada 60 minutos"),
