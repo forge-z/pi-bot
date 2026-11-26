@@ -431,6 +431,7 @@ const CLEAN_HELP = [
   "/model — provider and model",
   "/thinking — effort",
   "/crons — create and manage schedules",
+  "/goal — watch a public GitHub PR and notify when it merges",
   "/new — another conversation in this topic (the previous one stays)",
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
