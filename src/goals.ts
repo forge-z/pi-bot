@@ -39,13 +39,17 @@ export type PrObservation =
   /** Transient: never completion or terminal proof on its own. */
   | { kind: "retry"; reason: string };
 
+const REPO_SEGMENT = "[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?";
+/** No `..`, `--`, `._` runs; shared by the structured and natural forms. */
+const BAD_REPO_CHARS = /([._-])\1|\.\.|-\.|\.--/;
+const GOAL_TARGET = new RegExp(
+  `^(${REPO_SEGMENT})/(${REPO_SEGMENT})#([1-9][0-9]{0,8})$`,
+);
+
 /** Parse and normalize the `/goal` target argument: `owner/repo#123`. */
 export function parseGoalTarget(value: string): GoalTarget {
-  const match =
-    /^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\/([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)#([1-9][0-9]{0,8})$/.exec(
-      value,
-    );
-  if (!match || /([._-])\1|\.\.|-\.|\.--/.test(value))
+  const match = GOAL_TARGET.exec(value);
+  if (!match || BAD_REPO_CHARS.test(value))
     throw new GoalError(
       "Invalid target: use owner/repo#number with a positive PR number.",
     );
@@ -121,10 +125,6 @@ export function parseGoalCommand(args: string): GoalCommand {
   }
   return parseNaturalGoal(args);
 }
-
-const REPO_SEGMENT = "[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?";
-/** Same character rule as parseGoalTarget: no `..`, `--`, `._` runs. */
-const BAD_REPO_CHARS = /([._-])\1|\.\.|-\.|\.--/;
 
 function collectNaturalTarget(text: string): {
   repos: Set<string>;
@@ -208,8 +208,10 @@ function collectNaturalTarget(text: string): {
 
 const INTERVAL_RE =
   /\b(?:a\s+cada|cada|every)\s+([0-9]{1,4})\s+(minutos?|minutes?|min|horas?|hours?)\b|\b([0-9]{1,4})\s+em\s+([0-9]{1,4})\s+(minutos?|min|horas?)\b/gi;
+// Whole numbers only: an out-of-range cap reaches bounded() and is refused,
+// never truncated to its first digits or dropped to the default.
 const MAX_RE =
-  /\bate\s+([0-9]{1,3})\s+(?:verifica[çc][õo]es|checagens|checks)\b|\bno\s+m[áa]ximo\s+([0-9]{1,3})|\bmax(?:imum)?\s+([0-9]{1,3})\b/gi;
+  /\bat[eé]\s+([0-9][0-9.]*)\s+(?:verifica[çc][õo]es|checagens|checks)\b|\bno\s+m[áa]ximo\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b|\bmax(?:imum)?\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b/gi;
 
 /** Deterministic fallback: parse a natural-language /goal request, no LLM. */
 function parseNaturalGoal(args: string): GoalCommand {
@@ -267,7 +269,9 @@ function parseNaturalGoal(args: string): GoalCommand {
   );
   const maxes = new Set<number>();
   for (const match of text.matchAll(MAX_RE))
-    maxes.add(Number(match[1] ?? match[2] ?? match[3]));
+    // Dots are thousands separators here: 1.000 becomes 1000 and is refused,
+    // never silently read as 1.
+    maxes.add(Number((match[1] ?? match[2] ?? match[3]).replaceAll(".", "")));
   if (maxes.size > 1) {
     const [a, b] = [...maxes].sort((x, y) => x - y);
     throw new GoalError(

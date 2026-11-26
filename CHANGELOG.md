@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A PR GitHub reports as not found (HTTP 404) blocks its goal on the first check, saying the PR does not exist, was renamed, or became private.
 - `/goal` refuses a second pending goal for the same PR in the same chat and names the existing goal to cancel.
 
+### Fixed
+
+- A natural-language `/goal` check cap written with an accent (`até 10 verificações`) is now read instead of silently falling back to 200, and an out-of-range cap (`no máximo 1000`, `max 2000`) is refused instead of being cut to its first digits or ignored. A cap written as `10x` or `10 vezes`, or with a thousands separator (`1.000`), keeps its meaning instead of silently falling back to 200 or being read as 1.
+
 ## [0.5.3] - 2026-11-23
 
 ### Added
