@@ -166,6 +166,12 @@ interface RequestTelegramRoute extends TelegramRoute {
 const SCHEDULED_DELIVERY =
   "The final text from this run is not delivered. Call notify to message the user. If there is nothing to report, do not call it.";
 /**
+ * The contract of a free-objective goal round, after the delivery note. The
+ * code enforces it: notify is held until goal_reached and dropped otherwise.
+ */
+export const GOAL_ROUND_CONTRACT =
+  "This run checks a persistent goal: the prompt above is the condition to watch for. Only if it has clearly happened, call notify once with the evidence (what you observed, with the value and its source), then call goal_reached with the same evidence. In this run notify is held: it reaches the chat only when goal_reached is called, and goal_reached alone sends a standard message with the evidence. If it has not happened, or you cannot tell, call neither: anything held is discarded, the goal stays silent and is checked again on its schedule.";
+/**
  * An approval the user just decided in this chat. The final text is delivered.
  * Empty text is the silence marker: nothing is sent.
  */
@@ -382,17 +388,18 @@ export function isRetryableError(error: unknown): boolean {
     (error as { [RETRYABLE]?: boolean })[RETRYABLE] === true
   );
 }
-function withoutNotify(messages: readonly Message[]) {
+/** Hide run-scoped tools (`notify`, `goal_reached`) from a request that may not use them. */
+function withoutTools(messages: readonly Message[], names: readonly string[]) {
   let changed = false;
   const next = messages.map((message) => {
     if (
       message.role !== "system" ||
-      !message.toolsAdded?.some((tool) => tool.name === "notify")
+      !message.toolsAdded?.some((tool) => names.includes(tool.name))
     )
       return message;
     changed = true;
     const toolsAdded = message.toolsAdded.filter(
-      (tool) => tool.name !== "notify",
+      (tool) => !names.includes(tool.name),
     );
     if (!toolsAdded.length) {
       const rest = { ...message };
@@ -477,6 +484,16 @@ export class Runtime {
   private monitors = new Map<string, Promise<void>>();
   /** Notes already posted for one user turn. Cleared when that turn settles. */
   private progressBudgets = new Map<string, ProgressBudget>();
+  /**
+   * `notify` calls of a free-objective goal round, keyed by
+   * `conversationId:requestId`, in call order. goal_reached releases them;
+   * the round's settlement drops whatever is left. Memory only: a restart
+   * forgets them, and one round never sees another round's messages.
+   */
+  private goalHeld = new Map<
+    string,
+    { callId: string; text: string; replyTo?: number }[]
+  >();
   private admissions = new Map<
     string,
     {
@@ -943,7 +960,7 @@ export class Runtime {
             defineTool({
               name: "notify",
               description:
-                "Post a message to this scheduled run's chat. The final answer is not delivered; this is the only way this run speaks. Call it once per message, more than once when there is more than one message. Text that is empty after removing spaces and invisible characters is refused and nothing is sent. Refused outside a scheduled run. Optional replyTo is a message id already seen in this same chat; it only sets the reply. The chat stays the schedule's. An unknown or other-chat id is ignored. A deleted target is still delivered as a normal message.",
+                "Post a message to this scheduled run's chat. The final answer is not delivered; this is the only way this run speaks. Call it once per message, more than once when there is more than one message. Text that is empty after removing spaces and invisible characters is refused and nothing is sent. Refused outside a scheduled run. Optional replyTo is a message id already seen in this same chat; it only sets the reply. The chat stays the schedule's. An unknown or other-chat id is ignored. A deleted target is still delivered as a normal message. In a persistent goal check the message is held and sent only when that check calls goal_reached; otherwise it is discarded.",
               parameters: Type.Object({
                 text: Type.String({
                   description: "Message for the user, in the chat's language",
@@ -976,6 +993,26 @@ export class Runtime {
                   return refuse(
                     "notify is only available during a scheduled run. Nothing was sent.",
                   );
+                // A free-objective goal round is silent by code: its messages
+                // wait for goal_reached and are dropped if the round ends first.
+                const round = app!.tasks.goalRunTask(
+                  conversationId,
+                  run.requestId,
+                );
+                if (round) {
+                  const held = app!.holdGoalNotify(
+                    conversationId,
+                    run.requestId,
+                    round.goalState,
+                    String(api.callId),
+                    args.text,
+                    args.replyTo,
+                  );
+                  if (!held.ok) return refuse(held.text);
+                  return {
+                    output: [{ type: "text" as const, text: held.text }],
+                  };
+                }
                 const error = queueNotify(
                   app!.store,
                   conversationId,
@@ -994,6 +1031,53 @@ export class Runtime {
                     },
                   ],
                 };
+              },
+            }),
+            defineTool({
+              name: "goal_reached",
+              description:
+                "End this persistent goal: the condition it watches has happened. It records the evidence, closes the goal, stops its schedule and sends this check's held notify messages in order; with none held it sends one standard message with the evidence. Only available in a scheduled goal check. A repeated call changes nothing and sends nothing.",
+              parameters: Type.Object({
+                evidence: Type.String({
+                  description:
+                    "What was observed, with the value and its source",
+                  minLength: 1,
+                  maxLength: 2000,
+                }),
+              }),
+              replay: "safe",
+              execute: async (args, api) => {
+                const conversationId = String(api.conversationId);
+                const inputs = await api.commit(async (tx) => {
+                  const live = await tx.doc(LiveDoc, api.conversationId);
+                  return [...(live.run?.inputs ?? [])];
+                }, context);
+                const run = await app!.quietOffer(conversationId, inputs);
+                let text: string;
+                try {
+                  // Resolved from THIS run's own request: another task is never touched.
+                  if (!run.offer || !run.requestId)
+                    throw new TaskError(
+                      "goal_reached is only available in a scheduled goal check. Nothing was recorded.",
+                    );
+                  const requestId = run.requestId;
+                  text = app!.tasks.goalReached(
+                    conversationId,
+                    requestId,
+                    args.evidence,
+                    (standard) =>
+                      app!.releaseGoalHeld(conversationId, requestId, standard),
+                  );
+                  app!.goalHeld.delete(`${conversationId}:${requestId}`);
+                  app!.flushTelegramPending?.();
+                } catch (error) {
+                  if (!(error instanceof TaskError)) throw error;
+                  return {
+                    isError: true as const,
+                    output: [{ type: "text" as const, text: error.message }],
+                  };
+                }
+                return { output: [{ type: "text" as const, text }] };
               },
             }),
             defineTool({
@@ -1147,9 +1231,19 @@ export class Runtime {
                   String(api.conversationId),
                   live?.run?.inputs ?? [],
                 );
-                const messages = run.offer
-                  ? undefined
-                  : withoutNotify(request.messages);
+                // notify belongs to scheduled runs; goal_reached only to a goal's round.
+                const goalRound =
+                  run.offer &&
+                  !!run.requestId &&
+                  !!app!.tasks.goalRunTask(
+                    String(api.conversationId),
+                    run.requestId,
+                  );
+                const hidden = [
+                  ...(run.offer ? [] : ["notify"]),
+                  ...(goalRound ? [] : ["goal_reached"]),
+                ];
+                const messages = withoutTools(request.messages, hidden);
                 const memory =
                   app!.memory &&
                   app!.store.get(
@@ -2154,6 +2248,10 @@ export class Runtime {
           "UPDATE task_goals SET state='cancelled',reason='The conversation was archived.' WHERE state='pending' AND taskId IN (SELECT id FROM tasks WHERE conversationId=? AND kind='goal')",
           id,
         );
+        store.run(
+          "UPDATE tasks SET goalState='cancelled',lastError='The conversation was archived.' WHERE conversationId=? AND kind='goal' AND COALESCE(goalState,'pending')='pending' AND id NOT IN (SELECT taskId FROM task_goals)",
+          id,
+        );
         store.run("DELETE FROM telegram WHERE conversationId=?", id);
         store.run("DELETE FROM telegram_grants WHERE conversationId=?", id);
         store.run(
@@ -2220,6 +2318,11 @@ export class Runtime {
       parts.push(
         known ? `${SCHEDULED_DELIVERY}\n\n${known}` : SCHEDULED_DELIVERY,
       );
+      if (
+        source === "task" &&
+        this.tasks.goalRunTask(conversationId, requestId)
+      )
+        parts.push(GOAL_ROUND_CONTRACT);
     } else if (
       source === "system" &&
       this.systemDelivers(conversationId, requestId)
@@ -3101,9 +3204,15 @@ export class Runtime {
             const summary = failure
               ? `The task did not finish: ${failure}`
               : answer;
+            // A goal round speaks only through notify: no failure notice and
+            // no final text. /goal list shows the error; exhaustion blocks it.
+            const goalRound = !!this.tasks.goalRunTask(
+              conversationId,
+              requestId,
+            );
             // A runner failure is the system's message, with the real category.
             // The model's own text is never delivered from here.
-            if (failure)
+            if (failure && !goalRound)
               queueTaskTelegram(
                 this.store,
                 conversationId,
@@ -3111,12 +3220,12 @@ export class Runtime {
                 `The task did not finish (${settleFailureCategory(settled)}). See tasks_runs for the reason.`,
                 "task-failure",
               );
-            else {
+            else if (!failure) {
               const delivery = this.store.get<{ delivery: string | null }>(
                 "SELECT delivery FROM task_runs WHERE requestId=?",
                 requestId,
               )?.delivery;
-              if (delivery === "web")
+              if (delivery === "web" && !goalRound)
                 queueTaskTelegram(
                   this.store,
                   conversationId,
@@ -3179,6 +3288,8 @@ export class Runtime {
           this.executorMemory?.finish(conversationId, requestId);
           this.advancedMemory?.finish(conversationId, requestId);
           this.progressBudgets.delete(`${conversationId}:${requestId}`);
+          // A goal round that ended without goal_reached sends nothing.
+          this.goalHeld.delete(`${conversationId}:${requestId}`);
           const stillMonitoring = [...this.monitors.keys()].some(
             (k) => k !== key && k.startsWith(`${conversationId}:`),
           );
@@ -3237,6 +3348,71 @@ export class Runtime {
       if (!requestId || source === "task") requestId = record.requestId;
     }
     return { offer, requestId, userRequests };
+  }
+  /** Hold one `notify` of a goal round until goal_reached; a replayed call
+   * with the same id replaces its own entry instead of adding a copy. */
+  private holdGoalNotify(
+    conversationId: string,
+    requestId: string,
+    goalState: string | null,
+    callId: string,
+    text: string,
+    replyTo?: number,
+  ): { ok: boolean; text: string } {
+    const state = goalState ?? "pending";
+    if (state === "met")
+      return {
+        ok: false,
+        text: "This goal is already reached and closed; its message was delivered. Nothing more was sent.",
+      };
+    if (state !== "pending")
+      return {
+        ok: false,
+        text: `This goal already ended: ${state}. Nothing was sent.`,
+      };
+    if (isBlankMessage(text))
+      return {
+        ok: false,
+        text: "notify refused the text: after removing spaces and invisible characters it was empty. Nothing was sent.",
+      };
+    const key = `${conversationId}:${requestId}`;
+    const held = this.goalHeld.get(key) ?? [];
+    const entry = { callId, text, ...(replyTo ? { replyTo } : {}) };
+    const at = held.findIndex((message) => message.callId === callId);
+    if (at >= 0) held[at] = entry;
+    else held.push(entry);
+    this.goalHeld.set(key, held);
+    return {
+      ok: true,
+      text: "Held: this goal check's message is delivered only when this round calls goal_reached. If the round ends without goal_reached, nothing is sent.",
+    };
+  }
+  /** Inside goal_reached's transaction: queue the round's held messages in
+   * call order, or the standard message when it held none. */
+  private releaseGoalHeld(
+    conversationId: string,
+    requestId: string,
+    standard: string,
+  ): string | undefined {
+    const held = this.goalHeld.get(`${conversationId}:${requestId}`);
+    const messages = held?.length
+      ? held
+      : [{ callId: "goal_reached", text: standard, replyTo: undefined }];
+    const errors = messages
+      .map((message) =>
+        queueNotify(
+          this.store,
+          conversationId,
+          requestId,
+          message.callId,
+          message.text,
+          message.replyTo,
+        ),
+      )
+      .filter((error): error is string => !!error);
+    return errors.length
+      ? `The goal message was not delivered: ${errors[0]}`
+      : undefined;
   }
   /** Final text of a non-interactive run, so a missed alert stays in the log. */
   private logQuietRun(
