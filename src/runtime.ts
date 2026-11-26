@@ -2147,6 +2147,13 @@ export class Runtime {
           "UPDATE tasks SET enabled=0,nextRun=NULL WHERE conversationId=?",
           id,
         );
+        // Archive also cancels pending goals in the same transaction: a
+        // restored conversation must not reopen a watch on deleted history,
+        // and the settle guard discards a merged GET that lands late.
+        store.run(
+          "UPDATE task_goals SET state='cancelled',reason='The conversation was archived.' WHERE state='pending' AND taskId IN (SELECT id FROM tasks WHERE conversationId=? AND kind='goal')",
+          id,
+        );
         store.run("DELETE FROM telegram WHERE conversationId=?", id);
         store.run("DELETE FROM telegram_grants WHERE conversationId=?", id);
         store.run(

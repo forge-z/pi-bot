@@ -8,6 +8,9 @@ import {
   revokeRememberedApproval,
 } from "./remembered-approvals.js";
 import type { Runtime } from "./runtime.js";
+import { GOAL_HELP, GoalError, parseGoalCommand } from "./goals.js";
+import { TaskError } from "./tasks.js";
+import { telegramConversationRoute } from "./task-telegram.js";
 
 export function commandReceipt(
   app: Runtime,
@@ -44,6 +47,84 @@ export function commandRevoke(
 ) {
   app.commands.authorize(conversationId, access);
   return revokeRememberedApproval(rememberedApprovals(app), argument);
+}
+
+/** `/goal`: persistent read-only goals, Telegram-only, created in the exact
+ * chat/user/bot/topic of the incoming update. Scoped controls: /goal list and
+ * /goal cancel — a goal never appears in /crons or the generic task APIs. */
+export async function commandGoal(
+  app: Runtime,
+  conversationId: string,
+  access: CommandAccess,
+  args: string,
+  updateId: number,
+) {
+  if (access.source !== "telegram")
+    throw new CommandError(
+      "Persistent goals are Telegram-only in this milestone.",
+    );
+  app.commands.authorize(conversationId, access);
+  let command;
+  try {
+    command = parseGoalCommand(args);
+  } catch (error) {
+    if (error instanceof GoalError) throw new CommandError(error.message);
+    throw error;
+  }
+  if (command.action === "help") return GOAL_HELP;
+  // Invalid list/cancel input and refused creations are safe command replies,
+  // never a failed update on the transport.
+  try {
+    if (command.action === "list") return app.tasks.goalList(conversationId);
+    if (command.action === "cancel")
+      return app.tasks.cancelGoal(conversationId, command.index);
+  } catch (error) {
+    if (error instanceof TaskError) throw new CommandError(error.message);
+    throw error;
+  }
+  // Freeze the destination from THIS update's route, never a current selection.
+  const route = telegramConversationRoute(app.store, conversationId);
+  if (
+    !route ||
+    route.chat !== access.chat ||
+    route.user !== access.user ||
+    route.messageThreadId !== (access.messageThreadId ?? null)
+  )
+    throw new CommandError(
+      "The goal destination must be this chat and topic. The goal was not saved.",
+    );
+  const requestId = `telegram:goal-create:${updateId}`;
+  app.store.savepoint("goal_create_origin", () => {
+    app.store.run(
+      "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,chat,status) VALUES (?,?,?,'telegram',?,'done')",
+      conversationId,
+      requestId,
+      "Confirmed persistent goal in this topic.",
+      access.chat,
+    );
+    app.store.run(
+      "INSERT OR IGNORE INTO request_telegram_routes VALUES (?,?,?,?,?,?,'authorized',NULL)",
+      conversationId,
+      requestId,
+      route.chat,
+      route.user,
+      route.botId,
+      route.messageThreadId,
+    );
+  });
+  try {
+    await app.tasks.createGoal(
+      conversationId,
+      { source: "telegram", conversationId, requestId },
+      command.target,
+      command.intervalMin,
+      command.maxAttempts,
+    );
+  } catch (error) {
+    if (error instanceof TaskError) throw new CommandError(error.message);
+    throw error;
+  }
+  return `Goal saved: notify this chat when ${command.target.owner}/${command.target.repo}#${command.target.prNumber} is merged. Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Use /goal list and /goal cancel <number>.`;
 }
 
 export type CommandAccess = {

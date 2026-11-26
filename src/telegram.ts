@@ -48,6 +48,7 @@ import {
   commandApprovals,
   commandReceipt,
   commandRevoke,
+  commandGoal,
   resumeReport,
 } from "./commands.js";
 import { acceptMcpOauthPaste, vaultFromStore } from "./mcp-oauth.js";
@@ -1237,6 +1238,16 @@ export class Telegram {
           command === "thinking",
         );
       } else if (text === "/crons") openCronMenu(this.app, owner, id, updateId);
+      else if (command === "goal")
+        reply(
+          await commandGoal(
+            this.app,
+            id,
+            { source: "telegram", ...owner },
+            text.slice("/goal".length).trim(),
+            updateId,
+          ),
+        );
       else if (text === "/status") {
         // The command menu is registered once per deployment; this reloads it.
         await this.onReload?.(owner.chat);

@@ -290,6 +290,7 @@ On Telegram the app registers this menu on start. There is nothing to set in Bot
 | `/model`     | Provider and model for this topic                                                                 |
 | `/thinking`  | Effort for this topic                                                                             |
 | `/crons`     | Create and manage schedules                                                                       |
+| `/goal`      | Watch a public GitHub PR until it is merged (see [Persistent goals](#persistent-goals))           |
 | `/new`       | Another conversation in this topic. The previous one stays on the volume                          |
 | `/resume`    | Resume a stuck task: a crash-parked task, or an uncertain MCP result                              |
 | `/stop`      | Stop this topic                                                                                   |
@@ -306,7 +307,25 @@ Receipts are stored per conversation from the time this feature is installed. Th
 
 Each native topic (a forum topic) has its own history, model, and effort.
 
+## Persistent goals
+
+A persistent goal is a deterministic observer, not a recurring agent prompt: it makes one fixed read-only `api.github.com` request on a schedule and never runs the model, tools or jobs. It is Telegram-only in this milestone — there is no WhatsApp support yet.
+
+```
+/goal pr torvalds/linux#123 60 24
+```
+
+That watches for public PR `torvalds/linux#123` to be merged, re-checking every 60 minutes, at most 24 times, and notifies the chat and topic where the command was sent. `/goal list` shows status, next check and attempts; `/goal cancel <number>` stops it (silently). The cadence argument is 10–1440 minutes and the attempt limit is 1–200, both enforced in code.
+
+Completion is proven only by the provider's own `merged: true` on the exact PR identity; anything else — an open PR, a failed, private, malformed or mismatched answer — retries on the next check and stays silent. A PR closed without being merged or an exhausted check budget ends the goal as `blocked`; a notification is queued through the existing Telegram delivery when the destination is still authorized, and honestly recorded as skipped (never claimed as sent) when the chat/topic link was revoked. Goals are not schedules: they do not appear in `/crons` and the generic task controls cannot edit, run or delete them — use `/goal list` and `/goal cancel` instead. Checks, attempts and state live in the app's SQLite store and survive restarts; an attempt interrupted by a restart is never replayed, and a goal never sends a second terminal notification.
+
+Archiving (deleting) a conversation cancels its pending goals in the same transaction, silently; restoring the conversation does not reopen them, and a merged answer that lands after the archive is discarded without a terminal message. Terminal goals are left untouched. The schema also refuses any goal run row that is not an explicit `checking` admission: the trigger persists in the SQLite database and refuses the exact pre-goal binary's normal `INSERT` that relies on the default `pending` state — exactly what the offline base check measures. It does not replace restoring the pre-upgrade backup, does not certify other versions, mixed simultaneous use or schema changes, and never undoes an admission, delivery or effect that already happened.
+
 ## Upgrade
+
+### Deployment and rollback
+
+Before upgrading, stop every writer of the volume (all containers and processes that open the database). Take a consistent backup of the volume/database — including the WAL and state files — before swapping the binary. Rolling back operationally means restoring the previous binary **and** that pre-upgrade backup; changes written after the backup are lost and must be reconciled by the operator. In-place downgrade, running mixed versions against one database, or versions other than the exact previous base is not supported, and there is no retroactive protection for runs that were already pending or admitted under the new binary, for external effects, or any guarantee of delivery. The exact-base rollback check measures only the base `Tasks`, the candidate schema and the offline fixture — it is not a general downgrade guarantee.
 
 ### Upgrading from pi-agent-tg
 
