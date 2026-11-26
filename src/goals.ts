@@ -2,8 +2,11 @@
  * read-only GitHub observer. All durable goal state lives in Tasks
  * (src/tasks.ts); nothing here owns a timer, store or runner. */
 
-export const GOAL_INTERVAL_MIN = 5;
-// 5 min = 12 requests/hour, below GitHub's 60/hour unauthenticated limit.
+// GitHub allows 60 unauthenticated requests/hour per IP, shared by every goal
+// on the volume. A 60-minute check is 1 request/hour, so up to 60 simultaneous
+// goals stay under that limit. Only new creations are bounded: a goal stored
+// with a shorter interval keeps its cadence.
+export const GOAL_INTERVAL_MIN = 60; // 60 min = 1 request/hour per goal.
 export const GOAL_INTERVAL_MAX = 1440;
 export const GOAL_ATTEMPTS_MAX = 200;
 /** The observer is read-only; one PR payload is far below this cap. */
@@ -29,6 +32,10 @@ export type PrObservation =
   | { kind: "merged" }
   | { kind: "closed_unmerged" }
   | { kind: "open" }
+  /** HTTP 403/429: GitHub refused the read; it never counts as an attempt. */
+  | { kind: "rate_limited" }
+  /** HTTP 404: the PR does not exist, was renamed, or became private. */
+  | { kind: "not_found" }
   /** Transient: never completion or terminal proof on its own. */
   | { kind: "retry"; reason: string };
 
@@ -62,6 +69,7 @@ export type GoalCommand =
   | { action: "help" }
   | { action: "list" }
   | { action: "cancel"; index: number }
+  | { action: "check"; index: number }
   | {
       action: "create";
       target: GoalTarget;
@@ -71,9 +79,10 @@ export type GoalCommand =
 
 export const GOAL_HELP = [
   "Persistent goals check one public GitHub PR on a fixed schedule.",
-  "/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada. — natural language works too.",
-  "/goal pr owner/repo#123 <minutes 5-1440> <max checks 1-200> — the structured form, still fully supported.",
+  "/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 1 hora ate a PR #66 ser publicada. — natural language works too.",
+  `/goal pr owner/repo#123 <minutes ${GOAL_INTERVAL_MIN}-${GOAL_INTERVAL_MAX}> <max checks 1-${GOAL_ATTEMPTS_MAX}> — the structured form, still fully supported.`,
   "/goal list — goals in this chat with status, next check and attempts.",
+  "/goal check <number> — check that goal once now; it does not count as an attempt.",
   "/goal cancel <number> — stop a goal. No further checks or messages.",
   "Only a merged PR completes a goal; a closed-unmerged PR or exhausted checks block it.",
 ].join("\n");
@@ -86,12 +95,14 @@ export function parseGoalCommand(args: string): GoalCommand {
     if (parts.length === 1) return { action: "list" };
     throw new GoalError(`Invalid goal request.\n${GOAL_HELP}`);
   }
-  if (parts[0] === "cancel") {
+  // `check` is a control word like `cancel`: it never reaches the
+  // natural-language parser, so it can never be read as a new goal.
+  if (parts[0] === "cancel" || parts[0] === "check") {
     if (parts.length === 2) {
       const index = Number(parts[1]);
       if (!Number.isInteger(index) || index < 1)
         throw new GoalError("Invalid goal number. Use /goal list.");
-      return { action: "cancel", index };
+      return { action: parts[0], index };
     }
     throw new GoalError(`Invalid goal request.\n${GOAL_HELP}`);
   }
@@ -239,7 +250,7 @@ function parseNaturalGoal(args: string): GoalCommand {
   }
   if (intervals.size === 0)
     throw new GoalError(
-      'Invalid goal request: no check interval found. Say how often to check, e.g. "a cada 5 minutos" or "every 5 minutes" (5 to 1440 minutes).',
+      `Invalid goal request: no check interval found. Say how often to check, e.g. "a cada 1 hora" or "every 2 hours" (${GOAL_INTERVAL_MIN} to ${GOAL_INTERVAL_MAX} minutes).`,
     );
   if (intervals.size > 1) {
     const [a, b] = [...intervals].sort((x, y) => x - y);
@@ -284,7 +295,8 @@ const PR_FIELDS = "GitHub answer was not a pull request";
  * and the body is read incrementally through Response.body.getReader()
  * with a strict pre-JSON byte cap — never Content-Length, never response.json().
  * Only validated `merged === true` on the exact PR identity completes the
- * goal; every other answer stays transient. Reasons are fixed strings:
+ * goal. HTTP 403/429 is `rate_limited` and HTTP 404 is `not_found`; every
+ * other answer stays transient. Reasons are fixed strings:
  * raw body or network error text never reaches the chat.
  */
 export async function observePrMerged(
@@ -305,6 +317,9 @@ export async function observePrMerged(
     });
     if (response.status !== 200) {
       await response.body?.cancel().catch(() => {});
+      if (response.status === 403 || response.status === 429)
+        return { kind: "rate_limited" };
+      if (response.status === 404) return { kind: "not_found" };
       return { kind: "retry", reason: `GitHub answered ${response.status}` };
     }
     if (!response.body)

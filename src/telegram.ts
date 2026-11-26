@@ -49,6 +49,9 @@ import {
   commandReceipt,
   commandRevoke,
   commandGoal,
+  freezeGoalCheckAuthority,
+  goalCheckAuthorized,
+  type GoalCheckAuthority,
   resumeReport,
 } from "./commands.js";
 import { acceptMcpOauthPaste, vaultFromStore } from "./mcp-oauth.js";
@@ -68,6 +71,7 @@ import { handleAskCallback, retireOpenQuestions } from "./ask-user.js";
 interface ControlRoute extends TelegramOwner {
   botId: number;
   credentialBinding: string;
+  goalCheck?: GoalCheckAuthority;
 }
 function unavailableConversation(error: unknown) {
   // Settings/deletion inspections are temporary; storage failures must retry too.
@@ -431,7 +435,7 @@ const CLEAN_HELP = [
   "/model — provider and model",
   "/thinking — effort",
   "/crons — create and manage schedules",
-  "/goal — watch a public GitHub PR and notify when it merges",
+  "/goal — watch a public GitHub PR and notify when it merges; /goal check <n> checks it now",
   "/new — another conversation in this topic (the previous one stays)",
   "/resume — resume a stuck task (a crash-parked task, or an uncertain MCP result)",
   "/stop — stop this topic",
@@ -456,6 +460,7 @@ export class Telegram {
   private approvalWork = new Set<Promise<unknown>>();
   /** Set by the polling layer: re-registers this chat's command menu. */
   onReload?: (chat: string) => Promise<void>;
+  private readonly fetchedGoalTopicUpdates = new Map<number, TelegramUpdate>();
   private credentialBinding: string;
   private reactions: ReactionAck;
   constructor(
@@ -513,6 +518,87 @@ export class Telegram {
       botId: identity.botId,
       credentialBinding: identity.credentialBinding,
     };
+  }
+  // In-memory veto only. The polling lane still owns observation and acknowledgement.
+  noteFetchedGoalTopicUpdate(update: TelegramUpdate) {
+    const message = update.message;
+    if (
+      !update.callback_query &&
+      message &&
+      (message.forum_topic_closed ||
+        message.forum_topic_reopened ||
+        message.forum_topic_created) &&
+      !this.fetchedGoalTopicUpdates.has(update.update_id)
+    )
+      this.fetchedGoalTopicUpdates.set(update.update_id, update);
+  }
+  finishFetchedGoalTopicUpdate(updateId: number) {
+    this.fetchedGoalTopicUpdates.delete(updateId);
+  }
+  private hasFetchedGoalTopicChange(authority: GoalCheckAuthority) {
+    const { route, topicStateVersion } = authority;
+    if (
+      route.messageThreadId === null ||
+      route.botId !== String(this.botId) ||
+      !this.fetchedGoalTopicUpdates.size
+    )
+      return false;
+    const owner = {
+      chat: route.chat,
+      user: route.user,
+      messageThreadId: route.messageThreadId,
+    };
+    const [savedId, savedBot, savedDate] = (
+      topicStateVersion === null ? [-1, null, 0] : JSON.parse(topicStateVersion)
+    ) as [number, string | null, number];
+    for (const update of this.fetchedGoalTopicUpdates.values()) {
+      const message = update.message!;
+      // Only the exact authenticated route and real service messages can veto.
+      if (
+        !message.from ||
+        message.from.is_bot ||
+        String(message.from.id) !== route.user ||
+        !message.chat ||
+        String(message.chat.id) !== route.chat ||
+        message.message_thread_id !== owner.messageThreadId ||
+        (this.privateDm && message.chat.type !== "private") ||
+        !["private", "group", "supergroup"].includes(message.chat.type) ||
+        (typeof message.text === "string" && message.text) ||
+        imageOf(message) ||
+        voiceOf(message)
+      )
+        continue;
+      const when = message.date ?? 0;
+      const date = Number.isSafeInteger(when) && when >= 0 ? when : 0;
+      // Same date/update ordering as observeTopic; already applied or stale events do not veto.
+      if (
+        savedBot === route.botId &&
+        (date < savedDate ||
+          (date === savedDate && update.update_id <= savedId))
+      )
+        continue;
+      if (
+        this.app.store.get(
+          "SELECT 1 FROM telegram_purged_updates WHERE id=? UNION ALL SELECT 1 FROM telegram_updates WHERE id=?",
+          update.update_id,
+          update.update_id,
+        )
+      )
+        continue;
+      try {
+        if (this.updateIdentity(update).seen) continue;
+        this.app.telegramChats.creationAuthority(owner);
+      } catch (error) {
+        if (
+          error instanceof TelegramInputError ||
+          unavailableConversation(error)
+        )
+          continue;
+        throw error;
+      }
+      return true;
+    }
+    return false;
   }
   private updateIdentity(update: TelegramUpdate) {
     const bot = String(
@@ -1202,7 +1288,22 @@ export class Telegram {
       }
     }
     let id: string;
+    let goalCheck: GoalCheckAuthority | undefined;
     try {
+      if (/^\/goal\s+check(?:\s|$)/.test(text)) {
+        // A manual check cannot acquire a conversation (or a newer grant)
+        // while waiting for ensure or the OAuth paste check.
+        const route = this.controlRoute(owner);
+        const conversationId = this.app.telegramChats.selected(owner);
+        if (!route || !conversationId)
+          throw new CommandError("Conversation not authorized in this chat.");
+        goalCheck = freezeGoalCheckAuthority(this.app.store, {
+          ...owner,
+          botId: String(route.botId),
+          conversationId,
+          messageThreadId: owner.messageThreadId ?? null,
+        });
+      }
       id = await this.app.telegramChats.ensure(owner);
     } catch (error) {
       if (error instanceof CommandError) {
@@ -1218,8 +1319,17 @@ export class Telegram {
       }
       throw error;
     }
-    const reply = (message: string) =>
-      queueControl(this.app, `telegram:clean:${updateId}`, owner, id, message);
+    const reply = (message: string, goalCheck?: GoalCheckAuthority) =>
+      queueControl(
+        this.app,
+        `telegram:clean:${updateId}`,
+        owner,
+        id,
+        message,
+        undefined,
+        undefined,
+        goalCheck,
+      );
     const oauthPaste = await acceptMcpOauthPaste(
       vaultFromStore(this.app.store),
       text,
@@ -1240,14 +1350,20 @@ export class Telegram {
         );
       } else if (text === "/crons") openCronMenu(this.app, owner, id, updateId);
       else if (command === "goal")
-        reply(
-          await commandGoal(
-            this.app,
-            id,
-            { source: "telegram", ...owner },
-            text.slice("/goal".length).trim(),
-            updateId,
-          ),
+        await commandGoal(
+          this.app,
+          id,
+          { source: "telegram", ...owner },
+          text.slice("/goal".length).trim(),
+          updateId,
+          {
+            active: () =>
+              !this.closing &&
+              !!this.controlRoute(owner) &&
+              (!goalCheck || !this.hasFetchedGoalTopicChange(goalCheck)),
+            goalCheck,
+            reply,
+          },
         );
       else if (text === "/status") {
         // The command menu is registered once per deployment; this reloads it.
@@ -1639,15 +1755,22 @@ export class Telegram {
         `telegram:control-route:${delivery.id}`,
       );
       let authorizedControl = false;
+      let goalCheck: GoalCheckAuthority | undefined;
       if (control) {
         try {
-          const route = JSON.parse(control.value) as ControlRoute;
+          const { goalCheck: authority, ...route } = JSON.parse(
+            control.value,
+          ) as ControlRoute;
+          goalCheck = authority;
           const current = this.controlRoute(route);
           authorizedControl =
             !!current &&
             current.chat === delivery.chat &&
             (current.messageThreadId ?? null) === delivery.messageThreadId &&
-            JSON.stringify(current) === JSON.stringify(route);
+            JSON.stringify(current) === JSON.stringify(route) &&
+            (goalCheck === undefined ||
+              (goalCheckAuthorized(this.app.store, goalCheck) &&
+                !this.hasFetchedGoalTopicChange(goalCheck)));
         } catch {
           /* Malformed control receipts never authorize a send. */
         }
@@ -1782,6 +1905,14 @@ export class Telegram {
               htmlOptions,
             );
           } catch (error) {
+            // A refusal can lead to a new send after this await.
+            if (
+              goalCheck &&
+              (this.closing ||
+                !goalCheckAuthorized(this.app.store, goalCheck) ||
+                this.hasFetchedGoalTopicChange(goalCheck))
+            )
+              throw error;
             // Entity HTML was refused, so it was not delivered. One plain
             // resend keeps the same chat, topic and reply target.
             if (isHtmlParseRefusal(error, sendOptions.parseMode)) {

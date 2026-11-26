@@ -22,7 +22,10 @@ export const cleanCommands = [
   { command: "model", description: "Choose provider and model" },
   { command: "thinking", description: "Choose effort" },
   { command: "crons", description: "Create and manage schedules" },
-  { command: "goal", description: "Watch a GitHub PR until it merges" },
+  {
+    command: "goal",
+    description: "Watch a GitHub PR until it merges; /goal check N checks now",
+  },
   { command: "new", description: "Start another conversation in this topic" },
   { command: "resume", description: "Resume a stuck task" },
   { command: "stop", description: "Stop this topic" },
@@ -404,6 +407,7 @@ export class TelegramPolling {
           ) {
             continue;
           }
+          this.engine.noteFetchedGoalTopicUpdate(value);
           newUpdatesCount++;
           this.unacknowledged.add(value.update_id);
           this.inFlightUpdates.add(value.update_id);
@@ -463,6 +467,7 @@ export class TelegramPolling {
               } finally {
                 this.inFlightUpdates.delete(value.update_id);
                 if (!settle) return;
+                this.engine.finishFetchedGoalTopicUpdate(value.update_id);
                 this.retries.delete(value.update_id);
                 this.completedUpdates.add(value.update_id);
                 this.advanceOffset(key);

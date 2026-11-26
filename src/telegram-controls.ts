@@ -5,6 +5,7 @@ import type { CronMenuAction } from "./telegram-crons.js";
 import type { ModelMenuAction } from "./telegram-models.js";
 import { childIds, hash, type Store } from "./store.js";
 import { telegramIdentity } from "./telegram-identity.js";
+import type { GoalCheckAuthority } from "./commands.js";
 
 export interface TelegramReplyMarkup {
   inline_keyboard: { text: string; callback_data?: string; url?: string }[][];
@@ -63,6 +64,7 @@ export function queueControl(
   text: string,
   markup?: TelegramReplyMarkup,
   replyTo?: number,
+  goalCheck?: GoalCheckAuthority,
 ) {
   app.store.savepoint("telegram_native_control", () => {
     app.store.queueTelegram(
@@ -86,6 +88,7 @@ export function queueControl(
         ...owner,
         botId: identity.botId,
         credentialBinding: identity.credentialBinding,
+        goalCheck,
       });
       for (const part of parts) {
         app.store.run(

@@ -212,7 +212,7 @@ test("non-200, network faults and mismatched identities stay transient", async (
     expected: string;
   }> = [
     {
-      response: async () => new Response("rate limited", { status: 403 }),
+      response: async () => new Response("bad gateway", { status: 502 }),
       expected: "retry",
     },
     {
@@ -323,14 +323,14 @@ test("a human /goal command freezes the exact incoming chat, user, bot and topic
   }
 });
 
-test("a natural-language /goal creates the goal at the five-minute floor", async () => {
+test("a natural-language /goal creates the goal at the 60-minute floor", async () => {
   const f = await fixture();
   try {
     const replies = await f.send(
-      "/goal acompanhe o https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada.",
+      "/goal acompanhe o https://github.com/forge-z/pi-bot/pulls a cada 60 minutos ate a PR #66 ser publicada.",
     );
     assert.match(replies.at(-1)!, /goal saved/i);
-    assert.match(replies.at(-1)!, /every 5 minutes/);
+    assert.match(replies.at(-1)!, /every 60 minutes/);
     const rows = f.goalRows();
     assert.equal(rows.length, 1);
     const goal = rows[0]!;
@@ -354,7 +354,7 @@ test("a natural-language /goal creates the goal at the five-minute floor", async
         owner: "forge-z",
         repo: "pi-bot",
         prNumber: 66,
-        intervalMin: 5,
+        intervalMin: 60,
         maxAttempts: 200,
       },
     );
