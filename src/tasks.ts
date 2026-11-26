@@ -37,6 +37,10 @@ const DEFAULT_RUN_TIMEOUT_MIN = 30;
 /** Goal checks per tick pass: ordinary admissions run first, the rest stays due. */
 const GOAL_CHECKS_PER_TICK = 2;
 const GOAL_LIST_LIMIT = 20;
+const GOAL_MERGED_REASON = "The pull request was merged.";
+const GOAL_NOT_FOUND_REASON =
+  "The pull request was not found on GitHub: it does not exist, was renamed, or became private.";
+const GOAL_RATE_LIMITED = "GitHub rate limited the check.";
 
 interface GoalRow {
   taskId: string;
@@ -49,6 +53,8 @@ interface GoalRow {
   state: "pending" | "completed" | "blocked" | "cancelled";
   reason: string | null;
   lastResult: string | null;
+  /** When the current run of rate-limited reads began; NULL when not rate limited. */
+  rateLimitedAt: number | null;
 }
 /** A due goal read as one row: the task carries the frozen destination. */
 interface GoalTask {
@@ -246,6 +252,16 @@ export class Tasks {
       WHEN NEW.state IS NOT 'checking' AND (SELECT kind FROM tasks WHERE id=NEW.taskId)='goal'
       BEGIN SELECT RAISE(ABORT,'A goal check is admitted as checking only.'); END;
     `);
+    // Additive, nullable: existing goal rows read as "not rate limited", and
+    // the previous code's explicit-column INSERT and SELECT * keep working.
+    if (
+      !runtime.store
+        .all<{ name: string }>("PRAGMA table_info(task_goals)")
+        .some((column) => column.name === "rateLimitedAt")
+    )
+      runtime.store.db.exec(
+        "ALTER TABLE task_goals ADD COLUMN rateLimitedAt INTEGER",
+      );
     if (
       !runtime.store
         .all<{ name: string }>("PRAGMA table_info(tasks)")
@@ -1273,6 +1289,76 @@ export class Tasks {
     return `Goal cancelled: ${goal.owner}/${goal.repo}#${goal.prNumber}. No further checks or messages.`;
   }
 
+  /** `/goal check N`: one immediate read outside the schedule. It never
+   * reserves an attempt, moves nextRun or creates a run; only a merged or
+   * not-found answer settles the goal, exactly as a scheduled read would. */
+  checkGoalNow(
+    conversationId: string,
+    index: number,
+    authorize: () => void,
+  ): Promise<string> {
+    return this.serialize(async () => {
+      authorize();
+      if (!Number.isInteger(index) || index < 1)
+        throw new TaskError("Invalid goal number. Use /goal list.");
+      const goal = this.goalsOf(conversationId)[index - 1];
+      if (!goal) throw new TaskError("Invalid goal number. Use /goal list.");
+      const label = `${goal.owner}/${goal.repo}#${goal.prNumber}`;
+      if (goal.state !== "pending")
+        throw new TaskError(
+          `Goal ${index} (${label}) is finished: ${goal.state}. There is nothing to check.`,
+        );
+      const observation = await observePrMerged(
+        { owner: goal.owner, repo: goal.repo, prNumber: goal.prNumber },
+        this.goalFetcher,
+      );
+      authorize();
+      const head = `Goal ${index}:`;
+      const uncounted = "Not counted as an attempt.";
+      if (observation.kind === "merged" || observation.kind === "not_found") {
+        const [state, reason] =
+          observation.kind === "merged"
+            ? (["completed", GOAL_MERGED_REASON] as const)
+            : (["blocked", GOAL_NOT_FOUND_REASON] as const);
+        const store = this.runtime.store;
+        store.db.exec("BEGIN IMMEDIATE");
+        let settled: boolean;
+        try {
+          // A cancel or archive that landed during the read wins.
+          settled =
+            store.run(
+              "UPDATE task_goals SET state=?,reason=? WHERE taskId=? AND state='pending'",
+              state,
+              reason,
+              goal.taskId,
+            ).changes > 0;
+          if (settled)
+            store.run(
+              "UPDATE tasks SET enabled=0,nextRun=NULL,lastError=? WHERE id=?",
+              reason,
+              goal.taskId,
+            );
+          store.db.exec("COMMIT");
+        } catch (error) {
+          store.db.exec("ROLLBACK");
+          throw error;
+        }
+        if (!settled)
+          return `${head} ${label} ended while it was being checked. Use /goal list.`;
+        return observation.kind === "merged"
+          ? `${head} ${label} was merged. Goal reached and closed.`
+          : `${head} ${label} — ${GOAL_NOT_FOUND_REASON} Goal blocked.`;
+      }
+      if (observation.kind === "open")
+        return `${head} ${label} is still open. ${uncounted}`;
+      if (observation.kind === "closed_unmerged")
+        return `${head} ${label} was closed without being merged. ${uncounted} The goal stays pending until its next scheduled check.`;
+      if (observation.kind === "rate_limited")
+        return `${head} GitHub rate limited the check of ${label}. ${uncounted} Try again later.`;
+      return `${head} no definite answer for ${label} (${observation.reason}). ${uncounted}`;
+    });
+  }
+
   /** Creating a goal authorizes one read-only observer, never a model turn. */
   createGoal(
     conversationId: string,
@@ -1329,7 +1415,20 @@ export class Tasks {
         throw new TaskError(
           "Conversation deleted. Restore it before creating a goal.",
         );
-      if (this.goalsOf(conversationId).length >= GOAL_LIST_LIMIT)
+      // After the receipt check: a replay of THIS message still confirms.
+      const goals = this.goalsOf(conversationId);
+      const duplicate = goals.findIndex(
+        (goal) =>
+          goal.state === "pending" &&
+          goal.owner === target.owner &&
+          goal.repo === target.repo &&
+          goal.prNumber === target.prNumber,
+      );
+      if (duplicate >= 0)
+        throw new TaskError(
+          `Goal ${duplicate + 1} already watches ${target.owner}/${target.repo}#${target.prNumber} in this chat. Use /goal cancel ${duplicate + 1} first to replace it.`,
+        );
+      if (goals.length >= GOAL_LIST_LIMIT)
         throw new TaskError(
           `Limit of ${GOAL_LIST_LIMIT} goals per chat reached.`,
         );
@@ -1662,14 +1761,48 @@ export class Tasks {
           message,
         );
       };
-      if (outcome.kind === "merged")
-        terminal("completed", "The pull request was merged.");
+      if (outcome.kind === "merged") terminal("completed", GOAL_MERGED_REASON);
       else if (outcome.kind === "blocked") terminal("blocked", outcome.reason);
       else if (outcome.kind === "closed_unmerged")
         terminal(
           "blocked",
           "The pull request was closed without being merged.",
         );
+      // A 404 is definite on the first read: no budget is spent waiting.
+      else if (outcome.kind === "not_found")
+        terminal("blocked", GOAL_NOT_FOUND_REASON);
+      // Before the budget check: GitHub refused the read, so the attempt
+      // reserved before the fetch is refunded and the goal waits one interval.
+      // The chat hears it once, on entering the rate-limited state.
+      else if (outcome.kind === "rate_limited") {
+        const entering = goal.rateLimitedAt === null;
+        store.run(
+          "UPDATE task_goals SET attempts=?,lastResult=?,rateLimitedAt=COALESCE(rateLimitedAt,?) WHERE taskId=?",
+          attempt.count - 1,
+          GOAL_RATE_LIMITED,
+          now,
+          attempt.task.id,
+        );
+        store.run(
+          "UPDATE tasks SET nextRun=? WHERE id=?",
+          now + goal.intervalMin * 60_000,
+          attempt.task.id,
+        );
+        store.run(
+          "UPDATE task_runs SET state='done',finishedAt=?,status=?,summary=? WHERE id=?",
+          now,
+          entering ? "erro" : "silencioso",
+          GOAL_RATE_LIMITED,
+          attempt.run.id,
+        );
+        if (entering)
+          queueTaskTelegram(
+            store,
+            attempt.run.conversationId,
+            attempt.run.requestId,
+            `GitHub is rate limiting checks of ${label}. These checks are not counted as attempts; the goal retries every ${goal.intervalMin} minutes. You will not be told again while it lasts.`,
+          );
+      }
       // The budget check comes before the open branch: a valid open read on
       // the last allowed attempt must settle terminally, not strand the goal
       // pending forever. Transient outcomes keep the same exhausted message.
@@ -1686,8 +1819,9 @@ export class Tasks {
           now,
           attempt.run.id,
         );
+        // Only a valid observation on a still-pending goal proves recovery.
         store.run(
-          "UPDATE task_goals SET lastResult='The pull request is still open.' WHERE taskId=?",
+          "UPDATE task_goals SET lastResult='The pull request is still open.',rateLimitedAt=NULL WHERE taskId=?",
           attempt.task.id,
         );
       } else {

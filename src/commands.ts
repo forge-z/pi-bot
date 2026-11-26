@@ -10,7 +10,12 @@ import {
 import type { Runtime } from "./runtime.js";
 import { GOAL_HELP, GoalError, parseGoalCommand } from "./goals.js";
 import { TaskError } from "./tasks.js";
-import { telegramConversationRoute } from "./task-telegram.js";
+import {
+  telegramConversationRoute,
+  telegramRouteAuthorized,
+  type TelegramRoute,
+} from "./task-telegram.js";
+import type { Store } from "./store.js";
 
 export function commandReceipt(
   app: Runtime,
@@ -49,15 +54,66 @@ export function commandRevoke(
   return revokeRememberedApproval(rememberedApprovals(app), argument);
 }
 
+export interface GoalCheckAuthority {
+  route: TelegramRoute;
+  authorizationVersion: string;
+  topicStateVersion: string | null;
+}
+
+function goalTopicStateVersion(store: Store, route: TelegramRoute) {
+  return (
+    store.get<{ version: string }>(
+      `SELECT json_array(stateUpdateId,stateBotId,stateDate) AS version
+     FROM telegram_known_topics WHERE chat=? AND user=? AND messageThreadId=?`,
+      route.chat,
+      route.user,
+      route.messageThreadId,
+    )?.version ?? null
+  );
+}
+
+export function freezeGoalCheckAuthority(
+  store: Store,
+  route: TelegramRoute,
+): GoalCheckAuthority {
+  return {
+    route,
+    authorizationVersion: store.authorizationVersion(
+      route,
+      route.conversationId,
+    ),
+    topicStateVersion: goalTopicStateVersion(store, route),
+  };
+}
+
+export function goalCheckAuthorized(
+  store: Store,
+  authority: GoalCheckAuthority,
+) {
+  const { route, authorizationVersion, topicStateVersion } = authority;
+  return (
+    telegramRouteAuthorized(store, route) &&
+    store.authorizationVersion(route, route.conversationId) ===
+      authorizationVersion &&
+    goalTopicStateVersion(store, route) === topicStateVersion
+  );
+}
+
 /** `/goal`: persistent read-only goals, Telegram-only, created in the exact
- * chat/user/bot/topic of the incoming update. Scoped controls: /goal list and
- * /goal cancel — a goal never appears in /crons or the generic task APIs. */
+ * chat/user/bot/topic of the incoming update. Scoped controls: /goal list,
+ * /goal check and /goal cancel — a goal never appears in /crons or the
+ * generic task APIs. */
 export async function commandGoal(
   app: Runtime,
   conversationId: string,
   access: CommandAccess,
   args: string,
   updateId: number,
+  handler?: {
+    active: () => boolean;
+    goalCheck?: GoalCheckAuthority;
+    reply: (text: string, authority?: GoalCheckAuthority) => void;
+  },
 ) {
   if (access.source !== "telegram")
     throw new CommandError(
@@ -71,13 +127,48 @@ export async function commandGoal(
     if (error instanceof GoalError) throw new CommandError(error.message);
     throw error;
   }
-  if (command.action === "help") return GOAL_HELP;
+  const respond = (text: string, authority?: GoalCheckAuthority) => {
+    handler?.reply(text, authority);
+    return text;
+  };
+  if (command.action === "help") return respond(GOAL_HELP);
   // Invalid list/cancel input and refused creations are safe command replies,
   // never a failed update on the transport.
   try {
-    if (command.action === "list") return app.tasks.goalList(conversationId);
+    if (command.action === "list")
+      return respond(app.tasks.goalList(conversationId));
     if (command.action === "cancel")
-      return app.tasks.cancelGoal(conversationId, command.index);
+      return respond(app.tasks.cancelGoal(conversationId, command.index));
+    if (command.action === "check") {
+      const store = app.store;
+      const denied = () =>
+        new CommandError("Conversation not authorized in this chat.");
+      if (!handler?.goalCheck) throw denied();
+      const authority = handler.goalCheck;
+      const { route } = authority;
+      if (
+        route.conversationId !== conversationId ||
+        route.chat !== access.chat ||
+        route.user !== access.user ||
+        route.messageThreadId !== (access.messageThreadId ?? null)
+      )
+        throw denied();
+      const authorize = () => {
+        if (!handler.active() || !goalCheckAuthorized(store, authority))
+          throw denied();
+        app.assertConversationAvailable(conversationId);
+      };
+      const text = await app.tasks
+        .checkGoalNow(conversationId, command.index, authorize)
+        .catch((error: unknown) => {
+          if (!(error instanceof TaskError)) throw error;
+          authorize();
+          return error.message;
+        });
+      // Native control replies do not themselves re-check conversation authority at queue time.
+      authorize();
+      return respond(text, authority);
+    }
   } catch (error) {
     if (error instanceof TaskError) throw new CommandError(error.message);
     throw error;
@@ -124,7 +215,9 @@ export async function commandGoal(
     if (error instanceof TaskError) throw new CommandError(error.message);
     throw error;
   }
-  return `Goal saved: notify this chat when ${command.target.owner}/${command.target.repo}#${command.target.prNumber} is merged. Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Use /goal list and /goal cancel <number>.`;
+  return respond(
+    `Goal saved: notify this chat when ${command.target.owner}/${command.target.repo}#${command.target.prNumber} is merged. Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Use /goal list and /goal cancel <number>.`,
+  );
 }
 
 export type CommandAccess = {

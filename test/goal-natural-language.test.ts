@@ -24,18 +24,18 @@ const created = (
 test("the user's literal sentence parses into a full create command", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe o https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada.",
+      "acompanhe o https://github.com/forge-z/pi-bot/pulls a cada 60 minutos ate a PR #66 ser publicada.",
     ),
-    created(66, 5),
+    created(66, 60),
   );
 });
 
-test("a direct pull URL with 'a cada 10 minutos' yields PR 66 every 10 minutes", () => {
+test("a direct pull URL with 'a cada 90 minutos' yields PR 66 every 90 minutes", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 10 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 90 minutos",
     ),
-    created(66, 10),
+    created(66, 90),
   );
 });
 
@@ -43,7 +43,7 @@ test("two different PR numbers are refused, never picked", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://github.com/forge-z/pi-bot/pull/67 e o #66 a cada 5 minutos",
+        "acompanhe https://github.com/forge-z/pi-bot/pull/67 e o #66 a cada 60 minutos",
       ),
     /conflict/i,
   );
@@ -53,7 +53,7 @@ test("two different repositories are refused, never picked", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://github.com/forge-z/pi-bot/pull/66 e https://github.com/octocat/hello-world/pull/66 a cada 5 minutos",
+        "acompanhe https://github.com/forge-z/pi-bot/pull/66 e https://github.com/octocat/hello-world/pull/66 a cada 60 minutos",
       ),
     /conflict/i,
   );
@@ -63,7 +63,7 @@ test("a non-github host in a PR-like link is refused", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://evil.com/forge-z/pi-bot/pull/66 a cada 5 minutos",
+        "acompanhe https://evil.com/forge-z/pi-bot/pull/66 a cada 60 minutos",
       ),
     /github\.com|host/i,
   );
@@ -73,7 +73,7 @@ test("plain http github links are refused; https is required", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe http://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos",
+        "acompanhe http://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos",
       ),
     /https|http/i,
   );
@@ -89,26 +89,26 @@ test("a missing interval is an actionable error", () => {
   );
 });
 
-test("intervals below 5 or above 1440 minutes are refused", () => {
+test("intervals below 60 or above 1440 minutes are refused", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 4 minutos",
+        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 59 minutos",
       ),
-    /5 to 1440|minute/i,
+    /60 to 1440|minute/i,
   );
   assert.throws(
     () =>
       parseGoalCommand(
         "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 2000 minutos",
       ),
-    /5 to 1440|minute/i,
+    /60 to 1440|minute/i,
   );
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos",
     ),
-    created(66, 5),
+    created(66, 60),
   );
   assert.deepEqual(
     parseGoalCommand(
@@ -118,21 +118,21 @@ test("intervals below 5 or above 1440 minutes are refused", () => {
   );
 });
 
-test("'de 10 em 10 minutos' means every 10 minutes", () => {
+test("'de 90 em 90 minutos' means every 90 minutes", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 de 10 em 10 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 de 90 em 90 minutos",
     ),
-    created(66, 10),
+    created(66, 90),
   );
 });
 
-test("'every 15 minutes' is accepted", () => {
+test("'every 120 minutes' is accepted", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 every 15 minutes",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 every 120 minutes",
     ),
-    created(66, 15),
+    created(66, 120),
   );
 });
 
@@ -160,33 +160,33 @@ test("hours are converted to minutes", () => {
 test("explicit check limits override the default of 200", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos no maximo 50 verificacoes",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos no maximo 50 verificacoes",
     ),
-    created(66, 5, 50),
+    created(66, 60, 50),
   );
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos ate 10 checagens",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos ate 10 checagens",
     ),
-    created(66, 5, 10),
+    created(66, 60, 10),
   );
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos, max 7",
+      "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos, max 7",
     ),
-    created(66, 5, 7),
+    created(66, 60, 7),
   );
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos no maximo 0",
+        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos no maximo 0",
       ),
     /1 to 200|checks/i,
   );
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 5 minutos max 201",
+        "acompanhe https://github.com/forge-z/pi-bot/pull/66 a cada 60 minutos max 201",
       ),
     /1 to 200|checks/i,
   );
@@ -194,14 +194,14 @@ test("explicit check limits override the default of 200", () => {
 
 test("text with no PR reference at all is refused", () => {
   assert.throws(
-    () => parseGoalCommand("acompanhe o deploy a cada 5 minutos"),
+    () => parseGoalCommand("acompanhe o deploy a cada 60 minutos"),
     /PR/i,
   );
 });
 
 test("a bare #66 without any repository is refused", () => {
   assert.throws(
-    () => parseGoalCommand("acompanhe #66 a cada 5 minutos"),
+    () => parseGoalCommand("acompanhe #66 a cada 60 minutos"),
     /repository/i,
   );
 });
@@ -209,25 +209,25 @@ test("a bare #66 without any repository is refused", () => {
 test("a bare #66 counts when a repository was already identified", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pulls e o #66 a cada 5 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pulls e o #66 a cada 60 minutos",
     ),
-    created(66, 5),
+    created(66, 60),
   );
 });
 
 test("the OWNER/REPO#N form works anywhere in the sentence", () => {
   assert.deepEqual(
-    parseGoalCommand("acompanhe forge-z/pi-bot#66 a cada 5 minutos"),
-    created(66, 5),
+    parseGoalCommand("acompanhe forge-z/pi-bot#66 a cada 60 minutos"),
+    created(66, 60),
   );
 });
 
 test("'PR 66' without a hash works when the repo comes from a /pulls URL", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pulls PR 66 a cada 5 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pulls PR 66 a cada 60 minutos",
     ),
-    created(66, 5),
+    created(66, 60),
   );
 });
 
@@ -235,7 +235,7 @@ test("links with embedded credentials are refused", () => {
   assert.throws(
     () =>
       parseGoalCommand(
-        "acompanhe https://user:pass@github.com/forge-z/pi-bot/pull/66 a cada 5 minutos",
+        "acompanhe https://user:pass@github.com/forge-z/pi-bot/pull/66 a cada 60 minutos",
       ),
     /credential/i,
   );
@@ -248,13 +248,13 @@ test("the structured command surface is unchanged", () => {
     intervalMin: 60,
     maxAttempts: 24,
   });
-  assert.deepEqual(parseGoalCommand("pr a/b#7 5 24"), {
+  assert.deepEqual(parseGoalCommand("pr a/b#7 60 24"), {
     action: "create",
     target: { owner: "a", repo: "b", prNumber: 7 },
-    intervalMin: 5,
+    intervalMin: 60,
     maxAttempts: 24,
   });
-  assert.throws(() => parseGoalCommand("pr a/b#7 4 24"), /minutes/i);
+  assert.throws(() => parseGoalCommand("pr a/b#7 59 24"), /minutes/i);
   assert.deepEqual(parseGoalCommand("list"), { action: "list" });
   assert.deepEqual(parseGoalCommand("cancel 2"), {
     action: "cancel",
@@ -263,26 +263,26 @@ test("the structured command surface is unchanged", () => {
   assert.deepEqual(parseGoalCommand(""), { action: "help" });
 });
 
-test("a PT sentence with 'PR 12', no hash, repo from /pulls, every 30 minutes", () => {
+test("a PT sentence with 'PR 12', no hash, repo from /pulls, every 180 minutes", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pulls e avise quando a PR 12 for publicada, a cada 30 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pulls e avise quando a PR 12 for publicada, a cada 180 minutos",
     ),
-    created(12, 30),
+    created(12, 180),
   );
 });
 
 test("mentioning the same PR number twice is not a conflict", () => {
   assert.deepEqual(
     parseGoalCommand(
-      "acompanhe https://github.com/forge-z/pi-bot/pulls a PR #66 e tambem #66 a cada 5 minutos",
+      "acompanhe https://github.com/forge-z/pi-bot/pulls a PR #66 e tambem #66 a cada 60 minutos",
     ),
-    created(66, 5),
+    created(66, 60),
   );
 });
 
-test("the goal bounds are 5 and 1440 minutes with at most 200 checks", () => {
-  assert.equal(GOAL_INTERVAL_MIN, 5);
+test("the goal bounds are 60 and 1440 minutes with at most 200 checks", () => {
+  assert.equal(GOAL_INTERVAL_MIN, 60);
   assert.equal(GOAL_INTERVAL_MAX, 1440);
   assert.equal(GOAL_ATTEMPTS_MAX, 200);
 });
