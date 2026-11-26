@@ -235,11 +235,13 @@ test("a thousands separator in the cap is refused, never read as its first digit
   );
 });
 
-test("text with no PR reference at all is refused", () => {
-  assert.throws(
-    () => parseGoalCommand("acompanhe o deploy a cada 60 minutos"),
-    /PR/i,
-  );
+test("text with no PR reference at all becomes a free-objective goal", () => {
+  assert.deepEqual(parseGoalCommand("acompanhe o deploy a cada 60 minutos"), {
+    action: "objective",
+    objective: "acompanhe o deploy",
+    intervalMin: 60,
+    maxAttempts: 200,
+  });
 });
 
 test("a bare #66 without any repository is refused", () => {

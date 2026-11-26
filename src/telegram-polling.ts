@@ -24,7 +24,8 @@ export const cleanCommands = [
   { command: "crons", description: "Create and manage schedules" },
   {
     command: "goal",
-    description: "Watch a GitHub PR until it merges; /goal check N checks now",
+    description:
+      "Tell me once when something happens (any condition or a PR merge); /goal check N checks now",
   },
   { command: "new", description: "Start another conversation in this topic" },
   { command: "resume", description: "Resume a stuck task" },

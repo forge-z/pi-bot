@@ -127,6 +127,9 @@ test("polling readiness, health and graceful stop stay offline and create no top
     assert.match(descriptions, /Choose provider and model/);
     assert.match(descriptions, /Resume a stuck task/);
     assert.match(descriptions, /Compact this topic's history/);
+    // The menu and /help describe the same /goal: any condition, told once.
+    assert.match(descriptions, /Tell me once when something happens/);
+    assert.doesNotMatch(descriptions, /Watch a GitHub PR until it merges/);
     assert.doesNotMatch(
       descriptions,
       /Escolher|Interromper|Começar|agendamentos|Ajuda/,
@@ -194,6 +197,10 @@ test("/help lists the commands that remain and not the removed ones", async () =
     assert.doesNotMatch(sent[0].text, /^\/reload\b/m);
     assert.match(sent[0].text, /provider and model/);
     assert.match(sent[0].text, /^\/compact\b/m);
+    assert.match(
+      sent[0].text,
+      /^\/goal — tell me once when something happens/m,
+    );
     assert.match(sent[0].text, /tokens and cost/);
     assert.doesNotMatch(sent[0].text, /provedor|esforço|agendamento/);
     assert.doesNotMatch(sent[0].text, /^\/polling\b/m);

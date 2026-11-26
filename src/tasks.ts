@@ -3,6 +3,7 @@ import { CronExpressionParser } from "cron-parser";
 import { ConversationBusyError, type Runtime } from "./runtime.js";
 import { channelChat } from "./channel.js";
 import {
+  isBlankMessage,
   queueTaskTelegram,
   taskTelegramAvailable,
   telegramConversationRoute,
@@ -36,7 +37,29 @@ const RUN_WATCH_MS = 30 * 1000;
 const DEFAULT_RUN_TIMEOUT_MIN = 30;
 /** Goal checks per tick pass: ordinary admissions run first, the rest stays due. */
 const GOAL_CHECKS_PER_TICK = 2;
+/** Model rounds of free-objective goals admitted per tick; the rest stays due. */
+const GOAL_ROUNDS_PER_TICK = 1;
 const GOAL_LIST_LIMIT = 20;
+/** A PR goal is a kind='goal' task with task_goals metadata; a free-objective
+ * goal is a kind='goal' task without it, run by the ordinary model pipeline. */
+const PR_GOAL = (alias: string) =>
+  `EXISTS (SELECT 1 FROM task_goals pg WHERE pg.taskId=${alias}.id)`;
+const OBJECTIVE_GOAL = (alias: string) =>
+  `${alias}.kind='goal' AND NOT ${PR_GOAL(alias)}`;
+/** Additive, nullable or defaulted: an older row reads as a pending goal with
+ * no attempts and the default cap, and older explicit-column INSERTs still work. */
+const GOAL_COLUMNS: Record<string, string> = {
+  goalState: "TEXT",
+  goalEvidence: "TEXT",
+  goalAttempts: "INTEGER NOT NULL DEFAULT 0",
+  goalMaxAttempts: "INTEGER",
+};
+const GOAL_EVERY = /^every-([1-9][0-9]{0,4})m$/;
+const GOAL_EVIDENCE_MAX = 2000;
+const GOAL_REACHED_OUTSIDE =
+  "goal_reached is only available in a scheduled goal check. Nothing was recorded.";
+const GOAL_REACHED_NO_EVIDENCE =
+  "goal_reached needs evidence: what you observed, with the value and its source. Nothing was recorded.";
 const GOAL_MERGED_REASON = "The pull request was merged.";
 const GOAL_NOT_FOUND_REASON =
   "The pull request was not found on GitHub: it does not exist, was renamed, or became private.";
@@ -105,7 +128,7 @@ export interface Task extends TaskDestination {
   title: string;
   prompt: string;
   conversationId: string;
-  kind: "once" | "cron";
+  kind: "once" | "cron" | "goal";
   schedule: string;
   timezone: string;
   delivery: TaskDelivery;
@@ -132,12 +155,33 @@ interface TaskRun extends TaskDestination {
   /** MCP tools that completed during the run, comma separated; the external-action indicator. */
   external: string | null;
 }
-type TaskRow = Omit<Task, "enabled"> & { enabled: number; deleted: number };
+interface GoalColumns {
+  /** NULL or 'pending' while watching; then 'met', 'blocked' or 'cancelled'. */
+  goalState: string | null;
+  goalEvidence: string | null;
+  goalAttempts: number;
+  /** NULL means the default cap, GOAL_ATTEMPTS_MAX. */
+  goalMaxAttempts: number | null;
+}
+type TaskRow = Omit<Task, "enabled"> &
+  GoalColumns & { enabled: number; deleted: number };
 type PendingRun = TaskRun & {
   taskId: string;
   conversationId: string;
   prompt: string;
+  taskKind?: string;
 };
+/** One /goal list entry: a PR goal carries its task_goals row, a free one does not. */
+interface GoalEntry extends GoalColumns {
+  taskId: string;
+  conversationId: string;
+  title: string;
+  prompt: string;
+  enabled: number;
+  nextRun: number | null;
+  lastError: string | null;
+  pr: GoalRow | null;
+}
 type TaskRuntime = Pick<
   Runtime,
   "store" | "create" | "conversation" | "submit"
@@ -189,10 +233,44 @@ function onceDate(schedule: string, now: number) {
     throw new TaskError("Invalid one-time date");
   return timestamp;
 }
+/** A goal's next check: `every-<minutes>m` from now; a cron expression otherwise. */
+function nextGoal(schedule: string, timezone: string, now: number) {
+  const every = GOAL_EVERY.exec(schedule);
+  return every
+    ? now + Number(every[1]) * 60_000
+    : nextCron(schedule, timezone, now);
+}
+/** Creation keeps the goal floor: a model round at most once an hour. */
+function goalCreationNext(schedule: string, now: number) {
+  const every = GOAL_EVERY.exec(schedule);
+  const minutes = every ? Number(every[1]) : NaN;
+  if (!(minutes >= GOAL_INTERVAL_MIN && minutes <= GOAL_INTERVAL_MAX))
+    throw new TaskError(
+      `A goal schedule is every-<minutes>m, from ${GOAL_INTERVAL_MIN} to ${GOAL_INTERVAL_MAX} minutes`,
+    );
+  return now + minutes * 60_000;
+}
 function publicTask(row: TaskRow): Task {
-  const { deleted: _deleted, ...task } = row;
-  void _deleted;
+  // Goal state surfaces through /goal only; the generic task shape is unchanged.
+  const {
+    deleted: _deleted,
+    goalState: _state,
+    goalEvidence: _evidence,
+    goalAttempts: _attempts,
+    goalMaxAttempts: _max,
+    ...task
+  } = row;
+  void [_deleted, _state, _evidence, _attempts, _max];
   return { ...task, enabled: Boolean(row.enabled) };
+}
+function goalLabel(entry: Pick<GoalEntry, "pr" | "prompt">) {
+  if (entry.pr)
+    return `${entry.pr.owner}/${entry.pr.repo}#${entry.pr.prNumber}`;
+  const flat = entry.prompt.replace(/\s+/g, " ").trim();
+  return `"${flat.length > 80 ? `${flat.slice(0, 79)}…` : flat}"`;
+}
+function goalEntryState(entry: GoalEntry) {
+  return entry.pr ? entry.pr.state : (entry.goalState ?? "pending");
 }
 
 /** Calendar admission only. Pi's Harness owns model execution and durable input replay.
@@ -248,8 +326,11 @@ export class Tasks {
       -- check measures); it replaces no backup restore, certifies no other
       -- version, mixed use or schema change, and never undoes an admission,
       -- delivery or effect that already happened.
-      CREATE TRIGGER IF NOT EXISTS task_goal_run_state BEFORE INSERT ON task_runs
-      WHEN NEW.state IS NOT 'checking' AND (SELECT kind FROM tasks WHERE id=NEW.taskId)='goal'
+      -- Scoped to PR goals (rows with task_goals metadata): a free-objective
+      -- goal is a kind='goal' task whose round is an ordinary 'pending' run.
+      DROP TRIGGER IF EXISTS task_goal_run_state;
+      CREATE TRIGGER task_goal_run_state BEFORE INSERT ON task_runs
+      WHEN NEW.state IS NOT 'checking' AND EXISTS (SELECT 1 FROM task_goals WHERE taskId=NEW.taskId)
       BEGIN SELECT RAISE(ABORT,'A goal check is admitted as checking only.'); END;
     `);
     // Additive, nullable: existing goal rows read as "not rate limited", and
@@ -302,7 +383,7 @@ export class Tasks {
               external: "TEXT",
               timeoutNotified: "INTEGER NOT NULL DEFAULT 0",
             }
-          : destinationColumns;
+          : { ...destinationColumns, ...GOAL_COLUMNS };
       for (const [name, type] of Object.entries(additions))
         if (!columns.has(name))
           runtime.store.db.exec(
@@ -455,7 +536,7 @@ export class Tasks {
       } catch {
         throw new TaskError("Invalid IANA timezone");
       }
-      if (data.kind !== "once" && data.kind !== "cron")
+      if (data.kind !== "once" && data.kind !== "cron" && data.kind !== "goal")
         throw new TaskError("Invalid task type");
       if (data.enabled !== undefined && typeof data.enabled !== "boolean")
         throw new TaskError("enabled must be a boolean");
@@ -499,13 +580,15 @@ export class Tasks {
             throw new TaskError(
               "Creation key already used with different content",
             );
-          return this.require(receipt.taskId);
+          return this.created(receipt.taskId);
         }
       }
       const nextRun =
         data.kind === "once"
           ? onceDate(schedule, this.clock())
-          : nextCron(schedule, timezone, this.clock());
+          : data.kind === "goal"
+            ? goalCreationNext(schedule, this.clock())
+            : nextCron(schedule, timezone, this.clock());
       if (this.list().length >= 100)
         throw new TaskError("Limit of 100 tasks reached");
       let conversationId: string;
@@ -560,8 +643,17 @@ export class Tasks {
         this.runtime.store.db.exec("ROLLBACK");
         throw error;
       }
-      return this.require(id);
+      return this.created(id);
     });
+  }
+  /** The row create() just wrote; a goal is returned even though get() hides it. */
+  private created(id: string) {
+    const row = this.runtime.store.get<TaskRow>(
+      "SELECT * FROM tasks WHERE id=? AND deleted=0",
+      id,
+    );
+    if (!row) throw new TaskError("Task not found");
+    return publicTask(row);
   }
   setEnabled(id: string, enabled: boolean): Task {
     return this.update(id, { enabled });
@@ -885,8 +977,10 @@ export class Tasks {
       "SELECT id FROM task_runs WHERE requestId=? AND COALESCE(conversationId,(SELECT conversationId FROM tasks WHERE id=task_runs.taskId))=?",
       requestId,
       conversationId,
-    ))
+    )) {
       this.admitted.delete(row.id);
+      this.settleGoalRound(row.id);
+    }
   }
   private sweptAt = 0;
   private watchedAt = 0;
@@ -919,9 +1013,9 @@ export class Tasks {
     const store = this.runtime.store;
     const timeout = this.runTimeoutMs();
     for (const run of store.all<PendingRun & { timeoutNotified: number }>(
-      `SELECT r.*,t.prompt FROM task_runs r JOIN tasks t ON t.id=r.taskId
+      `SELECT r.*,t.prompt,t.kind AS taskKind FROM task_runs r JOIN tasks t ON t.id=r.taskId
        WHERE r.state='pending' AND r.startedAt IS NOT NULL AND r.finishedAt IS NULL
-         AND t.kind!='goal' AND r.startedAt<?`,
+         AND NOT ${PR_GOAL("t")} AND r.startedAt<?`,
       now - timeout,
     )) {
       const summary = `Run expired after ${Math.round(timeout / 60_000)} minutes without finishing.`;
@@ -939,6 +1033,11 @@ export class Tasks {
       );
       store.run("UPDATE tasks SET lastError=? WHERE id=?", summary, run.taskId);
       this.admitted.delete(run.id);
+      // A goal stays silent until it is reached or blocked; /goal list shows the error.
+      if (run.taskKind === "goal") {
+        this.settleGoalRound(run.id);
+        continue;
+      }
       if (!run.timeoutNotified) {
         store.run("UPDATE task_runs SET timeoutNotified=1 WHERE id=?", run.id);
         queueTaskTelegram(
@@ -951,12 +1050,13 @@ export class Tasks {
     }
   }
   /** True while a run of this conversation is executing: a run must not start another.
-   * A goal read is not a model turn, so it never counts as in-flight here. */
+   * A PR goal read is not a model turn, so it never counts as in-flight here;
+   * a free-objective goal round is one, so it does. */
   inFlight(conversationId: string) {
     return !!this.runtime.store.get(
       `SELECT 1 FROM task_runs r JOIN tasks t ON t.id=r.taskId
        WHERE r.conversationId=? AND r.state='pending' AND r.startedAt IS NOT NULL
-         AND t.kind!='goal'`,
+         AND NOT ${PR_GOAL("t")}`,
       conversationId,
     );
   }
@@ -990,11 +1090,32 @@ export class Tasks {
       // Authentication changes delay admission; do not consume an occurrence.
       if (this.runtime.store.credentialMutation) return;
       const now = this.clock();
-      for (const task of this.runtime.store.all<TaskRow>(
-        "SELECT * FROM tasks WHERE deleted=0 AND enabled=1 AND kind IN ('once','cron') AND nextRun<=? AND conversationId NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL) ORDER BY nextRun",
+      // PR goals stay disabled at rest and are read by goalPass below.
+      const store = this.runtime.store;
+      let goalRounds = 0;
+      for (const task of store.all<TaskRow>(
+        `SELECT * FROM tasks t WHERE deleted=0 AND enabled=1 AND kind IN ('once','cron','goal') AND nextRun<=?
+           AND NOT ${PR_GOAL("t")} AND COALESCE(goalState,'pending')='pending'
+           AND conversationId NOT IN (SELECT conversationId FROM conversation_lifecycle WHERE deletedAt IS NOT NULL) ORDER BY nextRun`,
         now,
-      ))
+      )) {
+        if (task.kind === "goal") {
+          // Goals are Telegram-only, and one model round per tick: a list of
+          // due goals never fans out into N rounds at once. The rest stays due.
+          if (
+            this.runtime.options?.phoneGateway === "whatsapp" ||
+            goalRounds >= GOAL_ROUNDS_PER_TICK ||
+            store.get(
+              "SELECT 1 FROM task_runs WHERE taskId=? AND state='pending'",
+              task.id,
+            )
+          )
+            continue;
+          if (this.claim(task.id, now, true)) goalRounds += 1;
+          continue;
+        }
         this.claim(task.id, now, true);
+      }
       await this.dispatch();
       await this.goalPass();
       this.watchStaleRuns();
@@ -1041,6 +1162,27 @@ export class Tasks {
       ) {
         store.db.exec("COMMIT");
         return undefined;
+      }
+      if (task.kind === "goal") {
+        if (store.get("SELECT 1 FROM task_goals WHERE taskId=?", id))
+          throw new TaskError("A PR goal is checked by its own observer.");
+        const state = task.goalState ?? "pending";
+        if (state !== "pending") {
+          if (!scheduled)
+            throw new TaskError(`That goal already ended: ${state}.`);
+          store.db.exec("COMMIT");
+          return undefined;
+        }
+        // A crash after the last round but before its settlement: block now
+        // instead of spending one more round.
+        if (
+          scheduled &&
+          task.goalAttempts >= (task.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX)
+        ) {
+          this.blockGoal(task);
+          store.db.exec("COMMIT");
+          return undefined;
+        }
       }
       if (pending) {
         // A manual trigger never joins someone else's execution: if this schedule is
@@ -1100,14 +1242,18 @@ export class Tasks {
         );
       if (scheduled) {
         // After downtime execute ONE overdue occurrence; skip the backlog by advancing from now.
+        // A goal reschedules like a cron and spends one attempt per scheduled round.
         const nextRun =
           task.kind === "cron"
             ? nextCron(task.schedule, task.timezone, now)
-            : null;
+            : task.kind === "goal"
+              ? nextGoal(task.schedule, task.timezone, now)
+              : null;
         store.run(
-          "UPDATE tasks SET nextRun=?,enabled=?,lastError=destinationReason WHERE id=?",
+          "UPDATE tasks SET nextRun=?,enabled=?,lastError=destinationReason,goalAttempts=goalAttempts+? WHERE id=?",
           nextRun,
-          task.kind === "cron" ? 1 : 0,
+          task.kind === "once" ? 0 : 1,
+          task.kind === "goal" ? 1 : 0,
           id,
         );
       }
@@ -1141,6 +1287,7 @@ export class Tasks {
           run.id,
         );
         this.admitted.delete(run.id);
+        this.settleGoalRound(run.id);
         continue;
       }
       const error = `Request ended with status: ${request.status}`;
@@ -1157,12 +1304,13 @@ export class Tasks {
         run.taskId,
       );
       this.admitted.delete(run.id);
+      this.settleGoalRound(run.id);
     }
   }
   private async dispatch() {
     const store = this.runtime.store;
     for (const run of store.all<PendingRun>(
-      "SELECT r.*,t.prompt FROM task_runs r JOIN tasks t ON t.id=r.taskId WHERE r.state='pending' AND t.kind!='goal' ORDER BY r.rowid",
+      `SELECT r.*,t.prompt,t.kind AS taskKind FROM task_runs r JOIN tasks t ON t.id=r.taskId WHERE r.state='pending' AND NOT ${PR_GOAL("t")} ORDER BY r.rowid`,
     )) {
       if (this.admitted.has(run.id)) continue;
       if (
@@ -1209,17 +1357,20 @@ export class Tasks {
         // A committed input may still execute. Preserve it for idempotent recovery.
         if (!request) {
           store.savepoint("task_admission_failure", () => {
-            queueTaskTelegram(
-              store,
-              run.conversationId,
-              run.requestId,
-              "The task could not start. Check your connection and the task state in /crons on Telegram or the origin channel's web panel.",
-            );
+            // A goal stays silent until reached or blocked; /goal list shows the error.
+            if (run.taskKind !== "goal")
+              queueTaskTelegram(
+                store,
+                run.conversationId,
+                run.requestId,
+                "The task could not start. Check your connection and the task state in /crons on Telegram or the origin channel's web panel.",
+              );
             store.run(
               "UPDATE task_runs SET state='failed',error=? WHERE id=?",
               error,
               run.id,
             );
+            this.settleGoalRound(run.id);
           });
         }
       }
@@ -1231,52 +1382,102 @@ export class Tasks {
   // and the generic task APIs cannot see or mutate it (see get()/list()).
   // /goal list and /goal cancel are its scoped controls.
 
-  private goalsOf(conversationId: string) {
-    return this.runtime.store.all<
-      GoalRow & {
-        conversationId: string;
-        enabled: number;
-        nextRun: number | null;
-      }
-    >(
-      `SELECT g.*,t.conversationId,t.enabled,t.nextRun FROM task_goals g
-       JOIN tasks t ON t.id=g.taskId
-       WHERE t.conversationId=? AND t.deleted=0 ORDER BY t.rowid`,
-      conversationId,
-    );
+  /** Both goal kinds of one chat, numbered as /goal list shows them. */
+  private goalsOf(conversationId: string): GoalEntry[] {
+    return this.runtime.store
+      .all<
+        Omit<GoalEntry, "pr"> &
+          Partial<Omit<GoalRow, "taskId">> & { prTaskId: string | null }
+      >(
+        `SELECT t.id AS taskId,t.conversationId,t.title,t.prompt,t.enabled,t.nextRun,t.lastError,
+           t.goalState,t.goalEvidence,t.goalAttempts,t.goalMaxAttempts,
+           g.taskId AS prTaskId,g.owner,g.repo,g.prNumber,g.intervalMin,g.maxAttempts,g.attempts,
+           g.state,g.reason,g.lastResult,g.rateLimitedAt
+         FROM tasks t LEFT JOIN task_goals g ON g.taskId=t.id
+         WHERE t.conversationId=? AND t.deleted=0 AND (g.taskId IS NOT NULL OR t.kind='goal')
+         ORDER BY t.rowid`,
+        conversationId,
+      )
+      .map((row) => ({
+        taskId: row.taskId,
+        conversationId: row.conversationId,
+        title: row.title,
+        prompt: row.prompt,
+        enabled: row.enabled,
+        nextRun: row.nextRun,
+        lastError: row.lastError,
+        goalState: row.goalState,
+        goalEvidence: row.goalEvidence,
+        goalAttempts: row.goalAttempts,
+        goalMaxAttempts: row.goalMaxAttempts,
+        pr: row.prTaskId
+          ? {
+              taskId: row.prTaskId,
+              owner: row.owner!,
+              repo: row.repo!,
+              prNumber: row.prNumber!,
+              intervalMin: row.intervalMin!,
+              maxAttempts: row.maxAttempts!,
+              attempts: row.attempts!,
+              state: row.state!,
+              reason: row.reason ?? null,
+              lastResult: row.lastResult ?? null,
+              rateLimitedAt: row.rateLimitedAt ?? null,
+            }
+          : null,
+      }));
+  }
+
+  private goalAt(conversationId: string, index: number) {
+    if (!Number.isInteger(index) || index < 1)
+      throw new TaskError("Invalid goal number. Use /goal list.");
+    const goal = this.goalsOf(conversationId)[index - 1];
+    if (!goal) throw new TaskError("Invalid goal number. Use /goal list.");
+    return goal;
   }
 
   goalList(conversationId: string) {
     const goals = this.goalsOf(conversationId);
     if (!goals.length)
-      return "No goals in this chat. Use /goal pr owner/repo#123 <minutes> <max checks>.";
+      return "No goals in this chat. Use /goal <what to watch for> a cada <N> horas, or /goal pr owner/repo#123 <minutes> <max checks>.";
     return goals
       .map((goal, index) => {
-        const label = `${goal.owner}/${goal.repo}#${goal.prNumber}`;
+        const state = goalEntryState(goal);
+        const [attempts, max] = goal.pr
+          ? [goal.pr.attempts, goal.pr.maxAttempts]
+          : [goal.goalAttempts, goal.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX];
         const next =
-          goal.state === "pending" && goal.nextRun
+          state === "pending" && goal.nextRun
             ? `next check ${new Date(goal.nextRun).toISOString()}`
-            : (goal.reason ?? goal.lastResult ?? goal.state);
-        return `${index + 1}. ${label} — ${goal.state} — attempt ${goal.attempts}/${goal.maxAttempts} — ${next}`;
+            : goal.pr
+              ? (goal.pr.reason ?? goal.pr.lastResult ?? state)
+              : state === "met"
+                ? `reached: ${truncateTaskSummary(goal.goalEvidence ?? "", 200)}`
+                : (goal.lastError ?? state);
+        return `${index + 1}. [${goal.pr ? "pr" : "goal"}] ${goalLabel(goal)} — ${state} — attempt ${attempts}/${max} — ${next}`;
       })
       .join("\n");
   }
 
   cancelGoal(conversationId: string, index: number) {
-    if (!Number.isInteger(index) || index < 1)
-      throw new TaskError("Invalid goal number. Use /goal list.");
-    const goal = this.goalsOf(conversationId)[index - 1];
-    if (!goal) throw new TaskError("Invalid goal number. Use /goal list.");
-    if (goal.state !== "pending")
-      throw new TaskError(`That goal already ended: ${goal.state}.`);
-    // The due-goal selection requires state='pending', so this stops all
+    const goal = this.goalAt(conversationId, index);
+    const state = goalEntryState(goal);
+    if (state !== "pending")
+      throw new TaskError(`That goal already ended: ${state}.`);
+    // The due-goal selections require a pending state, so this stops all
     // future checks and even mid-flight results get discarded.
     this.runtime.store.db.exec("BEGIN IMMEDIATE");
     try {
-      this.runtime.store.run(
-        "UPDATE task_goals SET state='cancelled' WHERE taskId=? AND state='pending'",
-        goal.taskId,
-      );
+      if (goal.pr)
+        this.runtime.store.run(
+          "UPDATE task_goals SET state='cancelled' WHERE taskId=? AND state='pending'",
+          goal.taskId,
+        );
+      else
+        this.runtime.store.run(
+          "UPDATE tasks SET goalState='cancelled' WHERE id=? AND COALESCE(goalState,'pending')='pending'",
+          goal.taskId,
+        );
       this.runtime.store.run(
         "UPDATE tasks SET enabled=0,nextRun=NULL WHERE id=?",
         goal.taskId,
@@ -1286,7 +1487,7 @@ export class Tasks {
       this.runtime.store.db.exec("ROLLBACK");
       throw error;
     }
-    return `Goal cancelled: ${goal.owner}/${goal.repo}#${goal.prNumber}. No further checks or messages.`;
+    return `Goal cancelled: ${goalLabel(goal)}. No further checks or messages.`;
   }
 
   /** `/goal check N`: one immediate read outside the schedule. It never
@@ -1299,15 +1500,25 @@ export class Tasks {
   ): Promise<string> {
     return this.serialize(async () => {
       authorize();
-      if (!Number.isInteger(index) || index < 1)
-        throw new TaskError("Invalid goal number. Use /goal list.");
-      const goal = this.goalsOf(conversationId)[index - 1];
-      if (!goal) throw new TaskError("Invalid goal number. Use /goal list.");
-      const label = `${goal.owner}/${goal.repo}#${goal.prNumber}`;
-      if (goal.state !== "pending")
+      const entry = this.goalAt(conversationId, index);
+      const label = goalLabel(entry);
+      const entryState = goalEntryState(entry);
+      if (entryState !== "pending")
         throw new TaskError(
-          `Goal ${index} (${label}) is finished: ${goal.state}. There is nothing to check.`,
+          `Goal ${index} (${label}) is finished: ${entryState}. There is nothing to check.`,
         );
+      if (!entry.pr) {
+        // The same model round a scheduled check runs, admitted now as a
+        // manual run: no attempt is spent and nextRun does not move.
+        await this.runtime.conversation(conversationId);
+        authorize();
+        this.refresh();
+        this.claim(entry.taskId, this.clock(), false);
+        await this.dispatch();
+        authorize();
+        return `Goal ${index}: checking ${label} now. Not counted as an attempt. You will hear from it only if the condition happened.`;
+      }
+      const goal = entry.pr;
       const observation = await observePrMerged(
         { owner: goal.owner, repo: goal.repo, prNumber: goal.prNumber },
         this.goalFetcher,
@@ -1418,11 +1629,11 @@ export class Tasks {
       // After the receipt check: a replay of THIS message still confirms.
       const goals = this.goalsOf(conversationId);
       const duplicate = goals.findIndex(
-        (goal) =>
-          goal.state === "pending" &&
-          goal.owner === target.owner &&
-          goal.repo === target.repo &&
-          goal.prNumber === target.prNumber,
+        ({ pr }) =>
+          pr?.state === "pending" &&
+          pr.owner === target.owner &&
+          pr.repo === target.repo &&
+          pr.prNumber === target.prNumber,
       );
       if (duplicate >= 0)
         throw new TaskError(
@@ -1487,6 +1698,224 @@ export class Tasks {
     });
   }
 
+  /** A free objective becomes a kind='goal' task: the objective is its prompt,
+   * and the ordinary tick runs it as a model round until goal_reached. */
+  createObjectiveGoal(
+    conversationId: string,
+    origin: TaskOrigin,
+    objective: string,
+    intervalMin: number,
+    maxAttempts: number,
+  ): Promise<void> {
+    return this.serialize(async () => {
+      if (
+        origin.source !== "telegram" ||
+        origin.conversationId !== conversationId ||
+        !REQUEST_ID.test(origin.requestId)
+      )
+        throw new TaskError("The goal origin does not match this conversation");
+      // Same durable receipt as a PR goal: a replayed update confirms, never duplicates.
+      const creationKey = `goal:${conversationId}:${origin.requestId}`;
+      const signature = JSON.stringify({
+        conversationId,
+        objective,
+        intervalMin,
+        maxAttempts,
+      });
+      const receipt = this.runtime.store.get<{ input: string }>(
+        "SELECT input FROM task_creations WHERE creationKey=?",
+        creationKey,
+      );
+      if (receipt) {
+        if (receipt.input !== signature)
+          throw new TaskError(
+            "A goal for this message was already saved with different content.",
+          );
+        return;
+      }
+      const prompt = text(objective, "Objective", MAX_TEXT).trim();
+      if (
+        !Number.isInteger(intervalMin) ||
+        intervalMin < GOAL_INTERVAL_MIN ||
+        intervalMin > GOAL_INTERVAL_MAX ||
+        !Number.isInteger(maxAttempts) ||
+        maxAttempts < 1 ||
+        maxAttempts > GOAL_ATTEMPTS_MAX
+      )
+        throw new TaskError("Invalid goal cadence or check limit");
+      await this.runtime.conversation(conversationId);
+      if (this.runtime.store.conversationDeleted(conversationId))
+        throw new TaskError(
+          "Conversation deleted. Restore it before creating a goal.",
+        );
+      const goals = this.goalsOf(conversationId);
+      const duplicate = goals.findIndex(
+        (goal) =>
+          !goal.pr &&
+          goalEntryState(goal) === "pending" &&
+          goal.prompt === prompt,
+      );
+      if (duplicate >= 0)
+        throw new TaskError(
+          `Goal ${duplicate + 1} already watches this in this chat. Use /goal cancel ${duplicate + 1} first to replace it.`,
+        );
+      if (goals.length >= GOAL_LIST_LIMIT)
+        throw new TaskError(
+          `Limit of ${GOAL_LIST_LIMIT} goals per chat reached.`,
+        );
+      const destination = this.destination("web_telegram", conversationId, {
+        ...origin,
+        source: "telegram",
+      });
+      const flat = prompt.replace(/\s+/g, " ");
+      const title = `Goal: ${flat.length > 110 ? `${flat.slice(0, 109)}…` : flat}`;
+      const id = randomUUID();
+      this.runtime.store.db.exec("BEGIN IMMEDIATE");
+      try {
+        // Enabled with nextRun now: the next tick runs the first check.
+        this.runtime.store.run(
+          "INSERT INTO tasks(id,title,prompt,conversationId,kind,schedule,timezone,delivery,enabled,nextRun,destinationChat,destinationUser,destinationBotId,destinationMessageThreadId,destinationReason,originSource,originConversationId,originRequestId,goalMaxAttempts) VALUES (?,?,?,?,'goal',?,'UTC','web_telegram',1,?,?,?,?,?,?,?,?,?,?)",
+          id,
+          title,
+          prompt,
+          conversationId,
+          `every-${intervalMin}m`,
+          this.clock(),
+          destination.destinationChat,
+          destination.destinationUser,
+          destination.destinationBotId,
+          destination.destinationMessageThreadId,
+          destination.destinationReason,
+          origin.source,
+          origin.conversationId,
+          origin.requestId,
+          maxAttempts,
+        );
+        this.runtime.store.run(
+          "INSERT INTO task_creations VALUES (?,?,?)",
+          creationKey,
+          id,
+          signature,
+        );
+        this.runtime.store.db.exec("COMMIT");
+      } catch (error) {
+        this.runtime.store.db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  /** The free-objective goal this run checks, or undefined for any other run. */
+  goalRunTask(conversationId: string, requestId: string) {
+    return this.runtime.store.get<{
+      taskId: string;
+      runId: string;
+      state: string;
+      prompt: string;
+      goalState: string | null;
+    }>(
+      `SELECT r.taskId,r.id AS runId,r.state,t.prompt,t.goalState FROM task_runs r JOIN tasks t ON t.id=r.taskId
+       WHERE r.requestId=? AND r.conversationId=? AND ${OBJECTIVE_GOAL("t")}`,
+      requestId,
+      conversationId,
+    );
+  }
+
+  /** `goal_reached`: the one way a goal round ends its goal. It records the
+   * evidence and stops the schedule. `deliver` runs inside the same
+   * transaction, only on the call that records the goal, and releases the
+   * round's held messages (or the standard one it is given); a repeated call
+   * delivers nothing. Its note, if any, is appended to the result. */
+  goalReached(
+    conversationId: string,
+    requestId: string,
+    evidence: unknown,
+    deliver?: (standard: string) => string | undefined,
+  ): string {
+    const round = this.goalRunTask(conversationId, requestId);
+    if (!round || round.state !== "pending")
+      throw new TaskError(GOAL_REACHED_OUTSIDE);
+    if (typeof evidence !== "string" || isBlankMessage(evidence))
+      throw new TaskError(GOAL_REACHED_NO_EVIDENCE);
+    const store = this.runtime.store;
+    const recorded = truncateTaskSummary(evidence.trim(), GOAL_EVIDENCE_MAX);
+    store.db.exec("BEGIN IMMEDIATE");
+    let state: string;
+    let note: string | undefined;
+    try {
+      const changed = store.run(
+        "UPDATE tasks SET goalState='met',goalEvidence=?,enabled=0,nextRun=NULL,lastError=NULL WHERE id=? AND COALESCE(goalState,'pending')='pending'",
+        recorded,
+        round.taskId,
+      ).changes;
+      if (changed)
+        note = deliver?.(
+          `Goal reached: ${goalLabel({ prompt: round.prompt, pr: null })} — ${recorded}`,
+        );
+      state = changed
+        ? "recorded"
+        : (store.get<{ goalState: string | null }>(
+            "SELECT goalState FROM tasks WHERE id=?",
+            round.taskId,
+          )?.goalState ?? "pending");
+      store.db.exec("COMMIT");
+    } catch (error) {
+      store.db.exec("ROLLBACK");
+      throw error;
+    }
+    if (state === "recorded")
+      return `Recorded: the goal is reached and closed. No further checks will run.${note ? ` ${note}` : ""}`;
+    // A repeated call in the same round changes nothing and sends nothing.
+    if (state === "met")
+      return "Already recorded: this goal is reached and closed. Nothing else to do.";
+    throw new TaskError(
+      `This goal already ended: ${state}. Nothing was recorded.`,
+    );
+  }
+
+  /** After a goal round settles: the last allowed attempt without goal_reached
+   * blocks the goal, with one legible message on that round's frozen route. */
+  private settleGoalRound(runId: string) {
+    const row = this.runtime.store.get<TaskRow & { runState: string }>(
+      `SELECT t.*,r.state AS runState FROM task_runs r JOIN tasks t ON t.id=r.taskId
+       WHERE r.id=? AND ${OBJECTIVE_GOAL("t")}`,
+      runId,
+    );
+    if (
+      !row ||
+      row.runState === "pending" ||
+      (row.goalState ?? "pending") !== "pending" ||
+      row.goalAttempts < (row.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX)
+    )
+      return;
+    this.blockGoal(row);
+  }
+
+  private blockGoal(task: TaskRow) {
+    const store = this.runtime.store;
+    const max = task.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX;
+    const reason = `The condition was not observed after ${max} checks.`;
+    store.savepoint("goal_block", () => {
+      const changed = store.run(
+        "UPDATE tasks SET goalState='blocked',enabled=0,nextRun=NULL,lastError=? WHERE id=? AND COALESCE(goalState,'pending')='pending'",
+        reason,
+        task.id,
+      ).changes;
+      const last = store.get<{ conversationId: string; requestId: string }>(
+        "SELECT conversationId,requestId FROM task_runs WHERE taskId=? ORDER BY rowid DESC LIMIT 1",
+        task.id,
+      );
+      if (changed && last)
+        queueTaskTelegram(
+          store,
+          last.conversationId,
+          last.requestId,
+          `Goal blocked: ${goalLabel({ prompt: task.prompt, pr: null })} — ${reason} No further checks will run. Use /goal list.`,
+          "goal-blocked",
+        );
+    });
+  }
+
   /** Bounded goal work in the ordinary tick; the rest stays due, uncounted. */
   private async goalPass() {
     const store = this.runtime.store;
@@ -1520,7 +1949,7 @@ export class Tasks {
     }>(
       `SELECT r.id,r.taskId,r.requestId,r.conversationId FROM task_runs r
        JOIN tasks t ON t.id=r.taskId
-       WHERE r.state IN ('pending','checking') AND t.kind='goal' AND r.startedAt IS NOT NULL`,
+       WHERE r.state IN ('pending','checking') AND t.kind='goal' AND ${PR_GOAL("t")} AND r.startedAt IS NOT NULL`,
     )) {
       store.db.exec("BEGIN IMMEDIATE");
       try {

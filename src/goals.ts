@@ -9,6 +9,8 @@
 export const GOAL_INTERVAL_MIN = 60; // 60 min = 1 request/hour per goal.
 export const GOAL_INTERVAL_MAX = 1440;
 export const GOAL_ATTEMPTS_MAX = 200;
+/** A free objective is the prompt of its goal round; keep it a sentence, not a document. */
+export const GOAL_OBJECTIVE_MAX = 2000;
 /** The observer is read-only; one PR payload is far below this cap. */
 export const GOAL_MAX_BYTES = 262144;
 const GOAL_TIMEOUT_MS = 10_000;
@@ -79,16 +81,24 @@ export type GoalCommand =
       target: GoalTarget;
       intervalMin: number;
       maxAttempts: number;
+    }
+  /** A free condition: a scheduled model round checks it until it happens. */
+  | {
+      action: "objective";
+      objective: string;
+      intervalMin: number;
+      maxAttempts: number;
     };
 
 export const GOAL_HELP = [
-  "Persistent goals check one public GitHub PR on a fixed schedule.",
-  "/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 1 hora ate a PR #66 ser publicada. — natural language works too.",
-  `/goal pr owner/repo#123 <minutes ${GOAL_INTERVAL_MIN}-${GOAL_INTERVAL_MAX}> <max checks 1-${GOAL_ATTEMPTS_MAX}> — the structured form, still fully supported.`,
+  "Persistent goals stay silent until something happens, tell you once, and end.",
+  "/goal avise quando o relatório aparecer no Drive a cada 2 horas — any condition, checked by the assistant on that schedule.",
+  "/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 1 hora ate a PR #66 ser publicada. — a public GitHub PR is checked directly, with no model round.",
+  `/goal pr owner/repo#123 <minutes ${GOAL_INTERVAL_MIN}-${GOAL_INTERVAL_MAX}> <max checks 1-${GOAL_ATTEMPTS_MAX}> — the structured PR form, still fully supported.`,
   "/goal list — goals in this chat with status, next check and attempts.",
   "/goal check <number> — check that goal once now; it does not count as an attempt.",
   "/goal cancel <number> — stop a goal. No further checks or messages.",
-  "Only a merged PR completes a goal; a closed-unmerged PR or exhausted checks block it.",
+  "Only a merged PR completes a PR goal; a closed-unmerged PR or exhausted checks block it. Any goal is blocked when its checks run out.",
 ].join("\n");
 
 /** Parse the literal `/goal` arguments; malformed input throws GoalError. */
@@ -213,9 +223,14 @@ const INTERVAL_RE =
 const MAX_RE =
   /\bat[eé]\s+([0-9][0-9.]*)\s+(?:verifica[çc][õo]es|checagens|checks)\b|\bno\s+m[áa]ximo\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b|\bmax(?:imum)?\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b/gi;
 
-/** Deterministic fallback: parse a natural-language /goal request, no LLM. */
+/** Deterministic fallback: parse a natural-language /goal request, no LLM.
+ * Any GitHub PR signal (a repository link, owner/repo#N, "PR 12", a bare #N)
+ * keeps the PR goal and its refusals; only text with none of them becomes a
+ * free objective, so a half-written PR request is refused, never reread. */
 function parseNaturalGoal(args: string): GoalCommand {
   const { repos, prs, bareHash, text } = collectNaturalTarget(args);
+  if (!repos.size && !prs.size && bareHash === null)
+    return parseObjectiveGoal(args);
   if (repos.size > 1) {
     const [a, b] = [...repos];
     throw new GoalError(
@@ -243,6 +258,39 @@ function parseNaturalGoal(args: string): GoalCommand {
       `Invalid goal request: no repository found for PR #${pr}. Write OWNER/REPO#${pr} or include the PR link.`,
     );
   }
+  const { intervalMin, maxAttempts } = parseCadence(text);
+  const [[owner, repo]] = [...repos].map((pair) => pair.split("/"));
+  const [prNumber] = [...prs];
+  return {
+    action: "create",
+    target: { owner: owner!, repo: repo!, prNumber: prNumber! },
+    intervalMin,
+    maxAttempts,
+  };
+}
+
+/** A free objective: the sentence minus its cadence and cap is the prompt. */
+function parseObjectiveGoal(args: string): GoalCommand {
+  const objective = args
+    .replace(INTERVAL_RE, " ")
+    .replace(MAX_RE, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/^[\s,;:.—–-]+|[\s,;:.—–-]+$/g, "");
+  if (!/[\p{L}\p{N}]/u.test(objective))
+    throw new GoalError(
+      `Invalid goal request: no objective found. Say what to watch for, e.g. "/goal avise quando o relatório aparecer no Drive a cada 2 horas".`,
+    );
+  if (objective.length > GOAL_OBJECTIVE_MAX)
+    throw new GoalError(
+      `Invalid goal request: the objective is too long (maximum ${GOAL_OBJECTIVE_MAX} characters).`,
+    );
+  const { intervalMin, maxAttempts } = parseCadence(args);
+  return { action: "objective", objective, intervalMin, maxAttempts };
+}
+
+/** One interval (required, within the creation bounds) and an optional cap. */
+function parseCadence(text: string) {
   const intervals = new Set<number>();
   for (const match of text.matchAll(INTERVAL_RE)) {
     if (match[1] !== undefined)
@@ -281,14 +329,7 @@ function parseNaturalGoal(args: string): GoalCommand {
   const maxAttempts = maxes.size
     ? bounded(String([...maxes][0]), 1, GOAL_ATTEMPTS_MAX, "max checks")
     : GOAL_ATTEMPTS_MAX;
-  const [[owner, repo]] = [...repos].map((pair) => pair.split("/"));
-  const [prNumber] = [...prs];
-  return {
-    action: "create",
-    target: { owner: owner!, repo: repo!, prNumber: prNumber! },
-    intervalMin,
-    maxAttempts,
-  };
+  return { intervalMin, maxAttempts };
 }
 
 const PR_FIELDS = "GitHub answer was not a pull request";

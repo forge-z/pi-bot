@@ -99,10 +99,11 @@ export function goalCheckAuthorized(
   );
 }
 
-/** `/goal`: persistent read-only goals, Telegram-only, created in the exact
- * chat/user/bot/topic of the incoming update. Scoped controls: /goal list,
- * /goal check and /goal cancel — a goal never appears in /crons or the
- * generic task APIs. */
+/** `/goal`: persistent goals, Telegram-only, created in the exact
+ * chat/user/bot/topic of the incoming update. A public GitHub PR target is a
+ * read-only PR goal; any other objective is a kind='goal' task checked by a
+ * scheduled model round. Scoped controls: /goal list, /goal check and
+ * /goal cancel — a goal never appears in /crons or the generic task APIs. */
 export async function commandGoal(
   app: Runtime,
   conversationId: string,
@@ -203,18 +204,32 @@ export async function commandGoal(
       route.messageThreadId,
     );
   });
+  const origin = { source: "telegram" as const, conversationId, requestId };
   try {
-    await app.tasks.createGoal(
-      conversationId,
-      { source: "telegram", conversationId, requestId },
-      command.target,
-      command.intervalMin,
-      command.maxAttempts,
-    );
+    if (command.action === "objective")
+      await app.tasks.createObjectiveGoal(
+        conversationId,
+        origin,
+        command.objective,
+        command.intervalMin,
+        command.maxAttempts,
+      );
+    else
+      await app.tasks.createGoal(
+        conversationId,
+        origin,
+        command.target,
+        command.intervalMin,
+        command.maxAttempts,
+      );
   } catch (error) {
     if (error instanceof TaskError) throw new CommandError(error.message);
     throw error;
   }
+  if (command.action === "objective")
+    return respond(
+      `Goal saved: watching for "${command.objective}". Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Nothing is sent until it happens; then you are told once and the goal ends. Use /goal list and /goal cancel <number>.`,
+    );
   return respond(
     `Goal saved: notify this chat when ${command.target.owner}/${command.target.repo}#${command.target.prNumber} is merged. Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Use /goal list and /goal cancel <number>.`,
   );
