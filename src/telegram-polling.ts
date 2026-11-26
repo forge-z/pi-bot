@@ -22,6 +22,7 @@ export const cleanCommands = [
   { command: "model", description: "Choose provider and model" },
   { command: "thinking", description: "Choose effort" },
   { command: "crons", description: "Create and manage schedules" },
+  { command: "goal", description: "Watch a GitHub PR until it merges" },
   { command: "new", description: "Start another conversation in this topic" },
   { command: "resume", description: "Resume a stuck task" },
   { command: "stop", description: "Stop this topic" },
