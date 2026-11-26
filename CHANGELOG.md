@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The native `weather` tool provides current conditions and up to 16 days of forecasts from Open-Meteo. It uses the free non-commercial API and can be turned off in the **Web search** setup menu.
+- `/goal` accepts natural-language requests as a deterministic fallback (no LLM at runtime), e.g. `acompanhe https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada.` — one PR, one interval, optional check cap; conflicting PR numbers or repositories are refused. The structured `/goal pr owner/repo#N <min> <max>` form is unchanged.
 
 ### Security
 
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated the agent runtime to [Pi v1.6.1](https://github.com/earendil-works/pi/releases/tag/v1.6.1).
+- The minimum `/goal` check interval dropped from 10 to 5 minutes: 5 minutes is 12 requests/hour, below GitHub's 60/hour unauthenticated limit.
 
 ## [0.5.3] - 2026-11-23
 

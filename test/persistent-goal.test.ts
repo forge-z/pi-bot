@@ -277,7 +277,7 @@ test("the command parser accepts the literal form and rejects malformed input", 
     "pr not-a-target 60 24",
     "pr a/b#0 60 24",
     "pr a/b#7 60 24 extra",
-    "pr octocat/hello-world#7 5 24",
+    "pr octocat/hello-world#7 4 24",
     "pr octocat/hello-world#7 60 0",
     "tasks octocat/hello-world#7 60 24",
     "cancel",
@@ -323,6 +323,46 @@ test("a human /goal command freezes the exact incoming chat, user, bot and topic
   }
 });
 
+test("a natural-language /goal creates the goal at the five-minute floor", async () => {
+  const f = await fixture();
+  try {
+    const replies = await f.send(
+      "/goal acompanhe o https://github.com/forge-z/pi-bot/pulls a cada 5 minutos ate a PR #66 ser publicada.",
+    );
+    assert.match(replies.at(-1)!, /goal saved/i);
+    assert.match(replies.at(-1)!, /every 5 minutes/);
+    const rows = f.goalRows();
+    assert.equal(rows.length, 1);
+    const goal = rows[0]!;
+    assert.equal(goal.state, "pending");
+    assert.equal(goal.attempts, 0);
+    assert.ok(goal.nextRun, "first check is scheduled");
+    assert.equal(goal.conversationId, f.topic);
+    assert.equal(goal.destinationChat, "100");
+    assert.equal(goal.destinationUser, "42");
+    assert.equal(goal.destinationMessageThreadId, 11);
+    const stored = f.app.store.get<{
+      owner: string;
+      repo: string;
+      prNumber: number;
+      intervalMin: number;
+      maxAttempts: number;
+    }>("SELECT owner,repo,prNumber,intervalMin,maxAttempts FROM task_goals");
+    assert.deepEqual(
+      { ...stored },
+      {
+        owner: "forge-z",
+        repo: "pi-bot",
+        prNumber: 66,
+        intervalMin: 5,
+        maxAttempts: 200,
+      },
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("malformed or out-of-bounds /goal arguments are rejected", async () => {
   const f = await fixture();
   try {
@@ -331,7 +371,7 @@ test("malformed or out-of-bounds /goal arguments are rejected", async () => {
       "/goal pr not-a-target 60 24",
       "/goal pr a/b#0 60 24",
       "/goal pr a/b#7 60 24 extra",
-      "/goal pr octocat/hello-world#7 5 24",
+      "/goal pr octocat/hello-world#7 4 24",
       "/goal pr octocat/hello-world#7 60 0",
       "/goal tasks octocat/hello-world#7 60 24",
       "/goal pr octocat/hello-world#99999999999999999999 60 24",
