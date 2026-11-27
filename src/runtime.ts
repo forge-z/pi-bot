@@ -34,6 +34,7 @@ import {
 import {
   createSandboxCodeTaskTool,
   JOB_INDETERMINATE,
+  longTaskToolName,
   sandboxTaskSteer,
 } from "./sandbox-code-task.js";
 import { channelChat } from "./channel.js";
@@ -527,8 +528,19 @@ export class Runtime {
     checked: boolean;
   }>();
   private activeToolStarts = new Map<string, number>();
+  private activeToolNames = new Map<string, string>();
   private activeTurnStarts = new Map<string, number>();
+  /** Source of the request that started the turn (web/telegram/whatsapp/task/job/system). */
+  private activeTurnSources = new Map<string, string>();
+  /** Conversations whose interactive budget note was already injected this turn. */
+  private budgetNoted = new Set<string>();
+  /** Conversations with a queued-message drain in flight. */
+  private queueDrains = new Set<string>();
   private busyNotifiedTools = new Set<string>();
+  /** Wall clock budget for one interactive turn, read once at startup. */
+  private readonly turnBudgetMs: number;
+  /** The registered long-task job dispatch tool, when this run has one. */
+  private readonly longJobTool: string | undefined;
 
   /** Running tool for the long-call heartbeat: start time plus the last MCP progress. */
   longToolState(conversationId: string): LongCallState | undefined {
@@ -585,9 +597,160 @@ export class Runtime {
     this.busyNotifiedTools.add(key);
     return true;
   }
+
+  /**
+   * The one-line busy notice: what is running and for how long, plus the two
+   * exits. Names the running MCP call first, then the active tool, then the
+   * turn itself.
+   */
+  busyNotice(conversationId: string, now = this.now()) {
+    const running = this.mcpCalls
+      ?.list(conversationId)
+      .find((c) => c.state === "running");
+    const toolStart = this.activeToolStarts.get(conversationId);
+    const turnStart = this.activeTurnStarts.get(conversationId);
+    let what: string;
+    let elapsed: number;
+    if (running) {
+      what = `The MCP call ${running.server}/${running.tool}`;
+      elapsed = now - running.updatedAt;
+    } else if (toolStart !== undefined) {
+      what = `The tool ${this.activeToolNames.get(conversationId) ?? "in progress"}`;
+      elapsed = now - toolStart;
+    } else {
+      what = "This turn";
+      elapsed = turnStart !== undefined ? now - turnStart : 0;
+    }
+    const seconds = Math.floor(elapsed / 1000);
+    const time =
+      seconds < 1
+        ? "less than a second"
+        : seconds < 60
+          ? `${seconds} second${seconds === 1 ? "" : "s"}`
+          : `${Math.floor(seconds / 60)} minute${seconds < 120 ? "" : "s"}`;
+    return `${what} has been running for ${time}; your message joined that work. Send /queue <message> to keep a message for the next turn instead, or /stop to cancel this work.`;
+  }
+
+  /** True when this interactive turn has passed its wall clock budget. */
+  private budgetExpired(conversationId: string) {
+    const source = this.activeTurnSources.get(conversationId);
+    if (source !== "web" && source !== "telegram" && source !== "whatsapp")
+      return false;
+    const start = this.activeTurnStarts.get(conversationId);
+    return start !== undefined && this.now() - start >= this.turnBudgetMs;
+  }
+
+  /**
+   * The single budget note, when this request is the first after expiry. It is
+   * injected for that request only and never repeated in this turn.
+   */
+  private turnBudgetNote(conversationId: string): string | undefined {
+    if (
+      !this.budgetExpired(conversationId) ||
+      this.budgetNoted.has(conversationId)
+    )
+      return;
+    this.budgetNoted.add(conversationId);
+    const seconds = Math.round(this.turnBudgetMs / 1000);
+    return this.longJobTool
+      ? `This interactive turn passed its ${seconds}-second budget. Wrap up now: hand the remaining work to ${this.longJobTool} and end this turn with a short reply. Every other tool call is refused from here on; ${this.longJobTool} delivers the result in this chat when the job finishes.`
+      : `This interactive turn passed its ${seconds}-second budget. Wrap up now and end this turn with a short reply telling the user what is left; further tool calls are refused.`;
+  }
+
+  /** The refusal a non-job tool call reads after the budget ran out. */
+  private budgetRefusalText() {
+    const seconds = Math.round(this.turnBudgetMs / 1000);
+    return this.longJobTool
+      ? `Refused: this interactive turn passed its ${seconds}-second budget, and the call was not run. Hand the remaining work to ${this.longJobTool} and end your turn with a short reply.`
+      : `Refused: this interactive turn passed its ${seconds}-second budget, and the call was not run. End your turn now with a short reply telling the user what is left.`;
+  }
+
+  /** A direct (non-MCP) tool call after expiry; the job dispatch stays allowed. */
+  private budgetRefusal(conversationId: string, tool: string) {
+    if (!this.budgetExpired(conversationId)) return;
+    if (tool === this.longJobTool) return;
+    return this.budgetRefusalText();
+  }
+
+  /** An MCP call after expiry; a registered async job dispatch stays allowed. */
+  mcpBudgetRefusal(conversationId: string, server: string, tool: string) {
+    if (!this.budgetExpired(conversationId)) return;
+    if (this.pendingJobs.isDispatchTool(server, tool)) return;
+    return this.budgetRefusalText();
+  }
+
+  /** `/queue` while a turn is busy: persisted, answered after the turn ends. */
+  queueMessage(
+    conversationId: string,
+    requestId: string,
+    text: string,
+    source: "telegram" | "whatsapp",
+    chat: string,
+  ) {
+    this.store.run(
+      "INSERT OR IGNORE INTO queued_messages(conversationId,requestId,text,source,chat,createdAt) VALUES (?,?,?,?,?,?)",
+      conversationId,
+      requestId,
+      text,
+      source,
+      chat,
+      this.now(),
+    );
+  }
+
+  /**
+   * One queued message gets its own turn, never alongside other work: it is
+   * submitted only once the conversation is idle, and each settlement drains
+   * the next row. A restart drains whatever is left at startup.
+   */
+  private drainQueued(conversationId: string) {
+    if (
+      this.closing ||
+      this.queueDrains.has(conversationId) ||
+      this.isTurnBusy(conversationId)
+    )
+      return;
+    const row = this.store.get<{
+      conversationId: string;
+      requestId: string;
+      text: string;
+      source: string;
+      chat: string | null;
+    }>(
+      "SELECT * FROM queued_messages WHERE conversationId=? ORDER BY createdAt LIMIT 1",
+      conversationId,
+    );
+    if (!row) return;
+    this.queueDrains.add(conversationId);
+    const consume = () =>
+      this.store.run(
+        "DELETE FROM queued_messages WHERE conversationId=? AND requestId=?",
+        row.conversationId,
+        row.requestId,
+      );
+    this.submit(
+      row.conversationId,
+      row.requestId,
+      row.text,
+      row.source,
+      row.chat,
+    )
+      .then(consume, (error: unknown) => {
+        // A permanent failure drops the message with a log line; a transient one keeps it.
+        if (!isRetryableError(error)) consume();
+        console.warn(
+          `Pi-Agent: a queued message was not admitted (${error instanceof Error ? error.message : error}).`,
+        );
+      })
+      .finally(() => this.queueDrains.delete(conversationId));
+  }
   private constructor(readonly options: RuntimeOptions) {
     this.guardGateway(options.gateway);
-    this.pendingJobs = new PendingJobs(this, options.env ?? process.env);
+    // Read once at startup, like the other limits. A config change needs a restart.
+    const env = options.env ?? process.env;
+    this.turnBudgetMs = loadHarnessConfig(env).interactiveTurnBudgetMs;
+    this.longJobTool = longTaskToolName(env) || undefined;
+    this.pendingJobs = new PendingJobs(this, env);
     this.store = options.store ?? new Store(options.dir);
     this.turnReceipts = new TurnReceipts(this.store);
     this.models =
@@ -1320,9 +1483,37 @@ export class Runtime {
                           )?.context(ctx),
                       )
                     : undefined;
-                if (memory || external || advanced || messages)
+                if (memory || external || advanced || messages) {
+                  const base = memory ?? external ?? advanced ?? messages;
+                  // The interactive budget note rides one request only, when the
+                  // wall clock ran out; refusals carry the same message after it.
+                  const note = app!.turnBudgetNote(String(api.conversationId));
+                  if (note)
+                    return {
+                      messages: [
+                        ...(base ?? request.messages),
+                        {
+                          role: "system" as const,
+                          content: note,
+                          timestamp: app!.now(),
+                        },
+                      ],
+                    };
                   return {
                     messages: memory ?? external ?? advanced ?? messages!,
+                  };
+                }
+                const note = app!.turnBudgetNote(String(api.conversationId));
+                if (note)
+                  return {
+                    messages: [
+                      ...request.messages,
+                      {
+                        role: "system" as const,
+                        content: note,
+                        timestamp: app!.now(),
+                      },
+                    ],
                   };
               },
             }),
@@ -1457,6 +1648,12 @@ export class Runtime {
         "SELECT * FROM actions WHERE state IN ('done','failed','denied','uncertain','reconciled')",
       ))
         await app.recordAction(action);
+      // Queued messages survived the restart; idle conversations answer now,
+      // busy ones drain when their recovered turn settles.
+      for (const row of app.store.all<{ conversationId: string }>(
+        "SELECT DISTINCT conversationId FROM queued_messages",
+      ))
+        app.drainQueued(row.conversationId);
       if (app.mcpCalls)
         for (const call of app.store.all<McpCall>(
           "SELECT DISTINCT c.* FROM mcp_calls c JOIN mcp_interactions i ON i.callId=c.id WHERE i.kind='resume' AND c.state IN ('done','failed','uncertain','reconciled','abandoned')",
@@ -1634,6 +1831,17 @@ export class Runtime {
                 outputLimits: { maxBytes: 65536, maxLines: 2000 },
                 execute: async (args, api, callContext) => {
                   const conversationId = String(api.conversationId);
+                  // The interactive budget allows only a registered job dispatch.
+                  const budgeted = this.mcpBudgetRefusal(
+                    conversationId,
+                    server.server,
+                    tool.name,
+                  );
+                  if (budgeted)
+                    return {
+                      output: [{ type: "text" as const, text: budgeted }],
+                      isError: true,
+                    };
                   // A subagent only reads, on every server, Executor included. It
                   // runs like a scheduled turn: no card, no job, no chat.
                   const child = !!(await this.subagentParent(conversationId));
@@ -1884,6 +2092,9 @@ export class Runtime {
       const tools = extension.tools?.map((tool) => {
         if (this.guardedTools.has(tool)) return tool;
         changed = true;
+        // mcp-direct tools decide the budget refusal themselves, where the
+        // server and tool are known, so a registered job dispatch stays allowed.
+        const mcpDirect = extension.name === "mcp-direct";
         const guarded = {
           ...tool,
           execute: async (...args: Parameters<typeof tool.execute>) => {
@@ -1894,6 +2105,14 @@ export class Runtime {
                 : undefined;
             const startTime = Date.now();
             if (conversationId) {
+              const refused = mcpDirect
+                ? undefined
+                : this.budgetRefusal(conversationId, tool.name);
+              if (refused)
+                return {
+                  output: [{ type: "text" as const, text: refused }],
+                  isError: true,
+                };
               // MCP tools are counted in their execute, on the inner target.
               if (!tool.name.startsWith("mcp_")) {
                 const blocked = this.noteLoop(
@@ -1909,6 +2128,7 @@ export class Runtime {
                   };
               }
               this.activeToolStarts.set(conversationId, startTime);
+              this.activeToolNames.set(conversationId, tool.name);
             }
             const route =
               conversationId && this.options.heartbeat
@@ -1934,6 +2154,7 @@ export class Runtime {
                 this.activeToolStarts.get(conversationId) === startTime
               ) {
                 this.activeToolStarts.delete(conversationId);
+                this.activeToolNames.delete(conversationId);
               }
             }
           },
@@ -2824,6 +3045,7 @@ export class Runtime {
     );
     if (!this.activeTurnStarts.has(conversationId)) {
       this.activeTurnStarts.set(conversationId, this.now());
+      this.activeTurnSources.set(conversationId, source);
     }
     if (source !== "system")
       this.store.run(
@@ -3327,11 +3549,15 @@ export class Runtime {
           );
           if (!stillMonitoring) {
             this.activeTurnStarts.delete(conversationId);
+            this.activeTurnSources.delete(conversationId);
+            this.budgetNoted.delete(conversationId);
             this.loopGuards.delete(conversationId);
             for (const k of this.busyNotifiedTools) {
               if (k.startsWith(`${conversationId}:`))
                 this.busyNotifiedTools.delete(k);
             }
+            // The queued messages wait for exactly this: the turn is over.
+            this.drainQueued(conversationId);
           }
         });
       this.monitors.set(key, monitor);

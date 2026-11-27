@@ -3718,12 +3718,12 @@ test("WhatsApp turns show the model notice and the busy line", async () => {
     app.isTurnBusy = () => true;
     app.markTurnBusyNotified = () => true;
     await acceptWhatsAppMessage(app, whatsappText(chat, "b3", "while busy"));
-    assert.match(
-      app.store.get<Delivery>(
-        "SELECT text FROM deliveries WHERE id='whatsapp:busy:b3:0'",
-      )?.text ?? "",
-      /^Got it\. I will take that into account\. \/stop cancels\.$/,
-    );
+    const busy = app.store.get<Delivery>(
+      "SELECT text FROM deliveries WHERE id='whatsapp:busy:b3:0'",
+    )?.text;
+    assert.ok(busy && busy.includes("your message joined that work"));
+    assert.match(busy ?? "", /\/queue <message>/);
+    assert.match(busy ?? "", /\/stop/);
     await acceptWhatsAppMessage(app, whatsappText(chat, "b4", "/stop"));
     assert.equal(
       app.store.get("SELECT 1 FROM deliveries WHERE id='whatsapp:busy:b4:0'"),

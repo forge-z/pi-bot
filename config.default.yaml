@@ -278,6 +278,15 @@ sandbox_code_task:
 # $DATA_DIR/config.yaml. There is no environment variable for this.
 reaction_delay_ms: 4000
 
+# Wall clock budget for one interactive turn (a message the user typed), in
+# seconds. When it runs out, the model is told once to hand the remaining work
+# to the configured long-task job and end the turn; from then on every tool
+# call other than the job dispatch is refused as a readable tool result.
+# Scheduled runs (cron, once, goals) and async job delivery are exempt, and the
+# 60-second MCP call deadline is unchanged. Read at startup; a change needs a
+# restart. Override in $DATA_DIR/config.yaml.
+interactive_turn_budget_seconds: 180
+
 # /receipt always works. Enable this to append a short line to final chat replies.
 turn_receipt:
   footer: false

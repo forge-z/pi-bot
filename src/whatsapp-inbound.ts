@@ -6,6 +6,7 @@ import {
   originHeader,
   parseNumberedReply,
   whatsappApprovalKey,
+  whatsappRequestId,
   type ApprovalChoice,
   type InboundMessage,
 } from "./channel.js";
@@ -173,16 +174,14 @@ function noteAdmittedTurn(
       app.store,
       `whatsapp:busy:${message.messageId}`,
       message.chatId,
-      "Got it. I will take that into account. /stop cancels.",
+      app.busyNotice(conversationId),
       conversationId,
     );
   }
 }
 
-function requestIdFor(messageId: string) {
-  const safe = messageId.replace(/[^\w:.-]/g, "_").slice(0, 140);
-  return `wa:${safe || "msg"}`;
-}
+const requestIdFor = whatsappRequestId;
+export { requestIdFor };
 
 interface OpenApproval {
   interactionId: string;

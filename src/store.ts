@@ -86,6 +86,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS telegram_control_parts(deliveryId TEXT,conversationId TEXT,PRIMARY KEY(deliveryId,conversationId));
       CREATE INDEX IF NOT EXISTS telegram_control_conversation ON telegram_control_parts(conversationId);
       CREATE TABLE IF NOT EXISTS requests(conversationId TEXT, requestId TEXT, text TEXT, submissionId INTEGER, source TEXT, chat TEXT, status TEXT DEFAULT 'pending', PRIMARY KEY(conversationId,requestId));
+      CREATE TABLE IF NOT EXISTS queued_messages(conversationId TEXT NOT NULL, requestId TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, chat TEXT, createdAt INTEGER NOT NULL, PRIMARY KEY(conversationId,requestId));
       CREATE TABLE IF NOT EXISTS turn_receipts(conversationId TEXT NOT NULL, turnKey INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL, PRIMARY KEY(conversationId,turnKey));
       CREATE TABLE IF NOT EXISTS request_telegram_routes(conversationId TEXT NOT NULL,requestId TEXT NOT NULL,chat TEXT NOT NULL,user TEXT NOT NULL,botId TEXT NOT NULL,messageThreadId INTEGER,state TEXT NOT NULL,reason TEXT,PRIMARY KEY(conversationId,requestId));
       CREATE TABLE IF NOT EXISTS actions(id TEXT PRIMARY KEY, conversationId TEXT, server TEXT, tool TEXT, args TEXT, state TEXT DEFAULT 'pending', result TEXT, evidence TEXT DEFAULT '{}');

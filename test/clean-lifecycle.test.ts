@@ -186,6 +186,7 @@ test("/help lists the commands that remain and not the removed ones", async () =
         "memory",
         "forget",
         "remember",
+        "queue",
         "status",
         "receipt",
         "approvals",
