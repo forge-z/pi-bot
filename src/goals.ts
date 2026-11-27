@@ -316,7 +316,12 @@ function parseGoalEnd(text: string, now: number) {
     const [whole, iso, isoMonth, isoDay, day, month] = match;
     let end: number | null;
     if (iso !== undefined)
-      end = goalEndOfDay(timeZone, Number(iso), Number(isoMonth), Number(isoDay));
+      end = goalEndOfDay(
+        timeZone,
+        Number(iso),
+        Number(isoMonth),
+        Number(isoDay),
+      );
     else {
       // Brazilian day/month order, resolved to the next occurrence.
       const year = Number(
@@ -458,7 +463,10 @@ function parseCadence(text: string) {
     // never silently read as 1.
     maxes.add(
       Number(
-        match.slice(1).find((group) => group !== undefined)!.replaceAll(".", ""),
+        match
+          .slice(1)
+          .find((group) => group !== undefined)!
+          .replaceAll(".", ""),
       ),
     );
   if (maxes.size > 1) {

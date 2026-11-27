@@ -89,7 +89,15 @@ async function fixture() {
     editMessage: async () => true,
     answerCallback: async () => undefined,
   };
-  const bot = new Telegram(app, transport, ["42"], ["100"], "test_bot", true, 123);
+  const bot = new Telegram(
+    app,
+    transport,
+    ["42"],
+    ["100"],
+    "test_bot",
+    true,
+    123,
+  );
   let updateId = 1;
   const send = async (text: string) => {
     const id = updateId++;
@@ -193,7 +201,9 @@ test("each accepted check-limit phrase form is recognized and leaves the objecti
     "max 20 checks",
   ] as const;
   for (const form of forms) {
-    const command = objectiveCommand(`avise quando chover a cada 60 minutos ${form}`);
+    const command = objectiveCommand(
+      `avise quando chover a cada 60 minutos ${form}`,
+    );
     assert.equal(command.maxAttempts, 20, form);
     assert.equal(command.objective, "avise quando chover", form);
     assert.equal(command.intervalMin, 60, form);
@@ -204,7 +214,8 @@ test("each accepted check-limit phrase form is recognized and leaves the objecti
 test("a check limit is bounded from 1 to GOAL_ATTEMPTS_MAX", () => {
   for (const bad of ["no maximo 0 checagens", "no maximo 201 checagens"])
     assert.throws(
-      () => parseGoalCommand(`avise quando chover a cada 60 minutos ${bad}`, NOW),
+      () =>
+        parseGoalCommand(`avise quando chover a cada 60 minutos ${bad}`, NOW),
       /1 to 200/,
       bad,
     );
@@ -212,7 +223,9 @@ test("a check limit is bounded from 1 to GOAL_ATTEMPTS_MAX", () => {
     ["no maximo 1 checagens", 1],
     ["no maximo 200 checagens", GOAL_ATTEMPTS_MAX],
   ] as const) {
-    const command = objectiveCommand(`avise quando chover a cada 60 minutos ${form}`);
+    const command = objectiveCommand(
+      `avise quando chover a cada 60 minutos ${form}`,
+    );
     assert.equal(command.maxAttempts, max, form);
   }
 });
@@ -228,17 +241,29 @@ test("an ISO date resolves to the end of that day in the bot timezone", () => {
 });
 
 test("a day/month date resolves in Brazilian order, to the next occurrence", () => {
-  const future = objectiveCommand("avise quando chover a cada 60 minutos ate 30/11");
-  assert.equal(future.endAt, endOf(2026, 11, 30), "this year: Nov 30 is ahead of NOW");
-  const past = objectiveCommand("avise quando chover a cada 60 minutos ate 31/01");
+  const future = objectiveCommand(
+    "avise quando chover a cada 60 minutos ate 30/11",
+  );
+  assert.equal(
+    future.endAt,
+    endOf(2026, 11, 30),
+    "this year: Nov 30 is ahead of NOW",
+  );
+  const past = objectiveCommand(
+    "avise quando chover a cada 60 minutos ate 31/01",
+  );
   assert.equal(past.endAt, endOf(2027, 1, 31), "Jan 31 passed: next year");
 });
 
 test("a por-duration resolves from now, in epoch milliseconds", () => {
-  const dias = objectiveCommand("avise quando chover a cada 60 minutos por 3 dias");
+  const dias = objectiveCommand(
+    "avise quando chover a cada 60 minutos por 3 dias",
+  );
   assert.equal(dias.endAt, NOW + 3 * DAY_MS);
   assert.equal(dias.objective, "avise quando chover");
-  const horas = objectiveCommand("avise quando chover a cada 60 minutos por 48 horas");
+  const horas = objectiveCommand(
+    "avise quando chover a cada 60 minutos por 48 horas",
+  );
   assert.equal(horas.endAt, NOW + 48 * HOUR_MS);
 });
 
@@ -348,7 +373,10 @@ test("the structured PR form still parses and keeps working", async () => {
   try {
     const saved = await f.send("/goal pr octocat/hello-world#7 60 24");
     assert.match(saved.at(-1)!, /Goal saved/);
-    assert.match((await f.send("/goal list")).at(-1)!, /octocat\/hello-world#7 — pending — attempt 0\/24 — next check/);
+    assert.match(
+      (await f.send("/goal list")).at(-1)!,
+      /octocat\/hello-world#7 — pending — attempt 0\/24 — next check/,
+    );
   } finally {
     await f.close();
   }
@@ -367,7 +395,11 @@ test("a goal ends at its explicit check limit with exactly one notification nami
     assert.match(listed, /attempt 0\/2/);
     assert.match(listed, /2 checks left/);
     const goal = f.generic()[0]!;
-    assert.equal(goal.prompt, "avise quando chover", "the phrase is not the prompt");
+    assert.equal(
+      goal.prompt,
+      "avise quando chover",
+      "the phrase is not the prompt",
+    );
     assert.equal(goal.goalMaxAttempts, 2);
 
     f.respond([quiet("Ainda não."), quiet("Ainda não.")]);
@@ -460,7 +492,11 @@ test("a bare date in the condition is not an end time and stays in the objective
   const command = objectiveCommand(
     "me avise quando a nota fiscal vencer 30/11 a cada 2 horas",
   );
-  assert.equal(command.endAt, undefined, "only an explicit ate/until date ends a goal");
+  assert.equal(
+    command.endAt,
+    undefined,
+    "only an explicit ate/until date ends a goal",
+  );
   assert.equal(command.objective, "me avise quando a nota fiscal vencer 30/11");
 });
 
