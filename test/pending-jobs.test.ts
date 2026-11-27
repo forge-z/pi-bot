@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { bindChannelChat } from "../src/channel.js";
+import { commandJob, Commands } from "../src/commands.js";
 import { Store } from "../src/store.js";
 import {
   deterministicFailure,
@@ -715,7 +717,10 @@ test("legacy migration seeds poll attempts and releases the row to normal pollin
   );
   try {
     jobs.health();
-    const row = store.get<RetryRow>("SELECT * FROM pending_jobs WHERE id=1")!;
+    const row = store.get<RetryRow & { job_phase: string | null }>(
+      "SELECT * FROM pending_jobs WHERE id=1",
+    )!;
+    assert.equal(row.job_phase, null);
     assert.equal(row.poll_attempts, 2);
     assert.equal(row.delivery_attempts, 0);
     assert.equal(row.attempts, 2);
@@ -2052,6 +2057,119 @@ test("two poller passes deliver one message, with the job dedupe key", async () 
       f.store.get<{ delivered_at: number | null }>(
         "SELECT delivered_at FROM pending_jobs",
       )?.delivered_at,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+async function instaboxPhaseFixture() {
+  const f = await fixture([], [], {
+    INSTABOX_MACHINE_ID: "machine-123",
+    INSTABOX_ACCOUNT_ID: "acc-test",
+    TZ: "UTC",
+  });
+  const conversationId = "chat-1";
+  const chat = "5511999999@s.whatsapp.net";
+  const runId = "cj-phase-1";
+  f.store.run("INSERT INTO conversations VALUES (?,?)", conversationId, "Job");
+  bindChannelChat(f.store, "whatsapp", chat, conversationId);
+  f.jobs.registerKnown(conversationId, "internal.instabox.codeTask", runId);
+  return {
+    f,
+    observe: async (status: Record<string, unknown>) => {
+      f.setObserved({
+        path: `/data/home/jobs/${runId}/status.json`,
+        type: "file",
+        content: JSON.stringify(status),
+      });
+      await f.jobs.tick();
+    },
+    reply: () => {
+      const app = {
+        store: f.store,
+        pendingJobs: f.jobs,
+        assertConversationAvailable: () => {},
+      } as unknown as Runtime;
+      return commandJob(
+        Object.assign(app, { commands: new Commands(app) }),
+        conversationId,
+        { source: "whatsapp", chat, user: chat },
+      );
+    },
+  };
+}
+
+test("status.json phase appears in announcements and the stored /job reply", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 1) });
+  const { f, observe, reply } = await instaboxPhaseFixture();
+  try {
+    await observe({ state: "RUNNING", phase: "clone" });
+    assert.equal(
+      f.submissions[0]?.text,
+      "Job 1 (cj-phase-1) is RUNNING (clone) — 0s since dispatch.",
+    );
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): RUNNING (clone), 0s since dispatch. Last observed 00:00:00 (0s ago).",
+    );
+
+    t.mock.timers.tick(20_000);
+    await observe({ state: "RUNNING", phase: "provider/custom" });
+    assert.equal(f.submissions.length, 1);
+    f.restart();
+    const calls = f.calls.length;
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): RUNNING (provider/custom), 20s since dispatch. Last observed 00:00:20 (0s ago).",
+    );
+    assert.equal(f.calls.length, calls);
+
+    t.mock.timers.tick(20_000);
+    await observe({ state: "DONE", phase: "push", result: { summary: "OK" } });
+    assert.equal(
+      f.submissions[1]?.text.split("\n")[0],
+      "Job 1 (cj-phase-1) is DONE (push) — 40s since dispatch.",
+    );
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): DONE (push), 40s since dispatch. Last observed 00:00:40 (0s ago).",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("status.json without a non-empty phase keeps the announce and /job text identical", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 1) });
+  const { f, observe, reply } = await instaboxPhaseFixture();
+  try {
+    await observe({ state: "RUNNING" });
+    assert.equal(
+      f.submissions[0]?.text,
+      "Job 1 (cj-phase-1) is RUNNING — 0s since dispatch.",
+    );
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): RUNNING, 0s since dispatch. Last observed 00:00:00 (0s ago).",
+    );
+
+    t.mock.timers.tick(20_000);
+    await observe({ state: "RUNNING", phase: "" });
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): RUNNING, 20s since dispatch. Last observed 00:00:20 (0s ago).",
+    );
+
+    t.mock.timers.tick(20_000);
+    await observe({ state: "DONE", phase: 42, result: { summary: "OK" } });
+    assert.equal(
+      f.submissions[1]?.text.split("\n")[0],
+      "Job 1 (cj-phase-1) is DONE — 40s since dispatch.",
+    );
+    assert.equal(
+      reply(),
+      "Job 1 (run cj-phase-1): DONE, 40s since dispatch. Last observed 00:00:40 (0s ago).",
     );
   } finally {
     await f.close();
