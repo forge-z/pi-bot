@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Updated the agent runtime to [Pi v1.6.1](https://github.com/earendil-works/pi/releases/tag/v1.6.1).
+- Updated the agent runtime to [Pi v1.7.0](https://github.com/earendil-works/pi/releases/tag/v1.7.0): `pi-ai`, `pi-durable`, and `chord` 1.7.0. `pi-durable` 1.7.0 only adds `usage.imageOutput` to its usage totals. The Pi v1.7.0 catalog replaces the retired `qwen4-max-preview` with `qwen4-max` and moves the `cloudflare-workers-ai`/`cloudflare-ai-gateway` default to `@cf/zai-org/glm-5.3`; a saved conversation keeps its model.
 - New `/goal` goals check at most once an hour: the interval range is 60 to 1440 minutes. 60 minutes is 1 request/hour per goal, so up to 60 simultaneous goals stay under GitHub's 60/hour unauthenticated limit. Goals saved earlier with a shorter interval keep it.
 - A GitHub rate limit (HTTP 403/429) no longer uses up a goal's checks: the goal retries at its interval and the chat is told once when it starts.
 - A PR GitHub reports as not found (HTTP 404) blocks its goal on the first check, saying the PR does not exist, was renamed, or became private.
