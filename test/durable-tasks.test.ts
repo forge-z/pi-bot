@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import type { FauxResponseStep } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
 import type { Registry, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { DurableTaskError, DurableTasks } from "../src/durable-tasks.js";
+import { loadHarnessConfig } from "../src/harness-config.js";
 import { Runtime } from "../src/runtime.js";
 import { Store, type RequestRow } from "../src/store.js";
+import { Tasks } from "../src/tasks.js";
 
 const gateway = { catalog: async () => [] };
 const epoch = 1_800_000_000_000;
@@ -55,6 +64,12 @@ test("durable tasks round-trip and creation replays keep the original row", asyn
       updatedAt: epoch,
       lastError: null,
       creationKey: "call:1",
+      runConversationId: null,
+      attempts: 0,
+      maxAttempts: 3,
+      nextRun: null,
+      deadlineAt: null,
+      budgetTurns: 0,
     },
   );
   setTime(epoch + 1000);
@@ -176,7 +191,340 @@ test("the guarded migration adds creationKey to a table missing that column", as
   assert.equal(tasks.get("1", "old")?.creationKey, null);
   assert.equal(tasks.get("1", "old")?.goal, "Keep this goal");
   assert.equal(tasks.get("1", "old")?.state, "done");
+  assert.equal(tasks.get("1", "old")?.runConversationId, null);
+  assert.equal(tasks.get("1", "old")?.attempts, 0);
+  assert.equal(tasks.get("1", "old")?.maxAttempts, 3);
+  assert.equal(tasks.get("1", "old")?.nextRun, null);
+  assert.equal(tasks.get("1", "old")?.deadlineAt, null);
+  assert.equal(tasks.get("1", "old")?.budgetTurns, 0);
   assert.equal(new DurableTasks(store).get("1", "old")?.creationKey, null);
+});
+
+async function executionFixture(
+  t: TestContext,
+  responses: FauxResponseStep[],
+  config = "",
+) {
+  const dir = await temp(t);
+  const CONFIG_FILE = join(dir, "config.yaml");
+  await writeFile(CONFIG_FILE, `memory: { enabled: false }\n${config}\n`);
+  const models = createModels();
+  const faux = fauxProvider();
+  faux.setResponses(responses);
+  models.setProvider(faux.provider);
+  let now = epoch;
+  const options = {
+    dir,
+    gateway,
+    models,
+    env: { CONFIG_FILE },
+    now: () => now,
+  };
+  const app = await Runtime.open(options);
+  return {
+    app,
+    faux,
+    options,
+    setTime: (time: number) => {
+      now = time;
+    },
+  };
+}
+
+async function waitFor(assertion: () => void) {
+  for (let index = 0; index < 200; index++) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      if (index === 199) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function heldResponse() {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const response: FauxResponseStep = async (_transcript, options) => {
+    const signal = options?.signal;
+    signal?.addEventListener("abort", release, { once: true });
+    try {
+      if (!signal?.aborted) await held;
+      return fauxAssistantMessage("Finished");
+    } finally {
+      signal?.removeEventListener("abort", release);
+    }
+  };
+  return { response, release };
+}
+
+const failure = fauxAssistantMessage("", {
+  stopReason: "error",
+  errorMessage: "Invalid request\nsecond line",
+});
+
+test("the scheduler claims one due durable task, skips credentials, and admits replay only once", async (t) => {
+  const held = heldResponse();
+  const { app, faux, setTime } = await executionFixture(t, [held.response]);
+  const otherScheduler = new Tasks(app);
+  try {
+    const origin = await app.create();
+    const future = app.durableTasks.create(origin, "Future goal");
+    app.store.run(
+      "UPDATE durable_tasks SET nextRun=? WHERE id=?",
+      epoch + 1,
+      future.id,
+    );
+    const first = app.durableTasks.create(origin, "First goal");
+    const second = app.durableTasks.create(origin, "Second goal");
+    const get = () => app.durableTasks.get(origin, first.id)!;
+    app.store.credentialMutation = true;
+    await app.tasks.tick();
+    assert.equal(get().state, "queued");
+    app.store.credentialMutation = false;
+
+    await Promise.all([app.tasks.tick(), otherScheduler.tick()]);
+    await app.tasks.tick();
+    assert.equal(get().state, "running");
+    assert.equal(get().attempts, 1);
+    assert.equal(get().deadlineAt, epoch + 900_000);
+    assert.equal(app.durableTasks.get(origin, second.id)?.attempts, 0);
+    assert.equal(app.durableTasks.get(origin, future.id)?.attempts, 0);
+
+    const run = get().runConversationId;
+    assert.ok(run);
+    assert.notEqual(run, origin);
+    const requestId = `durable-task:${first.id}:1`;
+    const requests = () => app.store.all<RequestRow>("SELECT * FROM requests");
+    assert.deepEqual(
+      requests().map(({ conversationId, requestId, source }) => [
+        conversationId,
+        requestId,
+        source,
+      ]),
+      [[run, requestId, "task"]],
+    );
+    const originalSubmission = requests()[0]?.submissionId;
+    assert.ok(originalSubmission);
+    const replay = await app.submit(run, requestId, first.goal, "task");
+    assert.equal(replay.submissionId, originalSubmission);
+    await waitFor(() => assert.equal(faux.state.callCount, 1));
+    setTime(epoch + 500);
+    held.release();
+    await waitFor(() => assert.equal(get().state, "done"));
+    assert.equal(get().nextRun, null);
+    assert.equal(get().lastError, null);
+    assert.equal(get().updatedAt, epoch + 500);
+    assert.equal(faux.state.callCount, 1);
+    assert.equal(requests().length, 1);
+  } finally {
+    held.release();
+    await otherScheduler.close();
+    await app.close();
+  }
+});
+
+test("retry waits for nextRun, reuses its execution conversation, and stops at maxAttempts", async (t) => {
+  const { app, setTime } = await executionFixture(t, [failure, failure]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Retry this goal");
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    app.store.run("UPDATE durable_tasks SET maxAttempts=2 WHERE id=?", task.id);
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().nextRun, epoch + 60_000));
+    assert.equal(get().state, "queued");
+    assert.equal(get().attempts, 1);
+    assert.match(get().lastError ?? "", /Invalid request second line/);
+    const run = get().runConversationId;
+    assert.ok(run);
+    assert.notEqual(run, origin);
+    setTime(epoch + 59_999);
+    await app.tasks.tick();
+    assert.equal(get().attempts, 1);
+    setTime(epoch + 60_000);
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().state, "interrupted"));
+    assert.equal(get().attempts, 2);
+    assert.equal(get().nextRun, null);
+    assert.match(get().lastError ?? "", /Invalid request second line/);
+    assert.equal(get().runConversationId, run);
+    assert.deepEqual(
+      app.store
+        .all<RequestRow>("SELECT * FROM requests ORDER BY rowid")
+        .map(({ conversationId, requestId }) => [conversationId, requestId]),
+      [
+        [run, `durable-task:${task.id}:1`],
+        [run, `durable-task:${task.id}:2`],
+      ],
+    );
+    assert.equal(app.store.all("SELECT * FROM conversations").length, 2);
+  } finally {
+    await app.close();
+  }
+});
+
+test("wall clock expiry interrupts a live attempt and does not retry it", async (t) => {
+  const held = heldResponse();
+  const { app, faux } = await executionFixture(
+    t,
+    [held.response],
+    "durable_tasks: { wall_clock_ms: 200 }",
+  );
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Wait for the deadline");
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(faux.state.callCount, 1));
+    assert.equal(get().deadlineAt, epoch + 200);
+    await waitFor(() => assert.equal(get().lastError, "budget_timeout"));
+    assert.equal(get().state, "interrupted");
+    assert.equal(get().nextRun, null);
+    await app.tasks.tick();
+    assert.equal(get().attempts, 1);
+  } finally {
+    held.release();
+    await app.close();
+  }
+});
+
+test("per-task turn budget overrides the startup default and stops further model calls", async (t) => {
+  const toolCall = (id: string) =>
+    fauxAssistantMessage(
+      [fauxToolCall("durable_task", { action: "list" }, { id })],
+      {
+        stopReason: "toolUse",
+      },
+    );
+  const { app, faux } = await executionFixture(
+    t,
+    [toolCall("allowed"), fauxAssistantMessage("Finished"), toolCall("budget")],
+    "durable_tasks: { max_turns: 2 }",
+  );
+  try {
+    const origin = await app.create();
+    const defaultTask = app.durableTasks.create(
+      origin,
+      "Use the default limit",
+    );
+    const limited = app.durableTasks.create(origin, "Use the per-task limit");
+    const get = () => app.durableTasks.get(origin, limited.id)!;
+    app.store.run(
+      "UPDATE durable_tasks SET budgetTurns=1 WHERE id=?",
+      limited.id,
+    );
+    await app.tasks.tick();
+    await waitFor(() =>
+      assert.equal(app.durableTasks.get(origin, defaultTask.id)?.state, "done"),
+    );
+    assert.equal(faux.state.callCount, 2);
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().lastError, "budget_turns"));
+    assert.equal(get().state, "interrupted");
+    assert.equal(get().nextRun, null);
+    assert.equal(get().attempts, 1);
+    assert.equal(faux.state.callCount, 3);
+  } finally {
+    await app.close();
+  }
+});
+
+test("late success cannot overwrite a terminal durable task", async (t) => {
+  const held = heldResponse();
+  const { app, faux } = await executionFixture(t, [held.response]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Wait before settling");
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(faux.state.callCount, 1));
+    const terminal = app.durableTasks.transition(
+      origin,
+      task.id,
+      "interrupted",
+      "manual stop",
+    );
+    held.release();
+    await waitFor(() =>
+      assert.equal(
+        app.store.get<RequestRow>("SELECT * FROM requests WHERE source='task'")
+          ?.status,
+        "done",
+      ),
+    );
+    await app.tasks.tick();
+    assert.deepEqual(app.durableTasks.get(origin, task.id), terminal);
+  } finally {
+    held.release();
+    await app.close();
+  }
+});
+
+test("durable task config defaults absent fields and logs invalid overrides", async (t) => {
+  const dir = await temp(t);
+  const defaults = { maxTurns: 12, wallClockMs: 900_000 };
+  const path = join(dir, "config.yaml");
+  await writeFile(path, "{}");
+  assert.deepEqual(
+    loadHarnessConfig({ CONFIG_FILE: path }).durableTasks,
+    defaults,
+  );
+  const invalid = join(dir, "invalid.yaml");
+  await writeFile(
+    invalid,
+    "durable_tasks: { max_turns: 51, wall_clock_ms: 1.5 }",
+  );
+  const log = t.mock.method(console, "error", () => {});
+  assert.deepEqual(
+    loadHarnessConfig({ CONFIG_FILE: invalid }).durableTasks,
+    defaults,
+  );
+  assert.deepEqual(
+    log.mock.calls.map(({ arguments: args }) => args[0]),
+    [
+      "Pi-Agent: durable_tasks.max_turns is invalid. Using the default.",
+      "Pi-Agent: durable_tasks.wall_clock_ms is invalid. Using the default.",
+    ],
+  );
+});
+
+test("boot interrupts a running durable task and does not replay or pick it again", async (t) => {
+  const held = heldResponse();
+  const run = await executionFixture(t, [held.response]);
+  let app = run.app;
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Do not resume this goal");
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(run.faux.state.callCount, 1));
+    assert.equal(app.durableTasks.get(origin, task.id)?.state, "running");
+    await app.close();
+    const db = new Store(run.options.dir);
+    try {
+      assert.equal(new DurableTasks(db).get(origin, task.id)?.state, "running");
+    } finally {
+      db.close();
+    }
+    run.faux.appendResponses([fauxAssistantMessage("Unexpected replay")]);
+    app = await Runtime.open(run.options);
+    const interrupted = app.durableTasks.get(origin, task.id)!;
+    assert.equal(interrupted.state, "interrupted");
+    assert.equal(interrupted.lastError, "restart");
+    assert.equal(interrupted.attempts, 1);
+    await app.tasks.tick();
+    assert.ok(interrupted.runConversationId);
+    await (
+      await app.conversation(interrupted.runConversationId)
+    ).waitForIdle(context);
+    assert.equal(run.faux.state.callCount, 1);
+    assert.deepEqual(app.durableTasks.get(origin, task.id), interrupted);
+  } finally {
+    held.release();
+    await app.close();
+  }
 });
 
 test("the registered durable_task tool scopes, bounds and deduplicates calls", async (t) => {

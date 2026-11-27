@@ -191,7 +191,7 @@ type TaskRuntime = Pick<
   Runtime,
   "store" | "create" | "conversation" | "submit"
 > &
-  Partial<Pick<Runtime, "options">>;
+  Partial<Pick<Runtime, "options" | "durableTasks">>;
 
 function text(value: unknown, field: string, limit: number) {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
@@ -1134,6 +1134,7 @@ export class Tasks {
         this.claim(task.id, now, true);
       }
       await this.dispatch();
+      await this.runtime.durableTasks?.tick();
       await this.goalPass();
       this.watchStaleRuns();
       this.sweepRuns();
