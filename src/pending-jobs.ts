@@ -897,6 +897,11 @@ export class PendingJobs {
     return seconds * 1000;
   }
 
+  /** True when this exact MCP call starts a registered async job. */
+  isDispatchTool(server: string, tool: string) {
+    return this.match(server, tool) !== undefined;
+  }
+
   /** The tool config for a dispatched call, when it is one that starts a job. */
   private match(first: string, second?: string) {
     const paths = this.candidatePaths(first, second);

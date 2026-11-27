@@ -39,6 +39,12 @@ export function whatsappApprovalKey(id: string) {
   return `whatsapp:approval:${id}`;
 }
 
+/** The request id one WhatsApp inbound message is admitted under. */
+export function whatsappRequestId(messageId: string) {
+  const safe = messageId.replace(/[^\w:.-]/g, "_").slice(0, 140);
+  return `wa:${safe || "msg"}`;
+}
+
 /** Last four digits only, for logs. Shorter runs stay as written. */
 export function maskLogText(value: string) {
   return value.replace(/\d{8,}/g, (digits) => `***${digits.slice(-4)}`);

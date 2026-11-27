@@ -90,16 +90,12 @@ test("responde aviso de pedido em andamento quando turno está ocupado (sem spam
       "-100123",
     );
     assert.ok(
-      deliveries.some((d) =>
-        d.text.includes(
-          "Got it. I will take that into account. /stop cancels.",
-        ),
-      ),
+      deliveries.some((d) => d.text.includes("your message joined that work")),
       "aviso enviado ao usuário",
     );
 
     const countBefore = deliveries.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(countBefore, 1);
 
@@ -120,7 +116,7 @@ test("responde aviso de pedido em andamento quando turno está ocupado (sem spam
       "-100123",
     );
     const countAfter = deliveriesAfter.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(countAfter, 1, "não repete aviso para a mesma ferramenta");
 
@@ -141,7 +137,7 @@ test("responde aviso de pedido em andamento quando turno está ocupado (sem spam
       "-100123",
     );
     const countCmd = deliveriesCmd.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(countCmd, 1, "comandos não disparam aviso de ocupado");
 

@@ -456,7 +456,8 @@ export function effectiveToolCalls(
   return [{ server, target: tool, args }];
 }
 
-function configuredSandboxTool() {
+/** The configured long-task tool name (empty when none is configured). */
+export function configuredSandboxTool() {
   const raw = loadHarnessConfig().sandboxTask;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
   const name = (raw as { tool?: unknown }).tool;

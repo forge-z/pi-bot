@@ -477,7 +477,7 @@ test("Entrega de job e turno agendado continuam followUp", async () => {
   }
 });
 
-test("O aviso 'Recebi, vou considerar...' é enviado uma vez por turno ocupado", async () => {
+test("O aviso de turno ocupado é enviado uma vez por turno", async () => {
   const barrier1 = new Deferred<void>();
   const barrier2 = new Deferred<void>();
   let catalogCallCount = 0;
@@ -555,7 +555,7 @@ test("O aviso 'Recebi, vou considerar...' é enviado uma vez por turno ocupado",
       "-100123",
     );
     const count1 = deliveries1.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(count1, 1, "primeiro steer envia aviso");
 
@@ -576,7 +576,7 @@ test("O aviso 'Recebi, vou considerar...' é enviado uma vez por turno ocupado",
       "-100123",
     );
     const count2 = deliveries2.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(count2, 1, "não repete aviso no mesmo turno ocupado");
 
@@ -597,7 +597,7 @@ test("O aviso 'Recebi, vou considerar...' é enviado uma vez por turno ocupado",
       "-100123",
     );
     const count3 = deliveries3.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(count3, 1, "comando não envia aviso");
 
@@ -636,7 +636,7 @@ test("O aviso 'Recebi, vou considerar...' é enviado uma vez por turno ocupado",
       "-100123",
     );
     const count4 = deliveries4.filter((d) =>
-      d.text.includes("Got it. I will take that into account. /stop cancels."),
+      d.text.includes("your message joined that work"),
     ).length;
     assert.equal(count4, 2, "novo turno ocupado envia aviso uma vez novamente");
 

@@ -93,6 +93,11 @@ export function sandboxTaskSteer(env: Env = process.env): string | undefined {
   return `For anything long-running, or when the user asks to be told when it finishes ("avise quando terminar"), call ${task.tool} once. Never poll that work in a loop.`;
 }
 
+/** The registered long-task tool's name, when that tool is available this run. */
+export function longTaskToolName(env: Env = process.env): string | undefined {
+  return readTask(env)?.tool;
+}
+
 /** `owner/*` matches an owner, `*` matches anything, otherwise an exact value. */
 export function isAllowed(value: string, patterns = ""): boolean {
   const parts = value.split("/");

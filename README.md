@@ -248,20 +248,21 @@ Replies are plain text, cut at 3800 characters. A Markdown heading becomes `*tit
 
 There is no BotFather menu. Type the command in the chat. `/help` and `/start` send this list:
 
-| Command      | What WhatsApp does                                                                                                                                                     |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/status`    | Status, tokens, and cost for this chat                                                                                                                                 |
-| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                                                                                            |
-| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                                                                                                  |
-| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                                                                                        |
-| `/stop`      | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                     |
-| `/new`       | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation |
-| `/resume`    | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                |
-| `/compact`   | Compact this chat. Text after the command is optional focus                                                                                                            |
-| `/model`     | Numbered model list. Reply with the number. Words after `/model` do not select a model; they still open the list                                                       |
-| `/thinking`  | Numbered effort list. Reply with the number                                                                                                                            |
-| `/crons`     | Schedules in this chat. Reply with the number to turn one on or off. This command does not create a schedule                                                           |
-| `/help`      | The list above                                                                                                                                                         |
+| Command      | What WhatsApp does                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/status`    | Status, tokens, and cost for this chat                                                                                                                                  |
+| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                                                                                             |
+| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                                                                                                   |
+| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                                                                                         |
+| `/stop`      | Cancels pending work in this chat, then the text is still sent to the model. A caption on a photo or voice note counts. `/cancel` is not a command                      |
+| `/queue`     | With a turn running, `/queue <message>` keeps the message and answers it in its own turn when the current one ends. With nothing running it is sent as a normal message |
+| `/new`       | New conversation in this chat. The previous one stays on the volume. Uncertain MCP results stay; `/resume` dismisses those. This chat is bound to the new conversation  |
+| `/resume`    | Resume a stuck task, or dismiss an uncertain MCP result                                                                                                                 |
+| `/compact`   | Compact this chat. Text after the command is optional focus                                                                                                             |
+| `/model`     | Numbered model list. Reply with the number. Words after `/model` do not select a model; they still open the list                                                        |
+| `/thinking`  | Numbered effort list. Reply with the number                                                                                                                             |
+| `/crons`     | Schedules in this chat. Reply with the number to turn one on or off. This command does not create a schedule                                                            |
+| `/help`      | The list above                                                                                                                                                          |
 
 A message that starts with `//` is text, not a command. One slash is removed before the model sees it, so `//status` arrives as `/status`. An unknown command gets the help list and does not start a turn. A photo or a voice note is not a command, except when the caption is `/stop`.
 
@@ -289,23 +290,28 @@ Setup prints the Upsy sign-in link. Paste the final browser URL into the bound W
 
 On Telegram the app registers this menu on start. There is nothing to set in BotFather. On WhatsApp the names are text in the chat. [WhatsApp](#whatsapp) is the list `/help` sends there: `/crons` only turns a schedule in that chat on or off.
 
-| Command      | What it does                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------- |
-| `/model`     | Provider and model for this topic                                                                 |
-| `/thinking`  | Effort for this topic                                                                             |
-| `/crons`     | Create and manage schedules                                                                       |
-| `/goal`      | Tell you once: any condition, or a PR merge (see [Persistent goals](#persistent-goals))           |
-| `/new`       | Another conversation in this topic. The previous one stays on the volume                          |
-| `/resume`    | Resume a stuck task: a crash-parked task, or an uncertain MCP result                              |
-| `/stop`      | Stop this topic                                                                                   |
-| `/compact`   | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy |
-| `/status`    | Model, this topic's tokens and cost, MCPs, the current run, and the version                       |
-| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                       |
-| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                             |
-| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                   |
-| `/help`      | This list                                                                                         |
+| Command      | What it does                                                                                                                                                            |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/model`     | Provider and model for this topic                                                                                                                                       |
+| `/thinking`  | Effort for this topic                                                                                                                                                   |
+| `/crons`     | Create and manage schedules                                                                                                                                             |
+| `/goal`      | Tell you once: any condition, or a PR merge (see [Persistent goals](#persistent-goals))                                                                                 |
+| `/new`       | Another conversation in this topic. The previous one stays on the volume                                                                                                |
+| `/resume`    | Resume a stuck task: a crash-parked task, or an uncertain MCP result                                                                                                    |
+| `/stop`      | Stop this topic                                                                                                                                                         |
+| `/queue`     | With a turn running, `/queue <message>` keeps the message and answers it in its own turn when the current one ends. With nothing running it is sent as a normal message |
+| `/compact`   | Compact this topic now. Text after the command is optional focus. Refused while the topic is busy                                                                       |
+| `/status`    | Model, this topic's tokens and cost, MCPs, the current run, and the version                                                                                             |
+| `/receipt`   | Receipt for the latest turn. `/receipt <n>` counts back from the latest (1)                                                                                             |
+| `/approvals` | Reads that are always allowed, numbered for `/revoke`                                                                                                                   |
+| `/revoke`    | `/revoke <n>` removes a rule; that read asks for approval again                                                                                                         |
+| `/help`      | This list                                                                                                                                                               |
 
 `/resume` dismisses an uncertain MCP result without repeating the call (the call may already have run) and continues a task that was parked after a crash. `/new` does not clear an uncertain result.
+
+While a turn is running, a plain message is added to the work in progress (the model sees it during the turn) and the bot answers once per turn naming what is running — the MCP call, the tool, or the turn — and for how long, plus the two exits: `/queue <message>` keeps a message for the next turn instead, and `/stop` cancels the current work. A queued message is stored on the volume, survives a restart, never runs alongside the busy turn, and is answered in its own turn as soon as the current one ends; nothing running, `/queue` is a normal message.
+
+An interactive turn (a message the user typed) has a wall clock budget: `interactive_turn_budget_seconds` in `config.yaml`, default 180, read at startup. When it runs out, the model is told once to hand the remaining work to the configured long-task job and end the turn, and every tool call other than the job dispatch is refused as a tool result the model can read. Scheduled runs (cron, once and goals) and async job delivery are exempt, and the 60-second MCP call deadline is unchanged.
 
 Receipts are stored per conversation from the time this feature is installed. They show tool counts, execution time, errors, approval requests, unresolved MCP outcomes, calls to search tools, and model tokens and cost when known. They don't store conversation text, tool arguments, page content, or keys. Set `turn_receipt.footer: true` in `config.yaml` to add a short receipt line to final chat replies; it is off by default.
 

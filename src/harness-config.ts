@@ -56,6 +56,9 @@ const SUBAGENT_DEFAULTS: SubagentsConfig = {
   thinking: "low",
 };
 
+/** Default wall clock budget for one interactive turn. */
+export const DEFAULT_INTERACTIVE_BUDGET_MS = 180_000;
+
 export interface HarnessConfig {
   mcpServers: Record<string, ServerTools>;
   asyncJobs: unknown[];
@@ -77,6 +80,12 @@ export interface HarnessConfig {
   memory: MemoryConfig;
   /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
   whatsappAttachmentUrls: AttachmentUrlPolicy;
+  /**
+   * Wall clock budget for one interactive turn, from
+   * `interactive_turn_budget_seconds`. Scheduled runs and job delivery are
+   * exempt. Invalid or missing keeps the default.
+   */
+  interactiveTurnBudgetMs: number;
 }
 
 const WEB_DEFAULTS: WebConfig = {
@@ -137,6 +146,7 @@ const EMPTY: HarnessConfig = {
   subagents: SUBAGENT_DEFAULTS,
   memory: { enabled: true },
   whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
+  interactiveTurnBudgetMs: DEFAULT_INTERACTIVE_BUDGET_MS,
 };
 const globCache = new Map<string, RegExp | null>();
 let cache: { key: string; config: HarnessConfig } | undefined;
@@ -381,7 +391,20 @@ function configFrom(
     whatsappAttachmentUrls: attachmentUrlsFrom(
       isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,
     ),
+    interactiveTurnBudgetMs: interactiveBudgetFrom(
+      raw.interactive_turn_budget_seconds,
+    ),
   };
+}
+
+/** `interactive_turn_budget_seconds`; invalid is logged and keeps the default. */
+function interactiveBudgetFrom(value: unknown) {
+  const seconds = positiveNumber(value);
+  if (value !== undefined && seconds === undefined)
+    console.error(
+      "Pi-Agent: interactive_turn_budget_seconds is invalid. Using the default.",
+    );
+  return seconds ? seconds * 1000 : DEFAULT_INTERACTIVE_BUDGET_MS;
 }
 
 function attachmentUrlsFrom(value: unknown): AttachmentUrlPolicy {

@@ -443,6 +443,7 @@ const CLEAN_HELP = [
   "/memory — show saved memory",
   "/forget <text> — Markdown: matching lines; advanced: exact key",
   "/remember <key> <fact> — save a fact under a stable key (advanced memory)",
+  "/queue <message> — with a turn running, the message waits and is answered in its own turn; otherwise it is sent as a normal message",
   "/status — status, including tokens and cost",
   "/receipt [n] — turn receipt",
   "/approvals — reads that are always allowed",
@@ -1340,6 +1341,34 @@ export class Telegram {
     }
     try {
       const command = /^\/([a-z]+)(?:\s|$)/.exec(text)?.[1];
+      // /queue: while a turn runs, the message waits for its own turn; with
+      // nothing busy it falls through as a normal message, prefix removed.
+      const queueBody =
+        command === "queue" && !image && !voice
+          ? text.slice("/queue".length).trim()
+          : undefined;
+      if (queueBody !== undefined) {
+        if (!queueBody) {
+          reply(
+            "Usage: /queue <message>. While a turn is running, the message waits and is answered in its own turn; with nothing running it is sent as a normal message.",
+          );
+          return { conversationId: id, control: true };
+        }
+        if (this.app.isTurnBusy(id)) {
+          this.app.queueMessage(
+            id,
+            `telegram:${updateId}`,
+            queueBody,
+            "telegram",
+            owner.chat,
+          );
+          reply(
+            "Queued. It will be answered in its own turn as soon as the current work ends. /stop cancels the current work.",
+          );
+          return { conversationId: id, control: true };
+        }
+        text = queueBody;
+      }
       if (command === "model" || command === "thinking") {
         await openModelMenu(
           this.app,
@@ -1453,7 +1482,7 @@ export class Telegram {
             `telegram:busy:${updateId}`,
             owner,
             id,
-            "Got it. I will take that into account. /stop cancels.",
+            this.app.busyNotice(id),
           );
           void this.flush();
         }

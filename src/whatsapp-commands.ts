@@ -6,6 +6,7 @@ import {
   bindChannelChat,
   numberedList,
   parseNumberedReply,
+  whatsappRequestId,
   type InboundMessage,
 } from "./channel.js";
 import {
@@ -30,6 +31,7 @@ const HELP = [
   "/receipt [n] — turn receipt",
   "/approvals — reads that are always allowed",
   "/revoke <n> — remove one; that read asks again",
+  "/queue <message> — with a turn running, the message waits and is answered in its own turn; otherwise it is sent as a normal message",
   "/stop — stop this chat",
   "/new — new conversation in this chat (the previous one stays)",
   "/resume — resume a stuck task, or dismiss an uncertain MCP result",
@@ -204,6 +206,36 @@ export async function takeWhatsAppCommand(
   if (name === "stop") {
     app.mcpCalls?.cancelConversation(conversationId);
     void app.stopSubagents(conversationId);
+    return false;
+  }
+  // Same as Telegram: /queue waits for its own turn while one is running.
+  if (name === "queue") {
+    if (!args) {
+      reply(
+        app,
+        message,
+        conversationId,
+        "Usage: /queue <message>. While a turn is running, the message waits and is answered in its own turn; with nothing running it is sent as a normal message.",
+      );
+      return true;
+    }
+    if (app.isTurnBusy(conversationId)) {
+      app.queueMessage(
+        conversationId,
+        whatsappRequestId(message.messageId),
+        args,
+        "whatsapp",
+        message.chatId,
+      );
+      reply(
+        app,
+        message,
+        conversationId,
+        "Queued. It will be answered in its own turn as soon as the current work ends. /stop cancels the current work.",
+      );
+      return true;
+    }
+    message.text = args;
     return false;
   }
   if (message.image || message.audio) return false;
