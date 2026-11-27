@@ -421,6 +421,104 @@ test("subagent values apply, and an invalid one is logged and keeps its default"
   }
 });
 
+test("roles use their overrides and inherit the configured subagent defaults", async () => {
+  const root = await dir();
+  try {
+    const path = join(root, "roles.yaml");
+    await writeFile(
+      path,
+      `subagents:
+  max_turns: 12
+  thinking: minimal
+roles:
+  research:
+    instructions: Verify sources.
+    readOnly: true
+    maxTurns: 1
+    thinking: high
+    tools: [mcp__server__search]
+  coder:
+    instructions: Keep changes focused.
+    readOnly: false
+    maxTurns: 20
+    tools: []
+  reviewer:
+    instructions: Check the diff.
+`,
+    );
+    assert.deepEqual(loadHarnessConfig({ CONFIG_FILE: path }).roles, {
+      research: {
+        instructions: "Verify sources.",
+        readOnly: true,
+        maxTurns: 1,
+        thinking: "high",
+        tools: ["mcp__server__search"],
+      },
+      coder: {
+        instructions: "Keep changes focused.",
+        readOnly: false,
+        maxTurns: 20,
+        thinking: "minimal",
+        tools: [],
+      },
+      reviewer: {
+        instructions: "Check the diff.",
+        readOnly: true,
+        maxTurns: 12,
+        thinking: "minimal",
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid roles are logged and ignored while other config applies", async () => {
+  const root = await dir();
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    const path = join(root, "roles.yaml");
+    await writeFile(
+      path,
+      `subagents:
+  enabled: true
+roles:
+  bad_thinking: { instructions: Look, thinking: max }
+  bad_turns: { instructions: Look, maxTurns: 21 }
+  empty: { instructions: "   " }
+  bad_read_only: { instructions: Look, readOnly: "false" }
+  bad_tools: { instructions: Look, tools: [mcp__server__tool, 123] }
+  reviewer: { instructions: Check the diff. }
+`,
+    );
+    const config = loadHarnessConfig({ CONFIG_FILE: path });
+    assert.equal(config.subagents.enabled, true);
+    assert.deepEqual(config.roles, {
+      reviewer: {
+        instructions: "Check the diff.",
+        readOnly: true,
+        maxTurns: 8,
+        thinking: "low",
+      },
+    });
+    for (const name of [
+      "bad_thinking",
+      "bad_turns",
+      "empty",
+      "bad_read_only",
+      "bad_tools",
+    ])
+      assert.match(lines.join("\n"), new RegExp(`roles\\.${name}`));
+  } finally {
+    console.error = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a declared read needs the server's own list or a trusted hint, never a name", async () => {
   const root = await dir();
   const path = join(root, "declared.yaml");

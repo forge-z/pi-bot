@@ -49,6 +49,14 @@ export interface SubagentsConfig {
   thinking: (typeof SUBAGENT_THINKING)[number];
 }
 
+export interface RoleConfig {
+  instructions: string;
+  readOnly: boolean;
+  maxTurns: number;
+  thinking: SubagentsConfig["thinking"];
+  tools?: string[];
+}
+
 const SUBAGENT_DEFAULTS: SubagentsConfig = {
   enabled: false,
   maxParallel: 3,
@@ -77,6 +85,8 @@ export interface HarnessConfig {
   turnReceiptFooter: boolean;
   /** `subagents` block. Off unless the file turns it on. */
   subagents: SubagentsConfig;
+  /** Configured specialists for `subagent` and the sandbox code task. */
+  roles?: Record<string, RoleConfig>;
   memory: MemoryConfig;
   /** `whatsapp.attachment_urls`: hosts the bot may download an MCP attachment from. */
   whatsappAttachmentUrls: AttachmentUrlPolicy;
@@ -299,6 +309,68 @@ function subagentsFrom(value: unknown): SubagentsConfig {
   return out;
 }
 
+function rolesFrom(
+  value: unknown,
+  subagents: SubagentsConfig,
+): HarnessConfig["roles"] {
+  if (value === undefined || value === null) return;
+  if (!isRecord(value)) {
+    console.error("Pi-Agent: roles must be a map. Ignoring it.");
+    return;
+  }
+  const entries: [string, RoleConfig][] = [];
+  for (const [name, entry] of Object.entries(value)) {
+    const role = isRecord(entry) ? roleFrom(entry, subagents) : undefined;
+    if (!role) {
+      console.error(`Pi-Agent: roles.${name} is invalid. Ignoring it.`);
+      continue;
+    }
+    entries.push([name, role]);
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function roleFrom(
+  entry: Record<string, unknown>,
+  defaults: SubagentsConfig,
+): RoleConfig | undefined {
+  const {
+    instructions,
+    readOnly = true,
+    maxTurns = defaults.maxTurns,
+    thinking = defaults.thinking,
+    tools,
+  } = entry;
+  const level = SUBAGENT_THINKING.find((item) => item === thinking);
+  if (
+    typeof instructions !== "string" ||
+    !instructions.trim() ||
+    typeof readOnly !== "boolean" ||
+    typeof maxTurns !== "number" ||
+    !Number.isInteger(maxTurns) ||
+    maxTurns < 1 ||
+    maxTurns > 20 ||
+    !level ||
+    (tools !== undefined &&
+      (!Array.isArray(tools) ||
+        !tools.every(
+          (tool) => typeof tool === "string" && /^mcp_[\w-]+$/.test(tool),
+        )))
+  )
+    return;
+  return {
+    instructions,
+    readOnly,
+    maxTurns,
+    thinking: level,
+    ...(tools === undefined ? {} : { tools }),
+  };
+}
+
+export function findRole(roles: HarnessConfig["roles"], name: string) {
+  return roles && Object.hasOwn(roles, name) ? roles[name] : undefined;
+}
+
 function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
   const value = isRecord(raw) ? raw : {};
   const selection = isRecord(user.memory) ? user.memory : value;
@@ -371,6 +443,8 @@ function configFrom(
       ? Object.values(jobs).filter(isRecord)
       : [];
   const timing = isRecord(raw.async_job) ? raw.async_job : {};
+  const subagents = subagentsFrom(raw.subagents);
+  const roles = rolesFrom(raw.roles, subagents);
   return {
     mcpServers,
     asyncJobs,
@@ -386,7 +460,8 @@ function configFrom(
     reactionDelayMs: reactionDelayMs(raw.reaction_delay_ms),
     turnReceiptFooter:
       isRecord(raw.turn_receipt) && raw.turn_receipt.footer === true,
-    subagents: subagentsFrom(raw.subagents),
+    subagents,
+    ...(roles ? { roles } : {}),
     memory,
     whatsappAttachmentUrls: attachmentUrlsFrom(
       isRecord(raw.whatsapp) ? raw.whatsapp.attachment_urls : undefined,

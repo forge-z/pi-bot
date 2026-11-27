@@ -350,3 +350,24 @@ subagents:
   max_turns: 8
   # off, minimal, low, medium or high.
   thinking: low
+
+# Optional named roles for subagent and sandbox_code_task. Invalid roles are
+# logged and ignored. A role's instructions are required and are added to the
+# child instructions or job prompt. Read roles use subagent. Write roles use
+# the sandbox code task with writes=true and require approval in chat.
+# roles:
+#   research:
+#     instructions: "Use primary sources and cite them."
+#     # Defaults to true. Set to false for a sandbox write role.
+#     readOnly: true
+#     # Defaults to subagents.max_turns. Allowed range is 1 to 20.
+#     maxTurns: 8
+#     # Defaults to subagents.thinking (off, minimal, low, medium or high).
+#     thinking: low
+#     # Exact model-facing MCP tool names. Omit or use [] to allow every read.
+#     tools: [mcp__server__tool]
+#   coder:
+#     instructions: "Keep changes focused and run the relevant checks."
+#     readOnly: false
+#   reviewer:
+#     instructions: "Review the diff for regressions and missing tests."
