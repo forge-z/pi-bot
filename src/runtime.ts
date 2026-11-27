@@ -20,7 +20,11 @@ import {
   outboundMedia,
   type OutboundMedia,
 } from "./outbound.js";
-import { deterministicFailure, PendingJobs } from "./pending-jobs.js";
+import {
+  deterministicFailure,
+  elapsedText,
+  PendingJobs,
+} from "./pending-jobs.js";
 import { redactSecretPatterns } from "./config.js";
 import { readWebKeys, resolveWebKeys } from "./web-config.js";
 import { createWebTools } from "./web-tools.js";
@@ -124,6 +128,11 @@ import {
 import { Settings, SettingsError } from "./settings.js";
 import { Tasks, TaskError, type TaskOrigin } from "./tasks.js";
 import {
+  DURABLE_TASK_GOAL_MAX,
+  DurableTasks,
+  DurableTaskError,
+} from "./durable-tasks.js";
+import {
   isBlankMessage,
   queueNotify,
   queueTaskTelegram,
@@ -171,6 +180,7 @@ interface RequestTelegramRoute extends TelegramRoute {
  */
 const SCHEDULED_DELIVERY =
   "The final text from this run is not delivered. Call notify to message the user. If there is nothing to report, do not call it.";
+const DURABLE_TASK_RESTART_NOTICE = "durable-task-restart:";
 /**
  * The contract of a free-objective goal round, after the delivery note. The
  * code enforces it: notify is held until goal_reached and dropped otherwise.
@@ -469,6 +479,7 @@ export class Runtime {
   readonly models: MutableModels;
   readonly settings: Settings;
   readonly tasks: Tasks;
+  readonly durableTasks: DurableTasks;
   readonly commands: Commands;
   readonly telegramChats: TelegramChats;
   harness!: Harness;
@@ -814,6 +825,7 @@ export class Runtime {
     }
     this.settings = new Settings(this);
     this.tasks = new Tasks(this);
+    this.durableTasks = new DurableTasks(this.store, () => this.now());
     this.telegramChats = new TelegramChats(this);
     options.initialize?.(this.store);
     this.commands = new Commands(this);
@@ -951,6 +963,97 @@ export class Runtime {
             ),
           ],
           tools: [
+            defineTool({
+              name: "durable_task",
+              description:
+                "Use create, list, or show for durable tasks in this conversation, where each task is stored but no work starts or is scheduled for later.",
+              parameters: Type.Object({
+                action: Type.Union([
+                  Type.Literal("create"),
+                  Type.Literal("list"),
+                  Type.Literal("show"),
+                ]),
+                goal: Type.Optional(
+                  Type.String({
+                    description: "Required for create",
+                    minLength: 1,
+                    maxLength: DURABLE_TASK_GOAL_MAX,
+                  }),
+                ),
+                id: Type.Optional(
+                  Type.String({
+                    description: "Required for show",
+                    minLength: 1,
+                    maxLength: 100,
+                  }),
+                ),
+              }),
+              replay: "safe",
+              execute: async (args, api) => {
+                const conversationId = String(api.conversationId);
+                const tasks = app!.durableTasks;
+                let result: unknown;
+                try {
+                  switch (args.action) {
+                    case "create": {
+                      const goal = args.goal ?? "";
+                      const { id, state } = tasks.create(
+                        conversationId,
+                        goal,
+                        `chat:${conversationId}:${api.taskId}:${hash(goal)}`,
+                      );
+                      result = { id, state };
+                      break;
+                    }
+                    case "list": {
+                      const now = app!.now();
+                      result = tasks.list(conversationId, 20).map((task) => ({
+                        id: task.id,
+                        state: task.state,
+                        goal: task.goal.slice(0, 120),
+                        age: elapsedText(now - task.createdAt),
+                      }));
+                      break;
+                    }
+                    case "show": {
+                      if (!args.id?.trim())
+                        throw new DurableTaskError("Task id is required");
+                      const task = tasks.get(conversationId, args.id);
+                      if (!task)
+                        throw new DurableTaskError("Durable task not found");
+                      const {
+                        id,
+                        state,
+                        goal,
+                        createdAt,
+                        updatedAt,
+                        lastError,
+                      } = task;
+                      result = {
+                        id,
+                        state,
+                        goal,
+                        createdAt,
+                        updatedAt,
+                        lastError,
+                      };
+                      break;
+                    }
+                  }
+                } catch (error) {
+                  if (!(error instanceof DurableTaskError)) throw error;
+                  return {
+                    isError: true as const,
+                    output: [{ type: "text" as const, text: error.message }],
+                  };
+                }
+                return {
+                  output: [
+                    { type: "text" as const, text: JSON.stringify(result) },
+                  ],
+                };
+              },
+            }),
             defineTool({
               name: "tasks_list",
               description:
@@ -1578,6 +1681,7 @@ export class Runtime {
         }
         cursor = recovered.next;
       } while (cursor);
+      app.queueDurableTaskRestartNotices();
       for (const row of app.store.all<RequestRow>(
         "SELECT * FROM requests WHERE status='pending' OR (source='system' AND status='deferred')",
       )) {
@@ -2603,10 +2707,19 @@ export class Runtime {
     const text = restartLimitNotice(report.task, report.restarts);
     console.warn(text);
     const conversationId = String(report.task.conversationId);
+    if (this.queueTopicNotice(conversationId, `parked:${report.task.id}`, text))
+      this.flushTelegramPending?.();
+  }
+
+  private queueTopicNotice(
+    conversationId: string,
+    requestId: string,
+    text: string,
+  ) {
     const route = telegramConversationRoute(this.store, conversationId);
     if (route)
       this.store.queueTelegram(
-        `parked:${report.task.id}`,
+        requestId,
         route.chat,
         text,
         3500,
@@ -2615,16 +2728,45 @@ export class Runtime {
       );
     else {
       const bound = channelChat(this.store, "whatsapp", conversationId);
-      if (!bound) return;
-      queueWhatsApp(
-        this.store,
-        `parked:${report.task.id}`,
-        bound.chatId,
-        text,
-        conversationId,
-      );
+      if (!bound) return false;
+      queueWhatsApp(this.store, requestId, bound.chatId, text, conversationId);
     }
-    this.flushTelegramPending?.();
+    return true;
+  }
+
+  private queueDurableTaskRestartNotices() {
+    const { store } = this;
+    // Save the interruptions and their notices together so a crash cannot lose a notice.
+    store.savepoint("durable_task_restart", () => {
+      const byConversation = new Map<string, string[]>();
+      for (const task of this.durableTasks.resumeOnBoot()) {
+        const ids = byConversation.get(task.conversationId) ?? [];
+        ids.push(task.id);
+        byConversation.set(task.conversationId, ids);
+      }
+      for (const [conversationId, ids] of byConversation) {
+        if (store.conversationDeleted(conversationId)) continue;
+        if (
+          !store.get("SELECT 1 FROM conversations WHERE id=?", conversationId)
+        )
+          continue;
+        const requestId =
+          DURABLE_TASK_RESTART_NOTICE +
+          hash(JSON.stringify([conversationId, ids.sort()]));
+        const text =
+          ids.length === 1
+            ? "1 durable task was interrupted by a restart and remains interrupted."
+            : `${ids.length} durable tasks were interrupted by a restart and remain interrupted.`;
+        const notice = store.run(
+          "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
+          conversationId,
+          requestId,
+          text,
+        );
+        if (notice.changes)
+          this.queueTopicNotice(conversationId, requestId, text);
+      }
+    });
   }
 
   /** After restart-limit failure, try a durable `continue` on the idle conversation. */
