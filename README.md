@@ -146,6 +146,10 @@ With Executor, the bot sends only a short, filtered query for explicit reference
 
 To disable memory, set `memory.enabled: false` in `$DATA_DIR/config.yaml` and restart. To use another already configured model just for curation, set `memory.curator_model.provider` and `memory.curator_model.model_id` in that file.
 
+Internal Markdown memory also supports nightly consolidation. Set `memory.consolidation.enabled: true` in `$DATA_DIR/config.yaml` and restart to schedule it at 03:00 local time (`TZ` or the system timezone). The default is off. The pass uses the curator model when configured, otherwise the bot's default model. It reviews `MEMORY.md` and the seven newest available daily notes, and writes only `MEMORY.md` when the replacement accounts for every removed line and fits within 8,000 UTF-8 bytes. Before a change, it saves the previous bytes to `$DATA_DIR/memory/backups/MEMORY-YYYY-MM-DD-HHMMSS.md` with a UTC timestamp.
+
+Run the pass on demand against an initialized data directory with `npm run memory:consolidate` in a source checkout or `npm start -- memory:consolidate` in a built install. An explicit console run is available with nightly scheduling off. It prints a JSON result with the status, byte and line counts, backup path, and model usage.
+
 ### Subagents
 
 Off by default. When on, the model can hand self-contained read-only work (broad research, long reads) to a `subagent` and keep only its final answer in the conversation. A subagent uses the same model, sees only MCP tools, and every MCP call that is not a read is refused before it is sent. `/stop` stops running subagents too. Turn it on in `$DATA_DIR/config.yaml` and restart:

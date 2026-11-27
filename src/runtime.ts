@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Memory } from "./memory.js";
+import {
+  memoryConsolidationModel,
+  runMemoryConsolidation,
+} from "./memory-consolidate.js";
 import { AdvancedMemory } from "./memory-advanced.js";
 import {
   ExecutorMemory,
@@ -674,7 +678,7 @@ export class Runtime {
       memory.enabled &&
       memory.backend !== "executor" &&
       memory.backend !== "advanced"
-    )
+    ) {
       this.memory = new Memory(
         options.dir,
         this.store,
@@ -687,6 +691,34 @@ export class Runtime {
         () => this.now(),
         (options.env ?? process.env).TZ?.trim() || "UTC",
       );
+      if (memory.consolidation?.enabled) {
+        const complete = memoryConsolidationModel(
+          this.models,
+          () => memory.curatorModel ?? this.settings.defaults(),
+        );
+        this.tasks.scheduleMemoryConsolidation(
+          (options.env ?? process.env).TZ?.trim() ||
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+          async (signal) => {
+            const result = await runMemoryConsolidation({
+              dir: options.dir,
+              store: this.store,
+              now: () => this.now(),
+              complete,
+              signal,
+            });
+            if (result.status === "applied")
+              console.info(
+                `Pi-Agent: memory consolidated (${result.bytesBefore} → ${result.bytesAfter} bytes, ${result.removed} removed, ${result.added} added).`,
+              );
+            else if (result.reason !== "no_changes" && !signal.aborted)
+              console.info(
+                `Pi-Agent: memory consolidation ${result.status} (${result.reason}).`,
+              );
+          },
+        );
+      }
+    }
     if (options.gateway instanceof McpGateway) {
       this.mcpCalls = new McpCalls(
         this.store,

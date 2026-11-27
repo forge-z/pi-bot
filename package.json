@@ -12,6 +12,7 @@
     "login": "node scripts/login.mjs",
     "dev": "node --import tsx src/main.ts",
     "start": "node dist/src/main.js",
+    "memory:consolidate": "node --import tsx src/main.ts memory:consolidate",
     "build": "tsc -p tsconfig.json && node scripts/write-build-info.mjs",
     "check": "tsc --noEmit",
     "lint": "eslint src test scripts",
