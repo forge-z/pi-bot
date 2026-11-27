@@ -8,7 +8,12 @@ import {
   revokeRememberedApproval,
 } from "./remembered-approvals.js";
 import type { Runtime } from "./runtime.js";
-import { GOAL_HELP, GoalError, parseGoalCommand } from "./goals.js";
+import {
+  GOAL_HELP,
+  GoalError,
+  formatGoalEnd,
+  parseGoalCommand,
+} from "./goals.js";
 import { TaskError } from "./tasks.js";
 import {
   telegramConversationRoute,
@@ -213,6 +218,7 @@ export async function commandGoal(
         command.objective,
         command.intervalMin,
         command.maxAttempts,
+        command.endAt ?? null,
       );
     else
       await app.tasks.createGoal(
@@ -228,7 +234,7 @@ export async function commandGoal(
   }
   if (command.action === "objective")
     return respond(
-      `Goal saved: watching for "${command.objective}". Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Nothing is sent until it happens; then you are told once and the goal ends. Use /goal list and /goal cancel <number>.`,
+      `Goal saved: watching for "${command.objective}". Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks${command.endAt !== undefined ? `, until ${formatGoalEnd(command.endAt)}` : ""}. Nothing is sent until it happens; then you are told once and the goal ends. Use /goal list and /goal cancel <number>.`,
     );
   return respond(
     `Goal saved: notify this chat when ${command.target.owner}/${command.target.repo}#${command.target.prNumber} is merged. Checking every ${command.intervalMin} minutes, at most ${command.maxAttempts} checks. Use /goal list and /goal cancel <number>.`,
