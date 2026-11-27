@@ -322,6 +322,8 @@ function memoryFrom(raw: unknown, user: Record<string, unknown>): MemoryConfig {
     enabled,
     ...(backend === "local" ? { backend } : {}),
   };
+  if (isRecord(value.consolidation) && value.consolidation.enabled === true)
+    config.consolidation = { enabled: true };
   if (value.curator_model != null) {
     const model = value.curator_model;
     if (

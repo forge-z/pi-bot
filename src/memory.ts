@@ -16,6 +16,7 @@ interface LocalMemoryConfig {
   enabled: boolean;
   backend?: "local";
   curatorModel?: { provider: string; modelId: string };
+  consolidation?: { enabled: boolean };
 }
 
 export type MemoryConfig =
@@ -51,7 +52,7 @@ const OPERATIONAL =
 const SECRET =
   /\b(?:bearer\s+\S+|sk-[\w-]{8,}|(?:password|senha|api[ _-]?key|secret|credential|credencial)\s*(?:=|:|is\b|é\b)\s*\S+)/iu;
 
-function isStorable(line: string) {
+export function isStorableMemoryLine(line: string) {
   return (
     !OPERATIONAL.test(line) &&
     !SECRET.test(line) &&
@@ -60,7 +61,7 @@ function isStorable(line: string) {
 }
 
 function filtered(text: string) {
-  return text.split(/\r?\n/).filter(isStorable).join("\n");
+  return text.split(/\r?\n/).filter(isStorableMemoryLine).join("\n");
 }
 
 function newLines(value: unknown) {
@@ -72,7 +73,7 @@ function newLines(value: unknown) {
     return line &&
       line.length <= 450 &&
       !line.startsWith("#") &&
-      isStorable(line)
+      isStorableMemoryLine(line)
       ? [line]
       : [];
   });
@@ -193,9 +194,11 @@ export class Memory {
   forget(text: string) {
     if (!text.trim()) return "Usage: /forget <text>";
     try {
-      // Cancel a snapshot taken before the command, so it cannot reintroduce a removed fact.
-      this.store.run("DELETE FROM memory_curator");
-      const count = this.files.forget(text);
+      const count = this.store.savepoint("forget_memory", () => {
+        // Cancel an older curator snapshot and hold the writer through the file edits.
+        this.store.run("DELETE FROM memory_curator");
+        return this.files.forget(text);
+      });
       return count
         ? `Removed ${count} matching memory line(s).`
         : "No matching memory lines.";
@@ -367,11 +370,14 @@ export class Memory {
         plan,
       );
     }
-    if (!this.store.conversationDeleted(job.conversationId)) {
-      for (const write of JSON.parse(plan) as MemoryWrite[])
-        this.files.apply(write);
-    }
-    this.store.run("DELETE FROM memory_curator WHERE id=1");
+    this.store.savepoint("apply_memory", () => {
+      // Reserve the SQLite writer before touching files shared with consolidation.
+      this.store.run("DELETE FROM memory_curator WHERE id=1");
+      if (!this.store.conversationDeleted(job.conversationId)) {
+        for (const write of JSON.parse(plan) as MemoryWrite[])
+          this.files.apply(write);
+      }
+    });
   }
 
   private async curate(job: Job) {

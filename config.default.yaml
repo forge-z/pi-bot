@@ -312,6 +312,8 @@ skills:
 # By default the curator uses the conversation's model; no extra model is required.
 memory:
   enabled: true
+  consolidation:
+    enabled: false
   # curator_model:
   #   provider: openai
   #   model_id: your-configured-model-id

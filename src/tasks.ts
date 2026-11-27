@@ -34,6 +34,7 @@ const RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RUN_SWEEP_MS = 60 * 60 * 1000;
 /** How often stale in-flight runs are checked for timeout. */
 const RUN_WATCH_MS = 30 * 1000;
+const MEMORY_CONSOLIDATION_CRON = "0 3 * * *";
 const DEFAULT_RUN_TIMEOUT_MIN = 30;
 /** Goal checks per tick pass: ordinary admissions run first, the rest stays due. */
 const GOAL_CHECKS_PER_TICK = 2;
@@ -283,6 +284,13 @@ export class Tasks {
   private timer?: ReturnType<typeof setInterval>;
   private closing = false;
   private ticking?: Promise<void>;
+  private memoryConsolidation?: {
+    key: string;
+    timezone: string;
+    run: (signal: AbortSignal) => Promise<void>;
+    shutdown: AbortController;
+  };
+  private memoryConsolidationWork?: Promise<void>;
   /** The one read-only GitHub GET of a goal check; replaced in tests. */
   goalFetcher: GoalFetcher = (url, init) => fetch(url, init);
   constructor(
@@ -1090,6 +1098,7 @@ export class Tasks {
       // Authentication changes delay admission; do not consume an occurrence.
       if (this.runtime.store.credentialMutation) return;
       const now = this.clock();
+      this.admitMemoryConsolidation(now);
       // PR goals stay disabled at rest and are read by goalPass below.
       const store = this.runtime.store;
       let goalRounds = 0;
@@ -1126,6 +1135,65 @@ export class Tasks {
     });
     return this.ticking;
   }
+
+  scheduleMemoryConsolidation(
+    timezone: string,
+    run: (signal: AbortSignal) => Promise<void>,
+  ) {
+    try {
+      timezone = new Intl.DateTimeFormat("en", {
+        timeZone: timezone,
+      }).resolvedOptions().timeZone;
+    } catch {
+      timezone = "UTC";
+    }
+    const key = `memory:consolidation:next:${timezone}`;
+    const now = this.clock();
+    const minuteStart = Math.floor(now / 60_000) * 60_000;
+    this.runtime.store.run(
+      `INSERT INTO meta(key,value) VALUES (?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value
+       WHERE CAST(meta.value AS INTEGER) < ?`,
+      key,
+      String(nextCron(MEMORY_CONSOLIDATION_CRON, timezone, minuteStart - 1)),
+      minuteStart,
+    );
+    this.memoryConsolidation = {
+      key,
+      timezone,
+      run,
+      shutdown: new AbortController(),
+    };
+  }
+
+  private admitMemoryConsolidation(now: number) {
+    const schedule = this.memoryConsolidation;
+    if (!schedule || this.closing || this.memoryConsolidationWork) return;
+    const store = this.runtime.store;
+    const due = store.get<{ value: string }>(
+      "SELECT value FROM meta WHERE key=? AND CAST(value AS INTEGER)<=?",
+      schedule.key,
+      now,
+    );
+    if (!due) return;
+    const next = nextCron(MEMORY_CONSOLIDATION_CRON, schedule.timezone, now);
+    const claim = store.run(
+      "UPDATE meta SET value=? WHERE key=? AND value=?",
+      String(next),
+      schedule.key,
+      due.value,
+    );
+    if (!claim.changes) return;
+    this.memoryConsolidationWork = Promise.resolve()
+      .then(() => schedule.run(schedule.shutdown.signal))
+      .catch((error: unknown) =>
+        logFailure("Memory consolidation failed", error),
+      )
+      .finally(() => {
+        this.memoryConsolidationWork = undefined;
+      });
+  }
+
   private claim(
     id: string,
     now: number,
@@ -2289,7 +2357,9 @@ export class Tasks {
     this.closing = true;
     clearInterval(this.timer);
     this.timer = undefined;
+    this.memoryConsolidation?.shutdown.abort();
     await this.tail;
+    await this.memoryConsolidationWork;
     this.refresh();
   }
 }

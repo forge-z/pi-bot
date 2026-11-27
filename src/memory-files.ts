@@ -3,17 +3,19 @@ import {
   constants,
   fsyncSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { hash } from "./store.js";
 
 export const MEMORY_FILE = "MEMORY.md";
@@ -40,6 +42,55 @@ export function memoryKey(line: string) {
 
 function missing(error: unknown) {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function syncDirectory(path: string) {
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeAtomically(
+  path: string,
+  content: string | Buffer,
+  exclusive = false,
+) {
+  const directory = dirname(path);
+  const temp = join(directory, `.write-${randomUUID()}`);
+  const fd = openSync(temp, "wx", 0o600);
+  try {
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (exclusive) {
+      linkSync(temp, path);
+      try {
+        unlinkSync(temp);
+        syncDirectory(directory);
+      } catch (error) {
+        unlinkSync(path);
+        throw error;
+      }
+    } else {
+      renameSync(temp, path);
+      syncDirectory(directory);
+    }
+  } finally {
+    try {
+      unlinkSync(temp);
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
+  }
 }
 
 export class MemoryFiles {
@@ -72,9 +123,9 @@ export class MemoryFiles {
     return join(this.dir, name);
   }
 
-  read(name: string, limit = FILE_LIMIT, fromEnd = false) {
+  private readFile(name: string, limit = FILE_LIMIT, fromEnd = false) {
     const path = this.path(name);
-    if (!this.directory(false)) return "";
+    if (!this.directory(false)) return;
     let fd: number;
     try {
       fd = openSync(
@@ -82,7 +133,7 @@ export class MemoryFiles {
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
     } catch (error) {
-      if (missing(error)) return "";
+      if (missing(error)) return;
       throw error;
     }
     try {
@@ -111,13 +162,17 @@ export class MemoryFiles {
       if (truncated) {
         while (start < length && (data[start] & 0xc0) === 0x80) start++;
       }
-      return (
-        (truncated ? DAILY_TRUNCATED : "") +
-        data.toString("utf8", start, length)
-      );
+      return { bytes: data.subarray(start, length), truncated };
     } finally {
       closeSync(fd);
     }
+  }
+
+  read(name: string, limit = FILE_LIMIT, fromEnd = false) {
+    const file = this.readFile(name, limit, fromEnd);
+    return file
+      ? (file.truncated ? DAILY_TRUNCATED : "") + file.bytes.toString("utf8")
+      : "";
   }
 
   readDailyContext(name: string) {
@@ -132,37 +187,53 @@ export class MemoryFiles {
       .reverse();
   }
 
+  recentDailyNotes(count: number) {
+    return Object.fromEntries(
+      this.dailyNames()
+        .slice(0, count)
+        .map((name) => [name, this.read(name)]),
+    );
+  }
+
+  backupDurable(expected: string, timestamp: number) {
+    const current = this.readFile(MEMORY_FILE)?.bytes;
+    if (!current?.equals(Buffer.from(expected))) return null;
+    const directory = join(this.dir, "backups");
+    let created = false;
+    try {
+      mkdirSync(directory, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    try {
+      if (!lstatSync(directory).isDirectory())
+        throw new Error("Unsafe memory backup directory");
+      const iso = new Date(timestamp).toISOString();
+      const stamp = `${iso.slice(0, 10)}-${iso.slice(11, 19).replaceAll(":", "")}`;
+      const path = join(directory, `MEMORY-${stamp}.md`);
+      syncDirectory(this.dir);
+      writeAtomically(path, current, true);
+      return path;
+    } catch (error) {
+      if (created) {
+        try {
+          rmdirSync(directory);
+        } catch {
+          // Preserve the backup error if cleanup is blocked or the directory is in use.
+        }
+      }
+      throw error;
+    }
+  }
+
   apply({ name, before, after }: MemoryWrite) {
     const path = this.path(name);
     const current = this.read(name);
-    if (current === after || hash(current) !== before) return;
+    if (current === after || hash(current) !== before) return false;
     this.directory(true);
-    const temp = join(this.dir, `.write-${randomUUID()}`);
-    const fd = openSync(temp, "wx", 0o600);
-    try {
-      try {
-        writeFileSync(fd, after);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(temp, path);
-      const directory = openSync(
-        this.dir,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
-      try {
-        fsyncSync(directory);
-      } finally {
-        closeSync(directory);
-      }
-    } finally {
-      try {
-        unlinkSync(temp);
-      } catch (error) {
-        if (!missing(error)) throw error;
-      }
-    }
+    writeAtomically(path, after);
+    return true;
   }
 
   search(query: string) {

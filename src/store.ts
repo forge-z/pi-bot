@@ -60,9 +60,14 @@ export class Store {
   readonly db: DatabaseSync;
   credentialMutation = false;
   providerAdmissions = 0;
-  constructor(dir: string) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  constructor(
+    dir: string,
+    { initialize = true }: { initialize?: boolean } = {},
+  ) {
+    if (initialize) mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(`${dir}/app.sqlite`, { timeout: 5000 });
+    // A console command can join a live app's database without running recovery.
+    if (!initialize) return;
     const hadGrants = !!this.get(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_grants'",
     );

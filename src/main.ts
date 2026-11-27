@@ -12,7 +12,12 @@ import { DatabaseSync } from "node:sqlite";
 import { Runtime } from "./runtime.js";
 import { McpGateway } from "./mcp.js";
 import { LongCallHeartbeat } from "./heartbeat.js";
-import { loadHarnessConfig } from "./harness-config.js";
+import { loadHarnessConfig, type HarnessConfig } from "./harness-config.js";
+import {
+  memoryConsolidationModel,
+  runMemoryConsolidation,
+} from "./memory-consolidate.js";
+import { modelDefaultsKey, type ModelSettings } from "./settings.js";
 import {
   readConfig,
   bootstrapModels,
@@ -334,11 +339,72 @@ export async function startWhatsApp(input: {
   };
 }
 
+async function consolidateMemoryFromConsole(
+  dir: string,
+  memory: HarnessConfig["memory"],
+) {
+  if (!memory.enabled || (memory.backend && memory.backend !== "local"))
+    throw new Error("Memory consolidation requires Internal Markdown memory.");
+  if (!existsSync(join(dir, "app.sqlite")))
+    throw new Error(
+      "Memory consolidation requires an initialized bot data directory.",
+    );
+  const store = new Store(dir, { initialize: false });
+  try {
+    const result = await runMemoryConsolidation({
+      dir,
+      store,
+      complete: async (context, signal) => {
+        const stored = readStoredSetup(dir);
+        const credentials = new SqlCredentials(store);
+        const models = await bootstrapModels(credentials, process.env, {
+          stored,
+        });
+        signal.throwIfAborted();
+        const complete = memoryConsolidationModel(models, async () => {
+          if (memory.curatorModel) return memory.curatorModel;
+          const row = store.get<{ value: string }>(
+            "SELECT value FROM meta WHERE key=?",
+            modelDefaultsKey(),
+          );
+          if (row?.value) {
+            try {
+              const saved = JSON.parse(row.value) as ModelSettings;
+              if (models.getModel(saved.provider, saved.modelId)) return saved;
+            } catch {
+              // A malformed default falls through to the setup selection.
+            }
+          }
+          const selected = await preferredVolumeSelection(
+            models,
+            credentials,
+            stored,
+          );
+          if (selected) return selected;
+          const provider = models.getProviders()[0]?.id ?? LLM_PROVIDER_ID;
+          const modelId = models.getModels(provider)[0]?.id;
+          if (!modelId)
+            throw new Error("Memory consolidation model unavailable");
+          return { provider, modelId };
+        });
+        return complete(context, signal);
+      },
+    });
+    console.log(JSON.stringify(result));
+  } finally {
+    store.close();
+  }
+}
+
 async function startProcess() {
   process.umask(0o077);
   try {
-    loadHarnessConfig();
+    const harness = loadHarnessConfig();
     const dir = resolve((process.env.DATA_DIR ?? "data").trim() || "data");
+    if (process.argv[2] === "memory:consolidate") {
+      await consolidateMemoryFromConsole(dir, harness.memory);
+      return;
+    }
     const {
       models,
       stored,
