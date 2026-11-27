@@ -25,9 +25,9 @@
     "compose:up": "bash scripts/compose-up.sh"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.6.1",
-    "@earendil-works/pi-ai": "1.6.1",
-    "@earendil-works/pi-durable": "1.6.1",
+    "@earendil-works/chord": "1.7.0",
+    "@earendil-works/pi-ai": "1.7.0",
+    "@earendil-works/pi-durable": "1.7.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@mozilla/readability": "0.6.0",
     "@whiskeysockets/baileys": "7.0.0-rc14",
