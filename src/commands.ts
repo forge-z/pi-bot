@@ -59,6 +59,19 @@ export function commandRevoke(
   return revokeRememberedApproval(rememberedApprovals(app), argument);
 }
 
+/**
+ * `/job`: the latest async job of this conversation, from what the poller stored.
+ * No model turn and no MCP call; honest about a stale observation.
+ */
+export function commandJob(
+  app: Runtime,
+  conversationId: string,
+  access: CommandAccess,
+) {
+  app.commands.authorize(conversationId, access);
+  return app.pendingJobs.jobLine(conversationId);
+}
+
 export interface GoalCheckAuthority {
   route: TelegramRoute;
   authorizationVersion: string;

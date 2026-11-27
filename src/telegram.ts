@@ -48,6 +48,7 @@ import {
   commandApprovals,
   commandReceipt,
   commandRevoke,
+  commandJob,
   commandGoal,
   freezeGoalCheckAuthority,
   goalCheckAuthorized,
@@ -446,6 +447,7 @@ const CLEAN_HELP = [
   "/queue <message> — with a turn running, the message waits and is answered in its own turn; otherwise it is sent as a normal message",
   "/status — status, including tokens and cost",
   "/receipt [n] — turn receipt",
+  "/job — the latest async job in this topic: state, elapsed time, PR or error, from what the poller stored; it says so when no fresh check has arrived",
   "/approvals — reads that are always allowed",
   "/revoke <n> — remove one; that read asks again",
   "/help — help",
@@ -1452,6 +1454,8 @@ export class Telegram {
         const cleared = this.app.telegramChats.reload(owner);
         const resumed = await this.app.resumeParked(id);
         reply(resumeReport(cleared, resumed));
+      } else if (text === "/job") {
+        reply(commandJob(this.app, id, { source: "telegram", ...owner }));
       } else if (text === "/help" || text === "/start") reply(CLEAN_HELP);
       else if (
         text.startsWith("/") &&

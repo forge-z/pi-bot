@@ -47,6 +47,44 @@ export function formatTickClock(
   return `${pick("hour")}:${pick("minute")}:${pick("second")}`;
 }
 
+/** Short elapsed: 40s, 12m, 1h 05m. */
+export function elapsedText(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/** The PR URL a result carries, only when it is a whole GitHub URL. */
+function prUrlOf(value: unknown): string | undefined {
+  const pr = asRecord(value)?.pr;
+  return typeof pr === "string" &&
+    /^https:\/\/github\.com\/\S+$/.test(pr.trim())
+    ? pr.trim()
+    : undefined;
+}
+
+/** The PR URL kept in `pending_jobs.result`, at either nesting the writers use. */
+function storedPrUrl(raw: string | null): string | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  for (const candidate of [
+    parsed,
+    asRecord(parsed)?.result,
+    asRecord(asRecord(parsed)?.result)?.result,
+  ]) {
+    const pr = prUrlOf(candidate);
+    if (pr) return pr;
+  }
+  return undefined;
+}
+
 /** One line of `pending_jobs`: a run registered when the tool was dispatched. */
 interface PendingJob {
   id: number;
@@ -1308,6 +1346,8 @@ export class PendingJobs {
       typeof observed === "string" ? null : (observed.error ?? null);
     // A successful read clears only the poll counter. Delivery keeps its own.
     row.poll_attempts = 0;
+    const previous = row.job_state ?? null;
+    row.job_state = state;
     this.app.store.run(
       `UPDATE pending_jobs SET job_state=?, last_status=?, last_seen_at=?,
          last_error=?, poll_attempts=0, next_poll_at=? WHERE id=?`,
@@ -1320,6 +1360,69 @@ export class PendingJobs {
         : Date.now() + this.backoffMs(manifest, 0),
       row.id,
     );
+    this.noteTransition(row, state, previous);
+  }
+
+  /**
+   * One short line per observed non-terminal state change, once per job and state:
+   * the request id `job:<row>:state:<state>` is the dedupe. `unknown` is not an
+   * observation; a terminal state announces inside its single delivery prompt; and
+   * once the timeout notice speaks (or is about to), the chat already heard the job
+   * is alive, so no announce duplicates it.
+   */
+  private noteTransition(
+    row: PendingJob,
+    state: JobState,
+    previous: string | null,
+  ) {
+    if (state === "unknown" || isTerminal(state) || state === previous) return;
+    if (row.notified_at) return;
+    if (Date.now() - row.created_at > this.timeoutMs()) return;
+    void this.announce(
+      row.conversation_id,
+      `job:${row.id}:state:${state}`,
+      `Job ${row.id} (${row.run_id ?? `row ${row.id}`}) is ${state.toUpperCase()} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
+    );
+  }
+
+  /**
+   * `/job`: the latest job of this conversation, from what the poller stored — no
+   * model turn, no MCP call. A terminal state is final; anything older than the
+   * poll interval says so instead of pretending to be current.
+   */
+  jobLine(conversationId: string): string {
+    this.ensure();
+    const row = this.app.store.get<PendingJob>(
+      "SELECT * FROM pending_jobs WHERE conversation_id=? ORDER BY id DESC LIMIT 1",
+      conversationId,
+    );
+    if (!row) return "No asynchronous job in this conversation yet.";
+    const state = row.job_state as JobState | null;
+    const terminal = state !== null && isTerminal(state);
+    const parts = [
+      `Job ${row.id} (${row.run_id ? `run ${row.run_id}` : "no provider id yet"}): ${state ? state.toUpperCase() : "registered, not observed yet"}, ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
+    ];
+    if (state === "done") {
+      const pr = storedPrUrl(row.result);
+      if (pr) parts.push(`PR: ${pr}`);
+    }
+    if (state === "failed" && row.last_error)
+      parts.push(`Error: ${row.last_error}`);
+    if (row.last_seen_at)
+      parts.push(
+        `Last observed ${formatTickClock(row.last_seen_at, this.env)} (${elapsedText(Date.now() - row.last_seen_at)} ago).`,
+      );
+    if (!terminal && row.delivered_at === null) {
+      if (!row.last_seen_at)
+        parts.push(
+          "No observation has arrived yet; this is the registration, not a live status.",
+        );
+      else if (Date.now() - row.last_seen_at > this.pollMs())
+        parts.push(
+          "No fresh check has arrived yet (the last one is older than the poll interval); this is the stored observation, not a live one.",
+        );
+    }
+    return parts.join(" ");
   }
 
   private concreteAccount(entry: JobTool): string | undefined {
@@ -2467,9 +2570,19 @@ export class PendingJobs {
     const shown = redactSecretPatterns(
       this.app.options.redact?.(resultText ?? "") ?? resultText ?? "",
     );
+    // The terminal announce line: the delivery prompt already carries the PR or the
+    // error, so the job id, the state and the elapsed time ride in this one line
+    // instead of a second turn.
+    const stateWord = outcome.result
+      ? `is ${outcome.result.state.toUpperCase()}`
+      : forcedOutcome === "failed" || forcedOutcome === "cancelled"
+        ? `is ${forcedOutcome.toUpperCase()}`
+        : "ended";
+    const headline = `Job ${row.id} (${deliveryRow.run_id ?? "unknown"}) ${stateWord} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`;
     const prompt =
       resultText !== undefined
         ? [
+            headline,
             "An asynchronous job started in this topic has finished.",
             row.goal ? `Goal: ${row.goal}` : "",
             `Status: ${outcome.result?.status ?? "COMPLETED"}`,
@@ -2481,8 +2594,10 @@ export class PendingJobs {
           ]
             .filter(Boolean)
             .join("\n")
-        : (outcome.notice ??
-          "An asynchronous job started in this topic did not return a result.");
+        : `${
+            outcome.notice ??
+            "An asynchronous job started in this topic did not return a result."
+          }\n${headline}`;
     const delivery = await this.submit(deliveryRow, prompt);
     const now = Date.now();
     if (delivery === "sent" || delivery === "silent") {
