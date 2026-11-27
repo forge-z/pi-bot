@@ -16,6 +16,7 @@ import {
   GOAL_ATTEMPTS_MAX,
   GOAL_INTERVAL_MAX,
   GOAL_INTERVAL_MIN,
+  formatGoalEnd,
   observePrMerged,
   type GoalFetcher,
   type GoalTarget,
@@ -54,6 +55,7 @@ const GOAL_COLUMNS: Record<string, string> = {
   goalEvidence: "TEXT",
   goalAttempts: "INTEGER NOT NULL DEFAULT 0",
   goalMaxAttempts: "INTEGER",
+  goalEndAt: "INTEGER",
 };
 const GOAL_EVERY = /^every-([1-9][0-9]{0,4})m$/;
 const GOAL_EVIDENCE_MAX = 2000;
@@ -163,6 +165,8 @@ interface GoalColumns {
   goalAttempts: number;
   /** NULL means the default cap, GOAL_ATTEMPTS_MAX. */
   goalMaxAttempts: number | null;
+  /** Explicit end time in epoch ms; NULL when the user stated none. */
+  goalEndAt: number | null;
 }
 type TaskRow = Omit<Task, "enabled"> &
   GoalColumns & { enabled: number; deleted: number };
@@ -1099,6 +1103,10 @@ export class Tasks {
       if (this.runtime.store.credentialMutation) return;
       const now = this.clock();
       this.admitMemoryConsolidation(now);
+      // An explicit end time ends its goal before any due check runs, with
+      // the same terminal path and single notification as an exhausted cap.
+      if (this.runtime.options?.phoneGateway !== "whatsapp")
+        this.expireGoals(now);
       // PR goals stay disabled at rest and are read by goalPass below.
       const store = this.runtime.store;
       let goalRounds = 0;
@@ -1458,7 +1466,7 @@ export class Tasks {
           Partial<Omit<GoalRow, "taskId">> & { prTaskId: string | null }
       >(
         `SELECT t.id AS taskId,t.conversationId,t.title,t.prompt,t.enabled,t.nextRun,t.lastError,
-           t.goalState,t.goalEvidence,t.goalAttempts,t.goalMaxAttempts,
+           t.goalState,t.goalEvidence,t.goalAttempts,t.goalMaxAttempts,t.goalEndAt,
            g.taskId AS prTaskId,g.owner,g.repo,g.prNumber,g.intervalMin,g.maxAttempts,g.attempts,
            g.state,g.reason,g.lastResult,g.rateLimitedAt
          FROM tasks t LEFT JOIN task_goals g ON g.taskId=t.id
@@ -1478,6 +1486,7 @@ export class Tasks {
         goalEvidence: row.goalEvidence,
         goalAttempts: row.goalAttempts,
         goalMaxAttempts: row.goalMaxAttempts,
+        goalEndAt: row.goalEndAt,
         pr: row.prTaskId
           ? {
               taskId: row.prTaskId,
@@ -1522,7 +1531,24 @@ export class Tasks {
               : state === "met"
                 ? `reached: ${truncateTaskSummary(goal.goalEvidence ?? "", 200)}`
                 : (goal.lastError ?? state);
-        return `${index + 1}. [${goal.pr ? "pr" : "goal"}] ${goalLabel(goal)} — ${state} — attempt ${attempts}/${max} — ${next}`;
+        // An explicit limit shows what is left; the default cap stays silent.
+        const left: string[] = [];
+        if (!goal.pr && goal.goalMaxAttempts !== null)
+          left.push(
+            `${Math.max(goal.goalMaxAttempts - goal.goalAttempts, 0)} checks left`,
+          );
+        if (!goal.pr && goal.goalEndAt !== null) {
+          const remaining = goal.goalEndAt - this.clock();
+          left.push(
+            `ends ${formatGoalEnd(goal.goalEndAt)}, ${
+              remaining < 86_400_000
+                ? `${Math.max(Math.ceil(remaining / 3_600_000), 0)} hours`
+                : `${Math.ceil(remaining / 86_400_000)} days`
+            } left`,
+          );
+        }
+        const limitText = left.length ? ` — ${left.join(", ")}` : "";
+        return `${index + 1}. [${goal.pr ? "pr" : "goal"}] ${goalLabel(goal)} — ${state} — attempt ${attempts}/${max}${limitText} — ${next}`;
       })
       .join("\n");
   }
@@ -1767,13 +1793,15 @@ export class Tasks {
   }
 
   /** A free objective becomes a kind='goal' task: the objective is its prompt,
-   * and the ordinary tick runs it as a model round until goal_reached. */
+   * and the ordinary tick runs it as a model round until goal_reached. An
+   * explicit end time (epoch ms, null when none) ends the goal as expired. */
   createObjectiveGoal(
     conversationId: string,
     origin: TaskOrigin,
     objective: string,
     intervalMin: number,
     maxAttempts: number,
+    endAt: number | null,
   ): Promise<void> {
     return this.serialize(async () => {
       if (
@@ -1784,12 +1812,16 @@ export class Tasks {
         throw new TaskError("The goal origin does not match this conversation");
       // Same durable receipt as a PR goal: a replayed update confirms, never duplicates.
       const creationKey = `goal:${conversationId}:${origin.requestId}`;
-      const signature = JSON.stringify({
+      // endAt is omitted when null, so a pre-end-time replay receipt keeps
+      // its signature.
+      const signatureInput: Record<string, unknown> = {
         conversationId,
         objective,
         intervalMin,
         maxAttempts,
-      });
+      };
+      if (endAt !== null) signatureInput.endAt = endAt;
+      const signature = JSON.stringify(signatureInput);
       const receipt = this.runtime.store.get<{ input: string }>(
         "SELECT input FROM task_creations WHERE creationKey=?",
         creationKey,
@@ -1811,6 +1843,8 @@ export class Tasks {
         maxAttempts > GOAL_ATTEMPTS_MAX
       )
         throw new TaskError("Invalid goal cadence or check limit");
+      if (endAt !== null && (!Number.isInteger(endAt) || endAt <= 0))
+        throw new TaskError("Invalid goal end time");
       await this.runtime.conversation(conversationId);
       if (this.runtime.store.conversationDeleted(conversationId))
         throw new TaskError(
@@ -1842,7 +1876,7 @@ export class Tasks {
       try {
         // Enabled with nextRun now: the next tick runs the first check.
         this.runtime.store.run(
-          "INSERT INTO tasks(id,title,prompt,conversationId,kind,schedule,timezone,delivery,enabled,nextRun,destinationChat,destinationUser,destinationBotId,destinationMessageThreadId,destinationReason,originSource,originConversationId,originRequestId,goalMaxAttempts) VALUES (?,?,?,?,'goal',?,'UTC','web_telegram',1,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO tasks(id,title,prompt,conversationId,kind,schedule,timezone,delivery,enabled,nextRun,destinationChat,destinationUser,destinationBotId,destinationMessageThreadId,destinationReason,originSource,originConversationId,originRequestId,goalMaxAttempts,goalEndAt) VALUES (?,?,?,?,'goal',?,'UTC','web_telegram',1,?,?,?,?,?,?,?,?,?,?,?)",
           id,
           title,
           prompt,
@@ -1857,7 +1891,9 @@ export class Tasks {
           origin.source,
           origin.conversationId,
           origin.requestId,
-          maxAttempts,
+          // The default cap is stored as NULL: only an explicit limit shows in /goal list.
+          maxAttempts === GOAL_ATTEMPTS_MAX ? null : maxAttempts,
+          endAt,
         );
         this.runtime.store.run(
           "INSERT INTO task_creations VALUES (?,?,?)",
@@ -1959,10 +1995,13 @@ export class Tasks {
     this.blockGoal(row);
   }
 
-  private blockGoal(task: TaskRow) {
+  private blockGoal(
+    task: TaskRow,
+    reason = `The condition was not observed after ${
+      task.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX
+    } checks: the check limit was reached.`,
+  ) {
     const store = this.runtime.store;
-    const max = task.goalMaxAttempts ?? GOAL_ATTEMPTS_MAX;
-    const reason = `The condition was not observed after ${max} checks.`;
     store.savepoint("goal_block", () => {
       const changed = store.run(
         "UPDATE tasks SET goalState='blocked',enabled=0,nextRun=NULL,lastError=? WHERE id=? AND COALESCE(goalState,'pending')='pending'",
@@ -1982,6 +2021,24 @@ export class Tasks {
           "goal-blocked",
         );
     });
+  }
+
+  /** An explicit end time, reached: the goal ends expired before any check.
+   * Reuses blockGoal's terminal path and single-notification guarantee. */
+  private expireGoals(now: number) {
+    const store = this.runtime.store;
+    for (const task of store.all<TaskRow>(
+      `SELECT * FROM tasks t WHERE t.deleted=0 AND t.enabled=1
+         AND ${OBJECTIVE_GOAL("t")} AND COALESCE(goalState,'pending')='pending'
+         AND goalEndAt IS NOT NULL AND goalEndAt<=?`,
+      now,
+    ))
+      this.blockGoal(
+        task,
+        `The goal expired on ${formatGoalEnd(
+          task.goalEndAt!,
+        )} after ${task.goalAttempts} checks.`,
+      );
   }
 
   /** Bounded goal work in the ordinary tick; the rest stays due, uncounted. */

@@ -2,6 +2,8 @@
  * read-only GitHub observer. All durable goal state lives in Tasks
  * (src/tasks.ts); nothing here owns a timer, store or runner. */
 
+import { assistantTimeZone } from "./runtime.js";
+
 // GitHub allows 60 unauthenticated requests/hour per IP, shared by every goal
 // on the volume. A 60-minute check is 1 request/hour, so up to 60 simultaneous
 // goals stay under that limit. Only new creations are bounded: a goal stored
@@ -88,21 +90,26 @@ export type GoalCommand =
       objective: string;
       intervalMin: number;
       maxAttempts: number;
+      /** Explicit end time in epoch ms; present only when the user stated one. */
+      endAt?: number;
     };
 
 export const GOAL_HELP = [
   "Persistent goals stay silent until something happens, tell you once, and end.",
   "/goal avise quando o relatório aparecer no Drive a cada 2 horas — any condition, checked by the assistant on that schedule.",
+  "/goal avise quando chover a cada 2 horas no maximo 20 checagens ate 30/11 — an explicit check limit and end time are understood and enforced; without them a goal runs up to " +
+    GOAL_ATTEMPTS_MAX +
+    " checks.",
   "/goal acompanhe https://github.com/forge-z/pi-bot/pulls a cada 1 hora ate a PR #66 ser publicada. — a public GitHub PR is checked directly, with no model round.",
   `/goal pr owner/repo#123 <minutes ${GOAL_INTERVAL_MIN}-${GOAL_INTERVAL_MAX}> <max checks 1-${GOAL_ATTEMPTS_MAX}> — the structured PR form, still fully supported.`,
   "/goal list — goals in this chat with status, next check and attempts.",
   "/goal check <number> — check that goal once now; it does not count as an attempt.",
   "/goal cancel <number> — stop a goal. No further checks or messages.",
-  "Only a merged PR completes a PR goal; a closed-unmerged PR or exhausted checks block it. Any goal is blocked when its checks run out.",
+  "Only a merged PR completes a PR goal; a closed-unmerged PR or exhausted checks block it. Any goal is blocked when its checks run out or its end time is reached.",
 ].join("\n");
 
 /** Parse the literal `/goal` arguments; malformed input throws GoalError. */
-export function parseGoalCommand(args: string): GoalCommand {
+export function parseGoalCommand(args: string, now = Date.now()): GoalCommand {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return { action: "help" };
   if (parts[0] === "list") {
@@ -133,7 +140,7 @@ export function parseGoalCommand(args: string): GoalCommand {
     const maxAttempts = bounded(parts[3]!, 1, GOAL_ATTEMPTS_MAX, "max checks");
     return { action: "create", target, intervalMin, maxAttempts };
   }
-  return parseNaturalGoal(args);
+  return parseNaturalGoal(args, now);
 }
 
 function collectNaturalTarget(text: string): {
@@ -219,18 +226,148 @@ function collectNaturalTarget(text: string): {
 const INTERVAL_RE =
   /\b(?:a\s+cada|cada|every)\s+([0-9]{1,4})\s+(minutos?|minutes?|min|horas?|hours?)\b|\b([0-9]{1,4})\s+em\s+([0-9]{1,4})\s+(minutos?|min|horas?)\b/gi;
 // Whole numbers only: an out-of-range cap reaches bounded() and is refused,
-// never truncated to its first digits or dropped to the default.
-const MAX_RE =
-  /\bat[eé]\s+([0-9][0-9.]*)\s+(?:verifica[çc][õo]es|checagens|checks)\b|\bno\s+m[áa]ximo\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b|\bmax(?:imum)?\s+([0-9][0-9.]*)(?:\s*(?:x|vezes))?\b/gi;
+// never truncated to its first digits or dropped to the default. Every
+// alternative captures its number: `ate N`, `N no maximo`, `no maximo N`,
+// `at most N`, `max N`, each with an optional unit. No number, no limit.
+const MAX_RE = new RegExp(
+  [
+    String.raw`\bat[eé]\s+([0-9][0-9.]*)\s+(?:verifica[çc][õo]es|checagens?|checks?)\b`,
+    String.raw`\b([0-9][0-9.]*)\s+(?:verifica[çc][õo]es|checagens?|checks?)\s+no\s+m[áa]ximo\b`,
+    String.raw`\bno\s+m[áa]ximo\s+([0-9][0-9.]*)(?:\s*(?:x|vezes|checagens?|checks?|verifica[çc][õo]es))?\b`,
+    String.raw`\bat\s+most\s+([0-9][0-9.]*)(?:\s*(?:x|vezes|checagens?|checks?|verifica[çc][õo]es))?\b`,
+    String.raw`\bmax(?:imum)?\s+([0-9][0-9.]*)(?:\s*(?:x|vezes|checagens?|checks?|verifica[çc][õo]es))?\b`,
+  ].join("|"),
+  "gi",
+);
+/** An explicit end time: an ISO date (2026-12-05), a day/month date (30/11)
+ * or a `por N dias|horas` duration, each with an optional ate/until. */
+const END_DATE_RE =
+  /(?:\bate[eé]?\s+|\buntil\s+)\b([0-9]{4})-([0-9]{2})-([0-9]{2})\b|(?:\bate[eé]?\s+|\buntil\s+)\b([0-9]{1,2})\/([0-9]{1,2})\b/g;
+const END_DURATION_RE = /\bpor\s+([0-9]{1,4})\s+(dias?|horas?)\b/gi;
+
+/** Zone offset of `at` (ms), from the zone's wall clock read back as UTC. */
+function zoneOffsetMs(timeZone: string, at: number) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(at);
+  const get = (type: string) =>
+    Number(parts.find((part) => part.type === type)!.value);
+  return (
+    Date.UTC(
+      get("year"),
+      get("month") - 1,
+      get("day"),
+      get("hour"),
+      get("minute"),
+      get("second"),
+    ) -
+    Math.floor(at / 1000) * 1000
+  );
+}
+
+/** Last instant of a calendar day in a zone, in epoch ms; null when that day
+ * does not exist (e.g. 31/02). */
+export function goalEndOfDay(
+  timeZone: string,
+  year: number,
+  month: number,
+  day: number,
+): number | null {
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== day
+  )
+    return null;
+  const nextMidnight = Date.UTC(year, month - 1, day + 1);
+  let end = nextMidnight;
+  // Two passes settle any offset change between the guess and midnight.
+  for (let pass = 0; pass < 2; pass += 1)
+    end = nextMidnight - zoneOffsetMs(timeZone, end);
+  return end - 1;
+}
+
+/** The calendar date an end timestamp names, YYYY-MM-DD in the bot timezone. */
+export function formatGoalEnd(endAt: number) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: assistantTimeZone(),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(endAt);
+}
+
+/** One explicit end time, as epoch ms, and the phrases that resolved to it.
+ * Weekday names, phrases without a number and impossible dates are not end
+ * times: nothing is invented and their words stay in the objective. */
+function parseGoalEnd(text: string, now: number) {
+  const timeZone = assistantTimeZone();
+  const ends = new Set<number>();
+  const phrases: string[] = [];
+  for (const match of text.matchAll(END_DATE_RE)) {
+    const [whole, iso, isoMonth, isoDay, day, month] = match;
+    let end: number | null;
+    if (iso !== undefined)
+      end = goalEndOfDay(
+        timeZone,
+        Number(iso),
+        Number(isoMonth),
+        Number(isoDay),
+      );
+    else {
+      // Brazilian day/month order, resolved to the next occurrence.
+      const year = Number(
+        new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" }).format(
+          now,
+        ),
+      );
+      end =
+        goalEndOfDay(timeZone, year, Number(month), Number(day)) ??
+        goalEndOfDay(timeZone, year + 1, Number(month), Number(day));
+      if (end !== null && end < now)
+        end = goalEndOfDay(timeZone, year + 1, Number(month), Number(day));
+    }
+    if (end === null) continue;
+    ends.add(end);
+    phrases.push(whole);
+  }
+  for (const match of text.matchAll(END_DURATION_RE)) {
+    ends.add(
+      now +
+        (/^h/i.test(match[2]!)
+          ? Number(match[1]) * 3_600_000
+          : Number(match[1]) * 86_400_000),
+    );
+    phrases.push(match[0]);
+  }
+  if (ends.size > 1)
+    throw new GoalError(
+      "Invalid goal request: conflicting end times. Name exactly one end time.",
+    );
+  const endAt = ends.size ? [...ends][0]! : null;
+  if (endAt !== null && endAt < now)
+    throw new GoalError(
+      "Invalid goal request: the end time is already in the past.",
+    );
+  return { endAt, phrases: endAt === null ? [] : phrases };
+}
 
 /** Deterministic fallback: parse a natural-language /goal request, no LLM.
  * Any GitHub PR signal (a repository link, owner/repo#N, "PR 12", a bare #N)
  * keeps the PR goal and its refusals; only text with none of them becomes a
  * free objective, so a half-written PR request is refused, never reread. */
-function parseNaturalGoal(args: string): GoalCommand {
+function parseNaturalGoal(args: string, now: number): GoalCommand {
   const { repos, prs, bareHash, text } = collectNaturalTarget(args);
   if (!repos.size && !prs.size && bareHash === null)
-    return parseObjectiveGoal(args);
+    return parseObjectiveGoal(args, now);
   if (repos.size > 1) {
     const [a, b] = [...repos];
     throw new GoalError(
@@ -269,11 +406,14 @@ function parseNaturalGoal(args: string): GoalCommand {
   };
 }
 
-/** A free objective: the sentence minus its cadence and cap is the prompt. */
-function parseObjectiveGoal(args: string): GoalCommand {
-  const objective = args
-    .replace(INTERVAL_RE, " ")
-    .replace(MAX_RE, " ")
+/** A free objective: the sentence minus its cadence and its recognized limit
+ * phrases is the prompt. Extraction never rewords: unmatched words stay. */
+function parseObjectiveGoal(args: string, now: number): GoalCommand {
+  const { endAt, phrases } = parseGoalEnd(args, now);
+  let objective = args.replace(INTERVAL_RE, " ").replace(MAX_RE, " ");
+  // Only phrases that resolved to the end time leave the objective.
+  for (const phrase of phrases) objective = objective.replace(phrase, " ");
+  objective = objective
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/^[\s,;:.—–-]+|[\s,;:.—–-]+$/g, "");
@@ -286,7 +426,9 @@ function parseObjectiveGoal(args: string): GoalCommand {
       `Invalid goal request: the objective is too long (maximum ${GOAL_OBJECTIVE_MAX} characters).`,
     );
   const { intervalMin, maxAttempts } = parseCadence(args);
-  return { action: "objective", objective, intervalMin, maxAttempts };
+  return endAt === null
+    ? { action: "objective", objective, intervalMin, maxAttempts }
+    : { action: "objective", objective, intervalMin, maxAttempts, endAt };
 }
 
 /** One interval (required, within the creation bounds) and an optional cap. */
@@ -319,7 +461,14 @@ function parseCadence(text: string) {
   for (const match of text.matchAll(MAX_RE))
     // Dots are thousands separators here: 1.000 becomes 1000 and is refused,
     // never silently read as 1.
-    maxes.add(Number((match[1] ?? match[2] ?? match[3]).replaceAll(".", "")));
+    maxes.add(
+      Number(
+        match
+          .slice(1)
+          .find((group) => group !== undefined)!
+          .replaceAll(".", ""),
+      ),
+    );
   if (maxes.size > 1) {
     const [a, b] = [...maxes].sort((x, y) => x - y);
     throw new GoalError(
