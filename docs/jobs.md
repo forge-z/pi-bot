@@ -101,6 +101,45 @@ Finished rows (`delivered_at` set) older than 30 days are deleted. Open rows are
 
 A poller tick that throws is recorded on `health().last_tick_error` and logged at most once a minute for the same message. A later successful tick does not clear that error, and nothing is sent to the chat.
 
+## Durable tasks
+
+The `durable_task` tool creates, lists, and shows tasks in the calling conversation.
+The scheduler claims one due task at a time and runs its goal in a separate
+conversation. Failed attempts retry up to the attempt limit. A turn or wall-clock
+budget stop interrupts the task. On startup, queued and running tasks are marked
+interrupted and the bot sends a restart notice to their origin.
+
+A successful attempt stores its answer at
+`${options.dir}/artifacts/durable/<taskId>/<attempt>.md`. The bot creates the
+directories with mode `0700` and writes the file with mode `0600` using a
+temporary file and atomic rename. The Markdown starts with `Task`, `State`,
+`Attempt`, `Finished` (UTC ISO 8601), and `Goal`, followed by a horizontal rule
+and the assistant answer. The answer body is capped at 512 KiB of UTF-8,
+including the truncation line with the original byte length when needed.
+Failed and budget-stopped attempts produce no file or new artifact metadata.
+
+The additive columns in `durable_tasks` describe the latest recorded artifact.
+
+| Column                                       | Meaning                                              |
+| -------------------------------------------- | ---------------------------------------------------- |
+| `artifactPath TEXT`                          | Path to the Markdown file                            |
+| `artifactSha256 TEXT`                        | SHA-256 hex digest of the complete file              |
+| `artifactBytes INTEGER`                      | Size of the complete file in bytes                   |
+| `artifactVersion INTEGER NOT NULL DEFAULT 0` | Number of successful artifacts recorded for the task |
+
+The version starts at zero and increases by one when the matching running
+attempt records an artifact. Attempt numbers determine filenames. A later
+successful attempt leaves earlier files untouched. `show` returns the four
+fields when an artifact exists, and `list` marks those rows with `hasArtifact`.
+
+On success, terminal failure, or a budget stop, the bot queues one short
+notice to the origin's channel without starting a model turn. It includes
+the task ID, up to 80 characters of the goal, and the final state. A success
+notice also includes the path and size. The answer stays in the artifact file.
+The `requests` ledger deduplicates notices by task ID and artifact version
+for success or terminal state otherwise. Its `done` status keeps the notice
+out of model-request recovery on startup.
+
 ## Which Executor
 
 The supported one is **v2, the cloud build** (`https://mcp.executor.sh/mcp`):
