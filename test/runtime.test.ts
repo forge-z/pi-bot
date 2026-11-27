@@ -12,7 +12,8 @@ import {
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { Runtime, assistantClock } from "../src/runtime.js";
 import { setupKey } from "../src/setup.js";
-import { Store, type Delivery } from "../src/store.js";
+import { Store, type Delivery, type RequestRow } from "../src/store.js";
+import { configureTelegram } from "../src/telegram-polling.js";
 import { withTextModelFallback } from "../src/text-model-fallback.js";
 const gateway = { catalog: async () => [] };
 async function temp() {
@@ -251,6 +252,112 @@ test("concurrent web/Telegram inputs serialize and same requestId deduplicates a
       2,
     );
     assert.equal(app.store.all("SELECT * FROM deliveries").length, 1);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("boot sends one durable-task notice to each affected topic and skips deleted conversations", async () => {
+  const dir = await temp();
+  const { models, faux } = model([]);
+  let now = Date.now();
+  const options = { dir, gateway, models, env: {}, now: () => now };
+  let app = await Runtime.open({
+    ...options,
+    initialize: (store) =>
+      configureTelegram(
+        store,
+        { token: "synthetic", users: ["42"], chats: ["-100123"] },
+        { id: 123 },
+      ),
+  });
+  try {
+    const topic = await app.telegramChats.ensure({
+      chat: "-100123",
+      user: "42",
+      messageThreadId: 11,
+    });
+    const other = await app.telegramChats.ensure({
+      chat: "-100123",
+      user: "42",
+      messageThreadId: 12,
+    });
+    const deleted = await app.telegramChats.ensure({
+      chat: "-100123",
+      user: "42",
+      messageThreadId: 13,
+    });
+    const queued = app.durableTasks.create(topic, "Queued goal");
+    const running = app.durableTasks.create(topic, "Running goal");
+    app.store.run(
+      "UPDATE durable_tasks SET state='running' WHERE id=?",
+      running.id,
+    );
+    const otherTask = app.durableTasks.create(other, "Another topic's goal");
+    const archived = app.durableTasks.create(deleted, "Archived goal");
+    await app.deleteConversation(deleted);
+
+    await app.close();
+    app = await Runtime.open(options);
+    const notices = () =>
+      app.store.all<RequestRow>(
+        "SELECT * FROM requests WHERE source='system' ORDER BY conversationId",
+      );
+    const recorded = notices();
+    assert.deepEqual(
+      recorded.map((row) => row.conversationId).sort(),
+      [topic, other].sort(),
+    );
+    const deliveries = () =>
+      app.store.all<Delivery>(
+        "SELECT * FROM deliveries WHERE id LIKE 'durable-task-restart:%' ORDER BY messageThreadId",
+      );
+    const queuedDeliveries = deliveries();
+    assert.deepEqual(
+      queuedDeliveries.map((row) => row.messageThreadId),
+      [11, 12],
+    );
+    for (const row of recorded) {
+      assert.match(row.requestId, /^durable-task-restart:[a-f0-9]{64}$/);
+      assert.match(row.text, /interrupted by a restart and remain/);
+      assert.equal(row.status, "done");
+      assert.equal(row.submissionId, null);
+      assert.ok(
+        queuedDeliveries.some(
+          (delivery) =>
+            delivery.id === `${row.requestId}:0` &&
+            delivery.state === "pending" &&
+            delivery.chat === "-100123" &&
+            delivery.messageThreadId ===
+              (row.conversationId === topic ? 11 : 12) &&
+            delivery.text.trimEnd() === row.text,
+        ),
+      );
+    }
+    assert.deepEqual(
+      app.store.all(
+        "SELECT * FROM requests WHERE status='pending' OR (source='system' AND status='deferred')",
+      ),
+      [],
+    );
+    const interruptedTasks = () =>
+      [queued, running, otherTask, archived].map((task) =>
+        app.durableTasks.get(task.conversationId, task.id),
+      );
+    const interrupted = interruptedTasks();
+    for (const task of interrupted) {
+      assert.equal(task?.state, "interrupted");
+      assert.equal(task.lastError, "restart");
+    }
+
+    await app.close();
+    now += 1000;
+    app = await Runtime.open(options);
+    assert.deepEqual(notices(), recorded);
+    assert.deepEqual(deliveries(), queuedDeliveries);
+    assert.deepEqual(interruptedTasks(), interrupted);
+    assert.equal(faux.state.callCount, 0);
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });
