@@ -1056,8 +1056,13 @@ test("the execute envelope's lowercase status is not the run's status", async ()
   try {
     f.jobs.register(SERVER, "run_web_automation", "7", "Liste");
     await f.jobs.tick();
-    // `completed` in the envelope would have looked like a finished run.
-    assert.equal(f.submissions.length, 0);
+    // `completed` in the envelope would have looked like a finished run: the only
+    // turn it wakes is the announce of the RUNNING transition.
+    assert.equal(f.submissions.length, 1);
+    assert.match(f.submissions[0].requestId, /:state:running/);
+    assert.match(f.submissions[0].text, /RUNNING/);
+    await f.jobs.tick();
+    assert.equal(f.submissions.length, 1, "the same state announces nothing");
   } finally {
     await f.close();
   }
@@ -1995,7 +2000,8 @@ test("a failed re-read is a notice with the last status and the read error", asy
       data: { run_id: "run-read-error", status: "RUNNING" },
     });
     await f.jobs.tick();
-    assert.equal(f.submissions.length, 0);
+    assert.equal(f.submissions.length, 1, "the RUNNING transition announces");
+    assert.match(f.submissions[0].requestId, /:state:running/);
 
     // Past the timeout, the provider read fails (the fixture answers 502 when unset).
     f.store.run(
@@ -2004,11 +2010,11 @@ test("a failed re-read is a notice with the last status and the read error", asy
     );
     f.setObserved(undefined);
     await f.jobs.tick();
-    assert.equal(f.submissions.length, 1);
-    assert.match(f.submissions[0].text, /Last checked: RUNNING/);
-    assert.match(f.submissions[0].text, /502: transient provider failure/);
+    assert.equal(f.submissions.length, 2);
+    assert.match(f.submissions[1].text, /Last checked: RUNNING/);
+    assert.match(f.submissions[1].text, /502: transient provider failure/);
     assert.doesNotMatch(
-      f.submissions[0].text,
+      f.submissions[1].text,
       /Tell the user in one line that the job is still running|has not finished yet/,
     );
     assert.equal(
@@ -2228,13 +2234,16 @@ test("aviso após 25 min (padrão de async_job.timeout_min)", async () => {
       content: JSON.stringify({ state: "RUNNING" }),
     });
 
-    // 20 min ainda está dentro do prazo (25 min padrão)
+    // 20 min ainda está dentro do prazo (25 min padrão): só o aviso da transição
+    // para RUNNING, nenhum aviso de tempo esgotado.
     f.store.run(
       "UPDATE pending_jobs SET created_at=?",
       Date.now() - 20 * 60_000,
     );
     await f.jobs.tick();
-    assert.equal(f.submissions.length, 0, "ainda sem aviso aos 20 min");
+    assert.equal(f.submissions.length, 1, "só o announce da transição");
+    assert.match(f.submissions[0].requestId, /:state:running/);
+    assert.doesNotMatch(f.submissions[0].text, /after 25 minutes/i);
 
     // Aos 26 min ultrapassou 25 min -> avisa
     f.store.run(
@@ -2243,8 +2252,8 @@ test("aviso após 25 min (padrão de async_job.timeout_min)", async () => {
     );
     f.store.run("UPDATE pending_jobs SET next_poll_at=?", Date.now() - 1000);
     await f.jobs.tick();
-    assert.equal(f.submissions.length, 1, "aviso aos 25 minutos");
-    assert.match(f.submissions[0].text, /after 25 minutes/i);
+    assert.equal(f.submissions.length, 2, "aviso aos 25 minutos");
+    assert.match(f.submissions[1].text, /after 25 minutes/i);
   } finally {
     await f.close();
   }
@@ -2301,15 +2310,21 @@ test("async job timeout and poll use config.yaml, with env as an override", asyn
       Date.now() - 9 * 60_000,
     );
     await custom.jobs.tick();
-    assert.equal(custom.submissions.length, 0, "9 min ainda cabe em 10");
+    assert.equal(
+      custom.submissions.length,
+      1,
+      "9 min ainda cabe em 10: só o announce da transição",
+    );
+    assert.match(custom.submissions[0].requestId, /:state:running/);
+    assert.doesNotMatch(custom.submissions[0].text, /after 10 minutes/i);
     custom.store.run(
       "UPDATE pending_jobs SET created_at=?, next_poll_at=?",
       Date.now() - 11 * 60_000,
       Date.now() - 1000,
     );
     await custom.jobs.tick();
-    assert.equal(custom.submissions.length, 1);
-    assert.match(custom.submissions[0].text, /after 10 minutes/i);
+    assert.equal(custom.submissions.length, 2);
+    assert.match(custom.submissions[1].text, /after 10 minutes/i);
 
     fromEnv.jobs.registerKnown(
       "chat-1",
@@ -2326,15 +2341,20 @@ test("async job timeout and poll use config.yaml, with env as an override", asyn
       Date.now() - 3 * 60_000,
     );
     await fromEnv.jobs.tick();
-    assert.equal(fromEnv.submissions.length, 0, "3 min ainda cabe em 4");
+    assert.equal(
+      fromEnv.submissions.length,
+      1,
+      "3 min ainda cabe em 4: só o announce da transição",
+    );
+    assert.match(fromEnv.submissions[0].requestId, /:state:running/);
     fromEnv.store.run(
       "UPDATE pending_jobs SET created_at=?, next_poll_at=?",
       Date.now() - 5 * 60_000,
       Date.now() - 1000,
     );
     await fromEnv.jobs.tick();
-    assert.equal(fromEnv.submissions.length, 1);
-    assert.match(fromEnv.submissions[0].text, /after 4 minutes/i);
+    assert.equal(fromEnv.submissions.length, 2);
+    assert.match(fromEnv.submissions[1].text, /after 4 minutes/i);
   } finally {
     console.info = original;
     await plain.close();

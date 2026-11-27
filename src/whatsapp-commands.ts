@@ -16,6 +16,7 @@ import {
   commandApprovals,
   commandReceipt,
   commandRevoke,
+  commandJob,
   resumeReport,
   type CommandAccess,
 } from "./commands.js";
@@ -29,6 +30,7 @@ const MENU_CAP = 30;
 const HELP = [
   "/status — status, tokens and cost",
   "/receipt [n] — turn receipt",
+  "/job — the latest async job in this chat: state, elapsed, PR or error, from what the poller stored; it says so when no fresh check has arrived",
   "/approvals — reads that are always allowed",
   "/revoke <n> — remove one; that read asks again",
   "/queue <message> — with a turn running, the message waits and is answered in its own turn; otherwise it is sent as a normal message",
@@ -297,6 +299,15 @@ async function runCommand(
       message,
       conversationId,
       commandReceipt(app, conversationId, access, args),
+    );
+    return;
+  }
+  if (name === "job") {
+    reply(
+      app,
+      message,
+      conversationId,
+      commandJob(app, conversationId, access),
     );
     return;
   }
