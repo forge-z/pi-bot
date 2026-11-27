@@ -44,7 +44,10 @@ import {
 import { channelChat } from "./channel.js";
 import { conversationDeliveries } from "./telegram-deliveries.js";
 import { TelegramChats, type TelegramOwner } from "./telegram-chats.js";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT as context,
+  type Context,
+} from "@earendil-works/chord/context";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
@@ -829,6 +832,7 @@ export class Runtime {
     this.durableTasks = new DurableTasks(this.store, () => this.now(), {
       runtime: this,
       config: config.durableTasks,
+      dir: options.dir,
     });
     this.telegramChats = new TelegramChats(this);
     options.initialize?.(this.store);
@@ -1016,6 +1020,7 @@ export class Runtime {
                         state: task.state,
                         goal: task.goal.slice(0, 120),
                         age: elapsedText(now - task.createdAt),
+                        ...(task.artifactPath ? { hasArtifact: true } : {}),
                       }));
                       break;
                     }
@@ -1032,6 +1037,10 @@ export class Runtime {
                         createdAt,
                         updatedAt,
                         lastError,
+                        artifactPath,
+                        artifactSha256,
+                        artifactBytes,
+                        artifactVersion,
                       } = task;
                       result = {
                         id,
@@ -1040,6 +1049,14 @@ export class Runtime {
                         createdAt,
                         updatedAt,
                         lastError,
+                        ...(artifactPath
+                          ? {
+                              artifactPath,
+                              artifactSha256,
+                              artifactBytes,
+                              artifactVersion,
+                            }
+                          : {}),
                       };
                       break;
                     }
@@ -2717,11 +2734,7 @@ export class Runtime {
       this.flushTelegramPending?.();
   }
 
-  private queueTopicNotice(
-    conversationId: string,
-    requestId: string,
-    text: string,
-  ) {
+  queueTopicNotice(conversationId: string, requestId: string, text: string) {
     const route = telegramConversationRoute(this.store, conversationId);
     if (route)
       this.store.queueTelegram(
@@ -3335,6 +3348,22 @@ export class Runtime {
         : "";
     return raw.trim();
   }
+  /** Read the assistant text at the settled answer's entry ID. */
+  async readAssistantAnswer(
+    conversation: Awaited<ReturnType<Runtime["conversation"]>>,
+    answer: EntryId,
+    callContext: Context = context,
+  ) {
+    const entries = await conversation.entries(
+      { minEntryId: answer, maxEntryId: answer },
+      1,
+      undefined,
+      callContext,
+    );
+    return this.assistantTextFromEntry(
+      entries.items.find((entry) => entry.id === answer),
+    );
+  }
   /** Read only the assistant entry associated with this request in a shared conversation. */
   private async taskTurnAnswer(
     conversation: Awaited<ReturnType<Runtime["conversation"]>>,
@@ -3364,28 +3393,11 @@ export class Runtime {
           : undefined;
     if (answerId === undefined) return "";
     if (floor !== undefined && answerId >= floor) {
-      const entries = await conversation.entries(
-        { minEntryId: answerId as EntryId, maxEntryId: answerId as EntryId },
-        1,
-        undefined,
-        context,
-      );
-      const direct = this.assistantTextFromEntry(
-        entries.items.find((e) => e.id === answerId),
-      );
+      const direct = await this.readAssistantAnswer(conversation, answerId);
       if (direct || answerId === floor) return direct;
     }
-    if (floor === undefined) {
-      const entries = await conversation.entries(
-        { minEntryId: answerId as EntryId, maxEntryId: answerId as EntryId },
-        1,
-        undefined,
-        context,
-      );
-      return this.assistantTextFromEntry(
-        entries.items.find((e) => e.id === answerId),
-      );
-    }
+    if (floor === undefined)
+      return this.readAssistantAnswer(conversation, answerId);
     const window = await conversation.entries(
       { minEntryId: floor as EntryId, maxEntryId: answerId as EntryId },
       50,
@@ -3522,19 +3534,7 @@ export class Runtime {
                   requestId,
                   settled,
                 )
-              : this.assistantTextFromEntry(
-                  (
-                    await conversation.entries(
-                      {
-                        minEntryId: settled.answer,
-                        maxEntryId: settled.answer,
-                      },
-                      1,
-                      undefined,
-                      context,
-                    )
-                  ).items.find((e) => e.id === settled.answer),
-                );
+              : await this.readAssistantAnswer(conversation, settled.answer);
           // Drain on every turn, so a task run never leaks its files into the next
           // chat reply of the same conversation.
           // A scheduled run, a job a schedule started, and an ordinary system

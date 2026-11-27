@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -12,10 +21,16 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { Registry, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { DurableTaskError, DurableTasks } from "../src/durable-tasks.js";
+import { bindChannelChat } from "../src/channel.js";
+import { assertAppPurgeSafe } from "../src/conversation-trash.js";
+import {
+  DurableTaskError,
+  DurableTasks,
+  type DurableTask,
+} from "../src/durable-tasks.js";
 import { loadHarnessConfig } from "../src/harness-config.js";
 import { Runtime } from "../src/runtime.js";
-import { Store, type RequestRow } from "../src/store.js";
+import { Store, type Delivery, type RequestRow } from "../src/store.js";
 import { Tasks } from "../src/tasks.js";
 
 const gateway = { catalog: async () => [] };
@@ -70,6 +85,10 @@ test("durable tasks round-trip and creation replays keep the original row", asyn
       nextRun: null,
       deadlineAt: null,
       budgetTurns: 0,
+      artifactPath: null,
+      artifactSha256: null,
+      artifactBytes: null,
+      artifactVersion: 0,
     },
   );
   setTime(epoch + 1000);
@@ -197,6 +216,7 @@ test("the guarded migration adds creationKey to a table missing that column", as
   assert.equal(tasks.get("1", "old")?.nextRun, null);
   assert.equal(tasks.get("1", "old")?.deadlineAt, null);
   assert.equal(tasks.get("1", "old")?.budgetTurns, 0);
+  assertNoArtifact(tasks.get("1", "old")!);
   assert.equal(new DurableTasks(store).get("1", "old")?.creationKey, null);
 });
 
@@ -266,6 +286,62 @@ const failure = fauxAssistantMessage("", {
   errorMessage: "Invalid request\nsecond line",
 });
 
+function artifactDir(dir: string, taskId: string) {
+  return join(dir, "artifacts", "durable", taskId);
+}
+
+function assertNoArtifact(task: DurableTask) {
+  assert.equal(task.artifactPath, null);
+  assert.equal(task.artifactSha256, null);
+  assert.equal(task.artifactBytes, null);
+  assert.equal(task.artifactVersion, 0);
+}
+
+function bindOrigin(app: Runtime, origin: string) {
+  bindChannelChat(app.store, "whatsapp", "42", origin);
+}
+
+function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
+  const key = createHash("sha256")
+    .update(
+      JSON.stringify([
+        task.id,
+        task.state === "done" ? task.artifactVersion : task.state,
+      ]),
+    )
+    .digest("hex");
+  const request = app.store.get<RequestRow>(
+    "SELECT * FROM requests WHERE conversationId=? AND requestId=?",
+    task.conversationId,
+    `durable-task-terminal:${key}`,
+  );
+  assert.ok(request, "terminal notice must have a request ledger row");
+  assert.equal(request.status, "done");
+  assert.equal(request.source, "system");
+  assert.equal(request.submissionId, null);
+  const delivery = app.store.get<Delivery>(
+    "SELECT * FROM deliveries WHERE id=?",
+    `${request.requestId}:0`,
+  );
+  assert.ok(delivery, "terminal notice must be queued");
+  assert.equal(delivery.channel, "whatsapp");
+  assert.equal(delivery.chat, chat);
+  assert.equal(delivery.text, request.text);
+  assert.ok(request.text.includes(task.id));
+  assert.ok(request.text.includes(task.goal.slice(0, 80)));
+  assert.ok(request.text.includes(task.state));
+  return { request, delivery };
+}
+
+type SettlementAccess = {
+  settlement?: Promise<void>;
+  settle(task: DurableTask, outcome: { kind: "done"; text: string }): void;
+};
+
+function settlementAccess(tasks: DurableTasks) {
+  return tasks as unknown as SettlementAccess;
+}
+
 test("the scheduler claims one due durable task, skips credentials, and admits replay only once", async (t) => {
   const held = heldResponse();
   const { app, faux, setTime } = await executionFixture(t, [held.response]);
@@ -298,7 +374,8 @@ test("the scheduler claims one due durable task, skips credentials, and admits r
     assert.ok(run);
     assert.notEqual(run, origin);
     const requestId = `durable-task:${first.id}:1`;
-    const requests = () => app.store.all<RequestRow>("SELECT * FROM requests");
+    const requests = () =>
+      app.store.all<RequestRow>("SELECT * FROM requests WHERE source='task'");
     assert.deepEqual(
       requests().map(({ conversationId, requestId, source }) => [
         conversationId,
@@ -328,9 +405,13 @@ test("the scheduler claims one due durable task, skips credentials, and admits r
 });
 
 test("retry waits for nextRun, reuses its execution conversation, and stops at maxAttempts", async (t) => {
-  const { app, setTime } = await executionFixture(t, [failure, failure]);
+  const { app, options, setTime } = await executionFixture(t, [
+    failure,
+    failure,
+  ]);
   try {
     const origin = await app.create();
+    bindOrigin(app, origin);
     const task = app.durableTasks.create(origin, "Retry this goal");
     const get = () => app.durableTasks.get(origin, task.id)!;
     app.store.run("UPDATE durable_tasks SET maxAttempts=2 WHERE id=?", task.id);
@@ -339,6 +420,10 @@ test("retry waits for nextRun, reuses its execution conversation, and stops at m
     assert.equal(get().state, "queued");
     assert.equal(get().attempts, 1);
     assert.match(get().lastError ?? "", /Invalid request second line/);
+    assert.equal(
+      app.store.all("SELECT * FROM requests WHERE source='system'").length,
+      0,
+    );
     const run = get().runConversationId;
     assert.ok(run);
     assert.notEqual(run, origin);
@@ -352,15 +437,22 @@ test("retry waits for nextRun, reuses its execution conversation, and stops at m
     assert.equal(get().nextRun, null);
     assert.match(get().lastError ?? "", /Invalid request second line/);
     assert.equal(get().runConversationId, run);
+    assertNoArtifact(get());
+    await assert.rejects(readdir(artifactDir(options.dir, task.id)), {
+      code: "ENOENT",
+    });
     assert.deepEqual(
       app.store
-        .all<RequestRow>("SELECT * FROM requests ORDER BY rowid")
+        .all<RequestRow>(
+          "SELECT * FROM requests WHERE source='task' ORDER BY rowid",
+        )
         .map(({ conversationId, requestId }) => [conversationId, requestId]),
       [
         [run, `durable-task:${task.id}:1`],
         [run, `durable-task:${task.id}:2`],
       ],
     );
+    assertTerminalNotice(app, get(), "42");
     assert.equal(app.store.all("SELECT * FROM conversations").length, 2);
   } finally {
     await app.close();
@@ -369,13 +461,14 @@ test("retry waits for nextRun, reuses its execution conversation, and stops at m
 
 test("wall clock expiry interrupts a live attempt and does not retry it", async (t) => {
   const held = heldResponse();
-  const { app, faux } = await executionFixture(
+  const { app, faux, options } = await executionFixture(
     t,
     [held.response],
     "durable_tasks: { wall_clock_ms: 200 }",
   );
   try {
     const origin = await app.create();
+    bindOrigin(app, origin);
     const task = app.durableTasks.create(origin, "Wait for the deadline");
     const get = () => app.durableTasks.get(origin, task.id)!;
     await app.tasks.tick();
@@ -386,6 +479,11 @@ test("wall clock expiry interrupts a live attempt and does not retry it", async 
     assert.equal(get().nextRun, null);
     await app.tasks.tick();
     assert.equal(get().attempts, 1);
+    assertNoArtifact(get());
+    await assert.rejects(readdir(artifactDir(options.dir, task.id)), {
+      code: "ENOENT",
+    });
+    assertTerminalNotice(app, get(), "42");
   } finally {
     held.release();
     await app.close();
@@ -400,7 +498,7 @@ test("per-task turn budget overrides the startup default and stops further model
         stopReason: "toolUse",
       },
     );
-  const { app, faux } = await executionFixture(
+  const { app, faux, options } = await executionFixture(
     t,
     [toolCall("allowed"), fauxAssistantMessage("Finished"), toolCall("budget")],
     "durable_tasks: { max_turns: 2 }",
@@ -428,6 +526,10 @@ test("per-task turn budget overrides the startup default and stops further model
     assert.equal(get().nextRun, null);
     assert.equal(get().attempts, 1);
     assert.equal(faux.state.callCount, 3);
+    assertNoArtifact(get());
+    await assert.rejects(readdir(artifactDir(options.dir, limited.id)), {
+      code: "ENOENT",
+    });
   } finally {
     await app.close();
   }
@@ -435,11 +537,13 @@ test("per-task turn budget overrides the startup default and stops further model
 
 test("late success cannot overwrite a terminal durable task", async (t) => {
   const held = heldResponse();
-  const { app, faux } = await executionFixture(t, [held.response]);
+  const { app, faux, options } = await executionFixture(t, [held.response]);
   try {
     const origin = await app.create();
     const task = app.durableTasks.create(origin, "Wait before settling");
     await app.tasks.tick();
+    const settlement = settlementAccess(app.durableTasks).settlement;
+    assert.ok(settlement);
     await waitFor(() => assert.equal(faux.state.callCount, 1));
     const terminal = app.durableTasks.transition(
       origin,
@@ -456,9 +560,213 @@ test("late success cannot overwrite a terminal durable task", async (t) => {
       ),
     );
     await app.tasks.tick();
+    await settlement;
     assert.deepEqual(app.durableTasks.get(origin, task.id), terminal);
+    assertNoArtifact(terminal);
+    await assert.rejects(readdir(artifactDir(options.dir, task.id)), {
+      code: "ENOENT",
+    });
+    assert.deepEqual(
+      app.store.all("SELECT * FROM requests WHERE source='system'"),
+      [],
+    );
   } finally {
     held.release();
+    await app.close();
+  }
+});
+
+test("success writes a private artifact with the settled answer and records its metadata", async (t) => {
+  const answer = "The durable result.\n\nHere are the details.";
+  const { app, options } = await executionFixture(t, [
+    fauxAssistantMessage(answer),
+  ]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Write a durable result");
+    await app.tasks.tick();
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    await waitFor(() => assert.equal(get().state, "done"));
+    const path = join(artifactDir(options.dir, task.id), "1.md");
+    const row = get();
+    assert.equal(row.artifactPath, path);
+    const data = await readFile(path);
+    assert.equal(
+      data.toString("utf8"),
+      [
+        `Task: ${task.id}`,
+        "State: done",
+        "Attempt: 1",
+        `Finished: ${new Date(epoch).toISOString()}`,
+        `Goal: ${task.goal}`,
+        "",
+        "---",
+        "",
+        answer,
+        "",
+      ].join("\n"),
+    );
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal(
+      (await stat(artifactDir(options.dir, task.id))).mode & 0o777,
+      0o700,
+    );
+    assert.deepEqual(await readdir(artifactDir(options.dir, task.id)), [
+      "1.md",
+    ]);
+    assert.equal(
+      row.artifactSha256,
+      createHash("sha256").update(data).digest("hex"),
+    );
+    assert.equal(row.artifactBytes, data.byteLength);
+    assert.equal(row.artifactVersion, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the artifact body fits within 512 KiB and gives the original UTF-8 length when truncated", async (t) => {
+  const answer = "🌱".repeat(140_000);
+  const { app, options } = await executionFixture(t, [
+    fauxAssistantMessage(answer),
+  ]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Write a long result");
+    await app.tasks.tick();
+    await waitFor(() =>
+      assert.equal(app.durableTasks.get(origin, task.id)?.state, "done"),
+    );
+    const artifact = await readFile(
+      join(artifactDir(options.dir, task.id), "1.md"),
+      "utf8",
+    );
+    const body = artifact.split("\n\n---\n\n")[1]!;
+    assert.ok(Buffer.byteLength(body) <= 512 * 1024);
+    assert.ok(body.length > 250_000);
+    assert.doesNotMatch(body, /\uFFFD/);
+    assert.match(body, /\n\[.*truncated.*560000 bytes.*\]\n$/i);
+  } finally {
+    await app.close();
+  }
+});
+
+test("an artifact rename failure leaves no partial file or recorded metadata", async (t) => {
+  const { app, options } = await executionFixture(t, [
+    fauxAssistantMessage("Finished"),
+  ]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(
+      origin,
+      "Block the artifact destination",
+    );
+    const dir = artifactDir(options.dir, task.id);
+    const blockedPath = join(dir, "1.md");
+    await mkdir(blockedPath, { recursive: true });
+    app.store.run("UPDATE durable_tasks SET maxAttempts=1 WHERE id=?", task.id);
+    await app.tasks.tick();
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    await waitFor(() => assert.equal(get().state, "interrupted"));
+    assertNoArtifact(get());
+    assert.deepEqual(await readdir(dir), ["1.md"]);
+    assert.ok((await stat(blockedPath)).isDirectory());
+  } finally {
+    await app.close();
+  }
+});
+
+test("a later successful attempt advances the version and preserves the first file", async (t) => {
+  const { app, options } = await executionFixture(t, [
+    fauxAssistantMessage("First result"),
+    fauxAssistantMessage("Second result"),
+  ]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Run again");
+    const dir = artifactDir(options.dir, task.id);
+    const firstPath = join(dir, "1.md");
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().state, "done"));
+    assert.equal(get().artifactVersion, 1);
+    const firstContent = await readFile(firstPath, "utf8");
+    const firstStat = await stat(firstPath);
+
+    // Simulate a later retry at the database boundary. This slice has no requeue tool.
+    app.store.run(
+      "UPDATE durable_tasks SET state='queued' WHERE id=?",
+      task.id,
+    );
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().state, "done"));
+    assert.equal(get().attempts, 2);
+    assert.equal(get().artifactVersion, 2);
+    assert.equal(get().artifactPath, join(dir, "2.md"));
+    assert.match(await readFile(join(dir, "2.md"), "utf8"), /Second result/);
+    assert.deepEqual((await readdir(dir)).sort(), ["1.md", "2.md"]);
+    assert.match(firstContent, /First result/);
+    assert.equal(await readFile(firstPath, "utf8"), firstContent);
+    const currentStat = await stat(firstPath);
+    assert.equal(currentStat.ino, firstStat.ino);
+    assert.equal(currentStat.mtimeMs, firstStat.mtimeMs);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a terminal notice reaches the origin once without a model turn and is ignored on reboot and purge", async (t) => {
+  const answer = "Private answer text that belongs in the file";
+  const {
+    app: first,
+    options,
+    faux,
+  } = await executionFixture(t, [fauxAssistantMessage(answer)]);
+  let app = first;
+  try {
+    const origin = await app.create();
+    bindOrigin(app, origin);
+    const goal = `${"a".repeat(80)}beyond the excerpt`;
+    const task = app.durableTasks.create(origin, goal);
+    const get = () => app.durableTasks.get(origin, task.id)!;
+    const enqueue = t.mock.method(Store.prototype, "queueTelegram");
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().state, "done"));
+    const row = get();
+    const { request, delivery } = assertTerminalNotice(app, row, "42");
+    assert.ok(request.text.includes(row.artifactPath!));
+    assert.match(request.text, /\b\d+ B\b/);
+    assert.ok(!request.text.includes("beyond the excerpt"));
+    assert.ok(!request.text.includes(answer));
+    assert.doesNotThrow(() => assertAppPurgeSafe(app.store, origin));
+    assert.equal(faux.state.callCount, 1);
+    const file = await stat(row.artifactPath!);
+    const payload = await readFile(row.artifactPath!);
+
+    settlementAccess(app.durableTasks).settle(row, {
+      kind: "done",
+      text: "Duplicate result",
+    });
+    assert.deepEqual(get(), row);
+    assert.deepEqual(await readFile(row.artifactPath!), payload);
+    assert.equal((await stat(row.artifactPath!)).ino, file.ino);
+
+    await app.close();
+    app = await Runtime.open(options);
+    await app.tasks.tick();
+    assert.deepEqual(
+      app.store.all<RequestRow>(
+        "SELECT * FROM requests WHERE conversationId=?",
+        origin,
+      ),
+      [request],
+    );
+    assert.deepEqual(app.store.all<Delivery>("SELECT * FROM deliveries"), [
+      delivery,
+    ]);
+    assert.equal(enqueue.mock.callCount(), 1);
+    assert.equal(faux.state.callCount, 1);
+  } finally {
     await app.close();
   }
 });
@@ -535,11 +843,14 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
   try {
     const id = await app.create();
     const foreign = await app.create();
-    const registry = (app as unknown as { registry: Registry }).registry;
-    const tool = registry
-      .snapshot()
-      .tools()
-      .find(({ tool }) => tool.name === "durable_task")?.tool;
+    function registeredTool() {
+      const registry = (app as unknown as { registry: Registry }).registry;
+      return registry
+        .snapshot()
+        .tools()
+        .find(({ tool }) => tool.name === "durable_task")?.tool;
+    }
+    const tool = registeredTool();
     assert.ok(tool, "durable_task must be registered");
     assert.equal(tool.replay, "safe");
     assert.match(tool.description, /stored but no work starts/);
@@ -549,6 +860,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
       args: Record<string, string>,
       callId = `call-${taskId}`,
     ) {
+      const tool = registeredTool();
       assert.ok(tool);
       // The registered execution wrapper and this tool only need the invocation identity.
       const api = {
@@ -570,6 +882,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     assert.equal(await call(id, 1, create), created);
     const own = JSON.parse(await call(id, 2, { action: "show", id: first.id }));
     assert.equal(own.goal, "First goal");
+    assert.ok(!Object.hasOwn(own, "artifactPath"));
     assert.equal(
       await call(foreign, 3, { action: "show", id: first.id }),
       "Durable task not found",
@@ -670,6 +983,34 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     await app.close();
     app = await Runtime.open(options);
     assert.deepEqual(noticeRequests(), requests);
+
+    const artifact = {
+      artifactPath: join(artifactDir(dir, expectedIds[0]!), "1.md"),
+      artifactSha256: "a".repeat(64),
+      artifactBytes: 123,
+      artifactVersion: 1,
+    };
+    app.store.run(
+      "UPDATE durable_tasks SET state='done', artifactPath=?, artifactSha256=?, artifactBytes=?, artifactVersion=? WHERE id=?",
+      artifact.artifactPath,
+      artifact.artifactSha256,
+      artifact.artifactBytes,
+      artifact.artifactVersion,
+      expectedIds[0]!,
+    );
+    const shown = JSON.parse(
+      await call(id, 41, { action: "show", id: expectedIds[0]! }),
+    );
+    for (const [key, value] of Object.entries(artifact))
+      assert.equal(shown[key], value);
+    const withArtifact = JSON.parse(await call(id, 42, { action: "list" }))[0];
+    assert.equal(withArtifact.id, expectedIds[0]);
+    assert.equal(withArtifact.hasArtifact, true);
+    assert.ok(!Object.hasOwn(withArtifact, "artifactPath"));
+    assert.equal(
+      await call(foreign, 43, { action: "show", id: expectedIds[0]! }),
+      "Durable task not found",
+    );
   } finally {
     await app.close();
   }

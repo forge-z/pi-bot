@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   BACKGROUND_CONTEXT as context,
   withAbortSignal,
@@ -7,7 +9,7 @@ import type { Conversation, SubmissionId } from "@earendil-works/pi-durable";
 import type { DurableTaskConfig } from "./harness-config.js";
 import { logFailure } from "./log.js";
 import { settleFailureReason, type Runtime } from "./runtime.js";
-import type { Store } from "./store.js";
+import { hash, type Store } from "./store.js";
 
 export const DURABLE_TASK_GOAL_MAX = 4000;
 
@@ -38,25 +40,81 @@ const COLUMNS = {
   nextRun: "INTEGER",
   deadlineAt: "INTEGER",
   budgetTurns: "INTEGER NOT NULL DEFAULT 0",
+  artifactPath: "TEXT",
+  artifactSha256: "TEXT",
+  artifactBytes: "INTEGER",
+  artifactVersion: "INTEGER NOT NULL DEFAULT 0",
 };
 const MAX_TIMER_MS = 2_147_483_647;
 const BUDGET_TIMEOUT = "budget_timeout";
+const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
 
 type Execution = {
   runtime: Pick<
     Runtime,
-    "create" | "conversation" | "submit" | "harness" | "withProviderAdmission"
+    | "create"
+    | "conversation"
+    | "submit"
+    | "harness"
+    | "withProviderAdmission"
+    | "readAssistantAnswer"
+    | "queueTopicNotice"
+    | "flushTelegramPending"
   >;
   config: DurableTaskConfig;
+  dir: string;
 };
 type Attempt = DurableTask & { deadlineAt: number };
 type Outcome =
-  | { kind: "done" }
+  | { kind: "done"; text: string }
   | { kind: "budget"; error: string }
   | { kind: "failure"; error: string };
 
 function requestIdFor(task: Pick<DurableTask, "id" | "attempts">) {
   return `durable-task:${task.id}:${task.attempts}`;
+}
+
+function artifactContent(task: Attempt, finished: number, text: string) {
+  const header = [
+    `Task: ${task.id}`,
+    "State: done",
+    `Attempt: ${task.attempts}`,
+    `Finished: ${new Date(finished).toISOString()}`,
+    `Goal: ${task.goal}`,
+    "",
+    "---",
+    "",
+    "",
+  ].join("\n");
+  const bytes = Buffer.byteLength(text);
+  if (bytes <= MAX_ARTIFACT_TEXT_BYTES) {
+    const newline = bytes < MAX_ARTIFACT_TEXT_BYTES ? "\n" : "";
+    return Buffer.from(`${header}${text}${newline}`);
+  }
+  const marker = Buffer.from(
+    `\n[Output truncated. Original length: ${bytes} bytes.]\n`,
+  );
+  const body = Buffer.alloc(MAX_ARTIFACT_TEXT_BYTES - marker.length);
+  // Buffer.write stops before any UTF-8 character that would straddle the cap.
+  const written = body.write(text, "utf8");
+  return Buffer.concat([
+    Buffer.from(header),
+    body.subarray(0, written),
+    marker,
+  ]);
+}
+
+function writeArtifact(path: string, data: Buffer) {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temp = join(dir, `.write-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temp, data, { flag: "wx", mode: 0o600, flush: true });
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 export class DurableTaskError extends Error {
@@ -81,6 +139,10 @@ export interface DurableTask {
   nextRun: number | null;
   deadlineAt: number | null;
   budgetTurns: number;
+  artifactPath: string | null;
+  artifactSha256: string | null;
+  artifactBytes: number | null;
+  artifactVersion: number;
 }
 
 export class DurableTasks {
@@ -304,8 +366,18 @@ export class DurableTasks {
       if (!submission)
         throw new DurableTaskError("Missing execution submission");
       const result = await submission.wait(waitContext);
-      if (result.status === "done") outcome = { kind: "done" };
-      else if (result.reason === "turn_limit")
+      if (result.status === "done") {
+        if (result.answer === undefined)
+          throw new DurableTaskError("Missing execution answer");
+        outcome = {
+          kind: "done",
+          text: await runtime.readAssistantAnswer(
+            conversation,
+            result.answer,
+            waitContext,
+          ),
+        };
+      } else if (result.reason === "turn_limit")
         outcome = { kind: "budget", error: "budget_turns" };
       else outcome = { kind: "failure", error: settleFailureReason(result) };
     } catch (error) {
@@ -337,20 +409,87 @@ export class DurableTasks {
   }
 
   private settle(task: Attempt, outcome: Outcome) {
+    if (!this.execution) return;
+    const { dir, runtime } = this.execution;
     const now = this.clock();
     const retry =
       outcome.kind === "failure" && task.attempts < task.maxAttempts;
     const state =
       outcome.kind === "done" ? "done" : retry ? "queued" : "interrupted";
-    this.store.run(
-      `UPDATE durable_tasks SET state=?, updatedAt=?, lastError=?, nextRun=?
-       WHERE id=? AND state='running' AND attempts=?`,
-      state,
-      now,
-      outcome.kind === "done" ? null : outcome.error,
-      retry ? now + Math.min(60_000 * task.attempts, 3_600_000) : null,
-      task.id,
-      task.attempts,
+    const path =
+      outcome.kind === "done"
+        ? join(dir, "artifacts", "durable", task.id, `${task.attempts}.md`)
+        : null;
+    const data =
+      outcome.kind === "done" ? artifactContent(task, now, outcome.text) : null;
+    let wroteArtifact = false;
+    let queuedNotice: boolean;
+    try {
+      queuedNotice = this.store.savepoint("durable_task_settlement", () => {
+        // Validate the attempt before writing a file, and commit the row and notice only after rename.
+        const row = this.store.get<DurableTask>(
+          `UPDATE durable_tasks SET state=?, updatedAt=?, lastError=?, nextRun=?,
+           artifactPath=COALESCE(?,artifactPath),
+           artifactSha256=COALESCE(?,artifactSha256),
+           artifactBytes=COALESCE(?,artifactBytes),
+           artifactVersion=artifactVersion+?
+           WHERE id=? AND state='running' AND attempts=? RETURNING *`,
+          state,
+          now,
+          outcome.kind === "done" ? null : outcome.error,
+          retry ? now + Math.min(60_000 * task.attempts, 3_600_000) : null,
+          path,
+          data ? createHash("sha256").update(data).digest("hex") : null,
+          data?.byteLength ?? null,
+          data ? 1 : 0,
+          task.id,
+          task.attempts,
+        );
+        if (!row || retry) return false;
+        const queued = this.queueTerminalNotice(row, runtime);
+        if (path && data) {
+          writeArtifact(path, data);
+          wroteArtifact = true;
+        }
+        return queued;
+      });
+    } catch (error) {
+      if (wroteArtifact && path) rmSync(path, { force: true });
+      if (outcome.kind !== "done") throw error;
+      this.settle(task, this.failure(task, error));
+      return;
+    }
+    if (queuedNotice) runtime.flushTelegramPending?.();
+  }
+
+  private queueTerminalNotice(
+    task: DurableTask,
+    runtime: Execution["runtime"],
+  ) {
+    if (this.store.conversationDeleted(task.conversationId)) return false;
+    const versionOrState =
+      task.state === "done" ? task.artifactVersion : task.state;
+    const requestId = `durable-task-terminal:${hash(JSON.stringify([task.id, versionOrState]))}`;
+    const goal = [...task.goal.replace(/\s+/g, " ").trim()]
+      .slice(0, 80)
+      .join("");
+    let text = `Durable task ${task.id} · ${goal} · ${task.state}`;
+    if (task.state === "done" && task.artifactBytes !== null) {
+      const size =
+        task.artifactBytes < 1024
+          ? `${task.artifactBytes} B`
+          : `${(task.artifactBytes / 1024).toFixed(1)} KiB`;
+      text += ` · ${task.artifactPath} (${size})`;
+    }
+    const notice = this.store.run(
+      "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
+      task.conversationId,
+      requestId,
+      text,
+    );
+    return (
+      !!notice.changes &&
+      runtime.queueTopicNotice(task.conversationId, requestId, text)
     );
   }
 
