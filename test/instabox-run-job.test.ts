@@ -64,6 +64,7 @@ async function sandbox() {
   return {
     root,
     home,
+    bin,
     env,
     close: () => rm(root, { recursive: true, force: true }),
   };
@@ -94,10 +95,12 @@ function run(
   });
 }
 
-async function readStatus(home: string, jobId: string) {
-  const raw = await readFile(join(home, "jobs", jobId, "status.json"), "utf8");
+async function readStatus(home: string, jobId: string, file = "status.json") {
+  const raw = await readFile(join(home, "jobs", jobId, file), "utf8");
   return JSON.parse(raw) as {
     state: string;
+    startedAt?: number;
+    phase?: string;
     error?: string;
     result?: { pr?: string; branch?: string; summary?: string };
   };
@@ -169,6 +172,59 @@ test("run-job.sh grava RUNNING e DONE com os argumentos do node -e", async () =>
   }
 });
 
+test("run-job.sh records each phase before its command and preserves startedAt", async () => {
+  const box = await sandbox();
+  const jobId = "cj-phases";
+  const jobDir = join(box.home, "jobs", jobId);
+  const snapshot = `#!/bin/sh
+set -eu
+if [ "$1" = "-C" ]; then shift 2; fi
+save() { cp "$JOB_DIR/status.json" "$JOB_DIR/$1.json"; }
+case "\${0##*/}:$1" in
+  gh:repo) save clone; mkdir -p "$4/.git"; touch "$4/package-lock.json" ;;
+  git:checkout) save checkout ;;
+  npm:ci) save npm_ci ;;
+  pi:-p) save agent ;;
+  git:status) printf '%s\\n' ' M file' ;;
+  git:add) save git ;;
+  git:rev-parse) [ "$2" != HEAD ] || printf '%s\\n' abc123 ;;
+  git:push) save push ;;
+esac
+`;
+  try {
+    await mkdir(jobDir, { recursive: true });
+    await writeFile(
+      join(jobDir, "request.json"),
+      JSON.stringify({ repo: "example/app", agent: "pi", writes: true }),
+    );
+    for (const command of ["gh", "git", "npm", "pi"])
+      await writeFile(join(box.bin, command), snapshot, { mode: 0o755 });
+    const result = await run(RUN, [jobId], { ...box.env, JOB_DIR: jobDir });
+    assert.equal(result.code, 0, result.stderr);
+
+    const snapshots = await Promise.all(
+      ["clone", "checkout", "npm_ci", "agent", "git", "push"].map((step) =>
+        readStatus(box.home, jobId, `${step}.json`),
+      ),
+    );
+    assert.deepEqual(
+      snapshots.map(({ phase }) => phase),
+      ["clone", "clone", "npm_ci", "agent", "git", "push"],
+    );
+    const startedAt = snapshots[0].startedAt;
+    assert.ok(typeof startedAt === "number" && startedAt > 0);
+    for (const status of snapshots) {
+      assert.equal(status.state, "RUNNING");
+      assert.equal(status.startedAt, startedAt);
+    }
+    const done = await readStatus(box.home, jobId);
+    assert.equal(done.state, "DONE");
+    assert.equal(done.phase, "push");
+  } finally {
+    await box.close();
+  }
+});
+
 test("fail() grava FAILED no status.json e não perde o caminho no argv", async () => {
   const box = await sandbox();
   const jobId = "cj-failpath";
@@ -178,6 +234,7 @@ test("fail() grava FAILED no status.json e não perde o caminho no argv", async 
     assert.notEqual(result.code, 0);
     const status = await readStatus(box.home, jobId);
     assert.equal(status.state, "FAILED");
+    assert.equal(status.phase, undefined);
     assert.match(status.error ?? "", /request\.json not found/);
     assert.doesNotMatch(result.stderr, /ERR_INVALID_ARG_TYPE|newPath/);
   } finally {

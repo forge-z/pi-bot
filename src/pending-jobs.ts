@@ -19,6 +19,7 @@ export { sandboxCall };
 import {
   buildReadInput,
   isTerminal,
+  jobPhase,
   jobState,
   loadManifests,
   readPath,
@@ -54,6 +55,10 @@ export function elapsedText(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function phaseSuffix(phase?: string | null): string {
+  return phase ? ` (${phase})` : "";
 }
 
 /** The PR URL a result carries, only when it is a whole GitHub URL. */
@@ -110,6 +115,8 @@ interface PendingJob {
   next_poll_at: number;
   /** Last normalized state the provider reported. */
   job_state: string | null;
+  /** Phase from the last successful observation, when supplied by the provider. */
+  job_phase?: string | null;
   /** Provider word from the last successful read, e.g. `RUNNING` or `COMPLETED`. */
   last_status?: string | null;
   /** When the provider was last read successfully. */
@@ -510,6 +517,10 @@ export class PendingJobs {
     if (!columns.includes("job_state"))
       this.app.store.db.exec(
         "ALTER TABLE pending_jobs ADD COLUMN job_state TEXT",
+      );
+    if (!columns.includes("job_phase"))
+      this.app.store.db.exec(
+        "ALTER TABLE pending_jobs ADD COLUMN job_phase TEXT",
       );
     if (!columns.includes("last_status"))
       this.app.store.db.exec(
@@ -1338,6 +1349,8 @@ export class PendingJobs {
     observed: Run | JobState,
   ) {
     const state = typeof observed === "string" ? observed : observed.state;
+    const phase =
+      typeof observed === "string" ? null : (observed.phase ?? null);
     const status =
       typeof observed === "string"
         ? observed.toUpperCase()
@@ -1348,10 +1361,12 @@ export class PendingJobs {
     row.poll_attempts = 0;
     const previous = row.job_state ?? null;
     row.job_state = state;
+    row.job_phase = phase;
     this.app.store.run(
-      `UPDATE pending_jobs SET job_state=?, last_status=?, last_seen_at=?,
+      `UPDATE pending_jobs SET job_state=?, job_phase=?, last_status=?, last_seen_at=?,
          last_error=?, poll_attempts=0, next_poll_at=? WHERE id=?`,
       state,
+      phase,
       status,
       Date.now(),
       error,
@@ -1381,7 +1396,7 @@ export class PendingJobs {
     void this.announce(
       row.conversation_id,
       `job:${row.id}:state:${state}`,
-      `Job ${row.id} (${row.run_id ?? `row ${row.id}`}) is ${state.toUpperCase()} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
+      `Job ${row.id} (${row.run_id ?? `row ${row.id}`}) is ${state.toUpperCase()}${phaseSuffix(row.job_phase)} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
     );
   }
 
@@ -1400,7 +1415,7 @@ export class PendingJobs {
     const state = row.job_state as JobState | null;
     const terminal = state !== null && isTerminal(state);
     const parts = [
-      `Job ${row.id} (${row.run_id ? `run ${row.run_id}` : "no provider id yet"}): ${state ? state.toUpperCase() : "registered, not observed yet"}, ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
+      `Job ${row.id} (${row.run_id ? `run ${row.run_id}` : "no provider id yet"}): ${state ? state.toUpperCase() : "registered, not observed yet"}${phaseSuffix(row.job_phase)}, ${elapsedText(Date.now() - row.created_at)} since dispatch.`,
     ];
     if (state === "done") {
       const pr = storedPrUrl(row.result);
@@ -2520,6 +2535,7 @@ export class PendingJobs {
     return {
       run_id: id,
       state: jobState(manifest, job),
+      phase: jobPhase(job),
       status,
       goal: null,
       error: typeof error === "string" ? error : null,
@@ -2578,7 +2594,7 @@ export class PendingJobs {
       : forcedOutcome === "failed" || forcedOutcome === "cancelled"
         ? `is ${forcedOutcome.toUpperCase()}`
         : "ended";
-    const headline = `Job ${row.id} (${deliveryRow.run_id ?? "unknown"}) ${stateWord} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`;
+    const headline = `Job ${row.id} (${deliveryRow.run_id ?? "unknown"}) ${stateWord}${phaseSuffix(row.job_phase)} — ${elapsedText(Date.now() - row.created_at)} since dispatch.`;
     const prompt =
       resultText !== undefined
         ? [
@@ -2695,6 +2711,7 @@ interface Run {
   run_id: string;
   /** Normalized state; the provider's own word is kept in `status`. */
   state: JobState;
+  phase?: string;
   status: string;
   goal?: string | null;
   error?: string | null;
@@ -2726,6 +2743,7 @@ function runsOf(result: unknown, manifest?: JobManifest): Run[] {
       {
         run_id,
         state: manifest ? jobState(manifest, run) : ("unknown" as JobState),
+        phase: jobPhase(run),
         status,
         goal: typeof run.goal === "string" ? run.goal : null,
         error: typeof error === "string" ? error : null,

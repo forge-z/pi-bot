@@ -12,18 +12,33 @@ JOBS_BASE="$HOME/jobs"
 JOB_DIR="$JOBS_BASE/$JOB_ID"
 STATUS_FILE="$JOB_DIR/status.json"
 AGENT_LOG="$JOB_DIR/agent.log"
+PHASE=""
 
 # `node -e` has no script name: argv is [node, arg, ...]. `[,, x]` skips the first arg.
 fail() {
   local err="$1"
   node -e '
     const fs = require("fs");
-    const [, statusPath, err] = process.argv;
-    const data = { state: "FAILED", error: err, finishedAt: Date.now() };
+    const [, statusPath, err, phase] = process.argv;
+    const data = { state: "FAILED", error: err, finishedAt: Date.now(), ...(phase ? { phase } : {}) };
     fs.writeFileSync(statusPath + ".tmp", JSON.stringify(data));
     fs.renameSync(statusPath + ".tmp", statusPath);
-  ' "$STATUS_FILE" "$err"
+  ' "$STATUS_FILE" "$err" "$PHASE"
   exit 1
+}
+
+# Grava status RUNNING ou atualiza a fase de forma atômica
+running() {
+  PHASE="${1:-}"
+  node -e '
+    const fs = require("fs");
+    const [, statusPath, phase] = process.argv;
+    const data = phase
+      ? { ...JSON.parse(fs.readFileSync(statusPath, "utf8")), phase }
+      : { state: "RUNNING", startedAt: Date.now() };
+    fs.writeFileSync(statusPath + ".tmp", JSON.stringify(data));
+    fs.renameSync(statusPath + ".tmp", statusPath);
+  ' "$STATUS_FILE" "$PHASE"
 }
 
 if [ ! -f "$JOB_DIR/request.json" ]; then
@@ -45,14 +60,7 @@ if [ -f "$HOME/.agents-env.sh" ]; then
   source "$HOME/.agents-env.sh"
 fi
 
-# Grava status RUNNING de forma atômica
-node -e '
-  const fs = require("fs");
-  const [, statusPath] = process.argv;
-  const data = { state: "RUNNING", startedAt: Date.now() };
-  fs.writeFileSync(statusPath + ".tmp", JSON.stringify(data));
-  fs.renameSync(statusPath + ".tmp", statusPath);
-' "$STATUS_FILE"
+running
 
 # Lê parâmetros de request.json via node
 REPO=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.repo||"");' "$JOB_DIR/request.json")
@@ -80,6 +88,7 @@ fi
 WORK_DIR="$HOME/work/$REPO"
 mkdir -p "$(dirname "$WORK_DIR")"
 
+running clone
 if [ ! -d "$WORK_DIR/.git" ]; then
   gh repo clone "$REPO" "$WORK_DIR" > "$JOB_DIR/clone.log" 2>&1 || fail "Failed to clone repository $REPO"
 else
@@ -92,29 +101,29 @@ git -C "$WORK_DIR" checkout -B "$BRANCH" HEAD > "$JOB_DIR/checkout.log" 2>&1 || 
 fail "Failed to create branch $BRANCH in repository $REPO"
 
 if [ -f "$WORK_DIR/package-lock.json" ]; then
+  running npm_ci
   (cd "$WORK_DIR" && npm ci) > "$JOB_DIR/npm-ci.log" 2>&1 || fail "npm ci failed in $REPO"
 fi
 
 # Executa agente pedido com timeout de 20 min (1200 segundos) e stdin de /dev/null
-set +e
+AGENT_EXIT=0
 case "$AGENT" in
   agy)
-    (cd "$WORK_DIR" && timeout 1200 agy -p "$PROMPT" --dangerously-skip-permissions --add-dir "$JOB_DIR" </dev/null) > "$AGENT_LOG" 2>&1
-    AGENT_EXIT=$?
+    running agent
+    (cd "$WORK_DIR" && timeout 1200 agy -p "$PROMPT" --dangerously-skip-permissions --add-dir "$JOB_DIR" </dev/null) > "$AGENT_LOG" 2>&1 || AGENT_EXIT=$?
     ;;
   pi)
-    (cd "$WORK_DIR" && timeout 1200 pi -p "$PROMPT" </dev/null) > "$AGENT_LOG" 2>&1
-    AGENT_EXIT=$?
+    running agent
+    (cd "$WORK_DIR" && timeout 1200 pi -p "$PROMPT" </dev/null) > "$AGENT_LOG" 2>&1 || AGENT_EXIT=$?
     ;;
   claude)
-    (cd "$WORK_DIR" && timeout 1200 claude -p "$PROMPT" --dangerously-skip-permissions </dev/null) > "$AGENT_LOG" 2>&1
-    AGENT_EXIT=$?
+    running agent
+    (cd "$WORK_DIR" && timeout 1200 claude -p "$PROMPT" --dangerously-skip-permissions </dev/null) > "$AGENT_LOG" 2>&1 || AGENT_EXIT=$?
     ;;
   *)
     fail "Agente $AGENT unknown"
     ;;
 esac
-set -e
 
 if [ "$AGENT_EXIT" -eq 124 ]; then
   fail "Agent exceeded the 20-minute time limit"
@@ -125,6 +134,7 @@ fi
 PR_URL=""
 # Verifica se há alterações para commitar e criar PR
 if [ -n "$(git -C "$WORK_DIR" status --porcelain)" ]; then
+  running git
   git -C "$WORK_DIR" add -A > "$JOB_DIR/git.log" 2>&1
   COMMIT_MSG="feat(agent): task $JOB_ID"
   git -C "$WORK_DIR" commit -m "$COMMIT_MSG" >> "$JOB_DIR/git.log" 2>&1 || true
@@ -135,6 +145,7 @@ LOCAL_REV=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || true)
 REMOTE_REV=$(git -C "$WORK_DIR" rev-parse "origin/$BRANCH" 2>/dev/null || true)
 
 if [ "$LOCAL_REV" != "$REMOTE_REV" ] && [ -n "$LOCAL_REV" ]; then
+  running push
   git -C "$WORK_DIR" push -u origin "$BRANCH" >> "$JOB_DIR/git.log" 2>&1 || fail "Failed to push branch $BRANCH to origin"
   PR_URL=$(cd "$WORK_DIR" && gh pr create --fill --head "$BRANCH" 2>> "$JOB_DIR/git.log" || gh pr view --json url -q .url 2>> "$JOB_DIR/git.log" || true)
 fi
@@ -142,7 +153,7 @@ fi
 # Grava status final DONE com JSON.stringify via node de forma atômica
 node -e '
   const fs = require("fs");
-  const [, statusPath, agentLogPath, prUrl, branch] = process.argv;
+  const [, statusPath, agentLogPath, prUrl, branch, phase] = process.argv;
   let summary = "";
   try {
     if (fs.existsSync(agentLogPath)) {
@@ -158,10 +169,11 @@ node -e '
   const res = {
     state: "DONE",
     result,
-    finishedAt: Date.now()
+    finishedAt: Date.now(),
+    ...(phase ? { phase } : {}),
   };
   fs.writeFileSync(statusPath + ".tmp", JSON.stringify(res));
   fs.renameSync(statusPath + ".tmp", statusPath);
-' "$STATUS_FILE" "$AGENT_LOG" "$PR_URL" "$BRANCH"
+' "$STATUS_FILE" "$AGENT_LOG" "$PR_URL" "$BRANCH" "$PHASE"
 
 exit 0

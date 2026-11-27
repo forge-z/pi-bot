@@ -148,6 +148,12 @@ export function jobState(manifest: JobManifest, value: unknown): JobState {
   return "unknown";
 }
 
+/** Reads the optional provider phase verbatim. */
+export function jobPhase(value: unknown): string | undefined {
+  const phase = readPath(value, "phase");
+  return typeof phase === "string" && phase.length > 0 ? phase : undefined;
+}
+
 /** Substitutes `${id}`, `${goal}` and `${row}` in a template value. */
 export function renderTemplate(
   value: unknown,
