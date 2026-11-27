@@ -74,6 +74,7 @@ async function sectionText(app: Runtime, key: string) {
 
 async function createFixture(
   envOverrides: Record<string, string | undefined> = {},
+  config?: string,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "pi-sandbox-task-test-"));
   const models = createModels();
@@ -129,8 +130,10 @@ async function createFixture(
     INSTABOX_MACHINE_ID: "machine-test-1",
     INSTABOX_ACCOUNT_ID: "acc-test-1",
     INSTABOX_REPO_ALLOWLIST: "example/*, allowed-owner/specific-repo",
+    ...(config === undefined ? {} : { CONFIG_FILE: join(dir, "config.yaml") }),
     ...envOverrides,
   };
+  if (config !== undefined) await writeFile(join(dir, "config.yaml"), config);
 
   const app = await Runtime.open({
     dir,
@@ -297,6 +300,102 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     );
     assert.equal(row?.run_id, dispatched.jobId);
     assert.equal(row?.tool, "internal.instabox.codeTask");
+  } finally {
+    await f.close();
+  }
+});
+
+const ROLE_CONFIG = `roles:
+  coder:
+    instructions: Keep the patch focused.
+    readOnly: false
+  reviewer:
+    instructions: Check for regressions.
+`;
+
+test("a write role keeps the approval flow and sends its instructions with the job", async () => {
+  const f = await createFixture({}, ROLE_CONFIG);
+  try {
+    const convId = await f.app.create("Write as coder");
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const args = {
+      repo: "example/app",
+      agent: "pi",
+      prompt: "Fix the parser.",
+      writes: true,
+    };
+    const pending = await tool.execute(
+      { ...args, role: "coder" },
+      { conversationId: convId } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(JSON.parse(getText(pending)).status, "approval_pending");
+    assert.equal(f.app.mcpCalls!.interactions(convId).length, 1);
+    assert.equal(launched(f.calls).length, 0);
+    assert.equal(jobCount(f.app, convId), 0);
+    assert.equal(
+      JSON.parse(await approveJob(f.app, convId)).status,
+      "dispatched",
+    );
+    assert.equal(launched(f.calls).length, 1);
+    const execInput = JSON.parse(
+      /machines\.exec\((\{.*\})\)/.exec(launched(f.calls)[0]!)?.[1] ?? "null",
+    ) as { input: { stdin: string } };
+    assert.deepEqual(JSON.parse(execInput.input.stdin), {
+      ...args,
+      prompt: "Fix the parser.\n\nKeep the patch focused.",
+    });
+    const agent = await (await f.app.conversation(convId)).agent(context);
+    const listed = agent.tools.find((item) => item.name === tool.name);
+    assert.ok(listed);
+    assert.partialDeepStrictEqual(listed.parameters, {
+      properties: { role: { type: "string" } },
+    });
+    assert.deepEqual((listed.parameters as { required: string[] }).required, [
+      "repo",
+      "agent",
+      "prompt",
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("read and unknown roles and write roles without writes=true create no approval or job", async () => {
+  const f = await createFixture({}, ROLE_CONFIG);
+  try {
+    const convId = await f.app.create("Refuse roles");
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const api = { conversationId: convId } as unknown as ToolExecutionApi;
+    const args = {
+      repo: "example/app",
+      agent: "pi",
+      prompt: "Fix the parser.",
+    };
+    for (const [role, writes, message] of [
+      [
+        "reviewer",
+        true,
+        'Sandbox code task role "reviewer" is read-only. Use the subagent tool for this role.',
+      ],
+      [
+        "missing",
+        true,
+        'Unknown sandbox code task role "missing". Configured write roles: "coder".',
+      ],
+      ["coder", false, 'Sandbox code task role "coder" requires writes=true.'],
+    ] as const) {
+      const result = await tool.execute(
+        { ...args, role, writes },
+        api,
+        context,
+      );
+      assert.equal(result.isError, true);
+      assert.equal(getText(result), message);
+    }
+    assert.equal(f.app.mcpCalls!.interactions(convId).length, 0);
+    assert.equal(jobCount(f.app, convId), 0);
+    assert.equal(f.calls.length, 0);
   } finally {
     await f.close();
   }

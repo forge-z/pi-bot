@@ -4,6 +4,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
   configure,
+  defineDoc,
   defineExtension,
   defineTool,
   section,
@@ -13,7 +14,11 @@ import {
   type ToolExecutionApi,
   type Tx,
 } from "@earendil-works/pi-durable";
-import type { SubagentsConfig } from "./harness-config.js";
+import {
+  findRole,
+  type HarnessConfig,
+  type SubagentsConfig,
+} from "./harness-config.js";
 import { wrapUntrustedToolResult } from "./untrusted.js";
 
 /** Model-facing name, and the extension that carries it. */
@@ -45,6 +50,33 @@ export const SUBAGENT_MEDIA_OMITTED =
 
 const NESTED_REFUSAL = "A subagent cannot create another subagent.";
 const ARGS_REFUSAL = "Provide either task or tasks, not both.";
+
+// Keep the selected allowlist with the child so a resumed call uses the same policy.
+const SubagentToolPolicy = defineDoc<{ role: string; tools: string[] }>({
+  kind: "pi-bot.subagent-tool-policy",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ role: "", tools: [] }),
+  checkpointWhen: () => false,
+});
+
+export async function subagentToolRefusal(
+  tool: string,
+  api: ToolExecutionApi,
+  context: Context,
+) {
+  const policy = await api.snapshot(
+    SubagentToolPolicy,
+    api.conversationId,
+    context,
+  );
+  if (policy?.tools.length && !policy.tools.includes(tool))
+    return refusal(
+      `Subagent role ${JSON.stringify(policy.role)} does not allow MCP tool ${JSON.stringify(tool)}.`,
+    );
+}
 
 export interface SubagentHost {
   /** Parent conversation id when `id` is a subagent, otherwise null. */
@@ -100,8 +132,13 @@ function refusal(text: string) {
 export function createSubagentExtension(
   host: SubagentHost,
   config: SubagentsConfig,
+  roles?: HarnessConfig["roles"],
 ) {
   const taskText = Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS });
+  const readRoles = Object.entries(roles ?? {})
+    .filter(([, role]) => role.readOnly)
+    .map(([name]) => JSON.stringify(name))
+    .join(", ");
   return defineExtension({
     name: SUBAGENT_TOOL_NAME,
     sections: [
@@ -121,6 +158,15 @@ export function createSubagentExtension(
               maxItems: config.maxParallel,
             }),
           ),
+          ...(roles
+            ? {
+                role: Type.Optional(
+                  Type.String({
+                    description: `Configured read roles: ${readRoles || "(none)"}.`,
+                  }),
+                ),
+              }
+            : {}),
         }),
         // A rerun finds the children this call created and the submissions it made.
         replay: "safe",
@@ -129,6 +175,18 @@ export function createSubagentExtension(
             return refusal(NESTED_REFUSAL);
           if ((args.task === undefined) === (args.tasks === undefined))
             return refusal(ARGS_REFUSAL);
+          const roleName =
+            typeof args.role === "string" ? args.role : undefined;
+          const role =
+            roleName === undefined ? undefined : findRole(roles, roleName);
+          if (roleName !== undefined && !role)
+            return refusal(
+              `Unknown subagent role ${JSON.stringify(roleName)}. Configured read roles: ${readRoles || "(none)"}.`,
+            );
+          if (role?.readOnly === false)
+            return refusal(
+              `Subagent role ${JSON.stringify(roleName)} is a write role. Use the sandbox job tool with writes=true.`,
+            );
           const tasks = args.tasks?.map((item) => item.task) ?? [args.task!];
           const children = await api.commit(async (tx) => {
             // Reads first: a table read after a write in one commit is refused.
@@ -150,10 +208,17 @@ export function createSubagentExtension(
               });
               await configure(tx, created.id, {
                 extensions: host.childExtensions(),
-                thinkingLevel: config.thinking,
-                maxTurns: config.maxTurns,
-                instructions: SUBAGENT_CHILD_INSTRUCTIONS,
+                thinkingLevel: role?.thinking ?? config.thinking,
+                maxTurns: role?.maxTurns ?? config.maxTurns,
+                instructions: role
+                  ? `${role.instructions}\n\n${SUBAGENT_CHILD_INSTRUCTIONS}`
+                  : SUBAGENT_CHILD_INSTRUCTIONS,
               });
+              if (roleName !== undefined && role?.tools?.length) {
+                const policy = await tx.doc(SubagentToolPolicy, created.id);
+                policy.role = roleName;
+                policy.tools = role.tools;
+              }
               ids.push(created.id);
             }
             return ids;

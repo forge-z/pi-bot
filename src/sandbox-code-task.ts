@@ -8,7 +8,7 @@ import {
   envWithDiscovery,
   resolveTemplates,
 } from "./discover.js";
-import { loadHarnessConfig } from "./harness-config.js";
+import { findRole, loadHarnessConfig } from "./harness-config.js";
 import { renderTemplate } from "./job-manifest.js";
 import { McpNotSentError, PolicyError } from "./mcp.js";
 import {
@@ -270,6 +270,7 @@ async function dispatchJob(
   call: Call,
   writes: boolean,
   signal?: AbortSignal,
+  roleInstructions?: string,
 ): Promise<DispatchText> {
   const json = (body: unknown, rejected?: true): DispatchText => ({
     text: JSON.stringify(body),
@@ -284,6 +285,17 @@ async function dispatchJob(
         .trim()
         .slice(0, 120)
     : undefined;
+  if (roleInstructions) {
+    const field = task.goal ?? "prompt";
+    const prompt = input[field];
+    input = {
+      ...input,
+      [field]:
+        typeof prompt === "string"
+          ? `${prompt}\n\n${roleInstructions}`
+          : roleInstructions,
+    };
+  }
   let execArgs = prepareExec(task, env, jobId, goal, input, writes);
   const account =
     typeof execArgs.accountId === "string" && execArgs.accountId.trim()
@@ -444,6 +456,25 @@ export function createSandboxCodeTaskTool(
 ) {
   const task = readTask(env);
   if (!task) return undefined;
+  const { roles } = loadHarnessConfig(env);
+  const writeRoles = Object.entries(roles ?? {})
+    .filter(([, role]) => !role.readOnly)
+    .map(([name]) => JSON.stringify(name))
+    .join(", ");
+  const parameters = roles
+    ? {
+        ...task.parameters,
+        properties: {
+          ...("properties" in task.parameters &&
+          isRecord(task.parameters.properties)
+            ? task.parameters.properties
+            : {}),
+          role: Type.String({
+            description: `Configured write roles: ${writeRoles || "(none)"}. Requires writes=true.`,
+          }),
+        },
+      }
+    : task.parameters;
   const instabox = isInstabox(task);
   const patterns = allowPatterns(task.allow, env);
   const executor = (env.ASYNC_JOB_EXECUTOR ?? "").trim() || "executor";
@@ -469,6 +500,10 @@ export function createSandboxCodeTaskTool(
       input,
       call,
       true,
+      undefined,
+      typeof spec.roleInstructions === "string"
+        ? spec.roleInstructions
+        : undefined,
     );
     return {
       state: outcome.isError || outcome.rejected ? "failed" : "done",
@@ -483,7 +518,7 @@ export function createSandboxCodeTaskTool(
       (instabox
         ? "Run code tasks with write access on Instabox. Use writes=true only with user authorization; starting the task requires approval in chat. Do not use for read-only tasks."
         : 'For any task that may take more than about 60 seconds or when asked to "let me know when it finishes", call this tool once. Do not poll in a loop. Starting the task does not block the conversation; the result arrives automatically. Use writes=true only for pushing, opening a pull request, or commenting (approval is required before the task starts). Otherwise, the task is read-only.'),
-    parameters: task.parameters,
+    parameters,
     replay: "safe",
     execute: async (
       args: Record<string, unknown>,
@@ -494,9 +529,29 @@ export function createSandboxCodeTaskTool(
         output: [{ type: "text" as const, text: JSON.stringify(body) }],
       });
       const input = isRecord(args) ? args : {};
+      const { role: roleName, ...taskInput } = input;
+      let roleInstructions: string | undefined;
+      if (typeof roleName === "string") {
+        const role = findRole(roles, roleName);
+        const name = JSON.stringify(roleName);
+        const refuse = (text: string) => asToolResult({ text, isError: true });
+        if (!role)
+          return refuse(
+            `Unknown sandbox code task role ${name}. Configured write roles: ${writeRoles || "(none)"}.`,
+          );
+        if (role.readOnly)
+          return refuse(
+            `Sandbox code task role ${name} is read-only. Use the subagent tool for this role.`,
+          );
+        if (input.writes !== true)
+          return refuse(`Sandbox code task role ${name} requires writes=true.`);
+        roleInstructions = role.instructions;
+      }
       let valid = false;
       try {
-        valid = Value.Check(task.parameters, input);
+        valid =
+          (roleName === undefined || typeof roleName === "string") &&
+          Value.Check(parameters, input);
       } catch {
         /* an invalid schema in config never becomes a caller error */
       }
@@ -541,7 +596,9 @@ export function createSandboxCodeTaskTool(
           server,
           task.tool,
           writePreview(task, input),
-          { conversationId, input },
+          roleInstructions
+            ? { conversationId, input: taskInput, roleInstructions }
+            : { conversationId, input },
         );
         if (!requestId)
           return reply({

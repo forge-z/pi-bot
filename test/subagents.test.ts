@@ -26,7 +26,20 @@ import { summarizeConversationTreeUsage } from "../src/conversation-usage.js";
 
 const ENABLED = "subagents:\n  enabled: true\n";
 const SEARCH = mcpToolName("mock", "search");
+const FETCH = mcpToolName("mock", "fetch");
 const EXECUTE = mcpToolName("mock", "execute");
+const ROLES = `${ENABLED}roles:
+  research:
+    instructions: Cite primary sources.
+    maxTurns: 4
+    thinking: high
+    tools: [${SEARCH}]
+  reviewer:
+    instructions: Review for regressions.
+  coder:
+    instructions: Implement the requested change.
+    readOnly: false
+`;
 /** A large MCP read the child sees and the parent must never carry. */
 const BIG_MARKER = "FEED-DUMP-";
 const BIG_RESULT = `${BIG_MARKER}${"x".repeat(50_000)}`;
@@ -117,7 +130,7 @@ async function open(options: {
     {
       server: "mock",
       mode: "direct",
-      tools: ["search", "execute"].map((name) => ({
+      tools: ["search", "fetch", "execute"].map((name) => ({
         name,
         description: `${name} the feed`,
         inputSchema: { type: "object" },
@@ -223,8 +236,33 @@ test("one delegation returns only the child's final text, with a read-only tool 
     config: `${ENABLED}  thinking: low\n`,
     parent: [
       async (ctx) => {
-        const names = getCurrentTools(ctx.messages).map((tool) => tool.name);
-        assert.equal(names.includes("subagent"), true);
+        const tools = getCurrentTools(ctx.messages);
+        assert.equal(
+          tools.some((tool) => tool.name === "subagent"),
+          true,
+        );
+        const tool = tools.find((tool) => tool.name === "subagent")!;
+        assert.equal(
+          tool.description,
+          "Delegate self-contained read-only work to a subagent and get its final answer back. The subagent does not see this conversation: put everything it needs in the task. Use task for one job, or tasks (up to 3) for independent jobs that run in parallel.",
+        );
+        const task = { type: "string", minLength: 1, maxLength: 8000 };
+        assert.deepEqual(JSON.parse(JSON.stringify(tool.parameters)), {
+          type: "object",
+          properties: {
+            task,
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["task"],
+                properties: { task },
+              },
+              minItems: 1,
+              maxItems: 3,
+            },
+          },
+        });
         assert.equal(sections(ctx.messages).subagents, subagentRule(3));
         return call(
           "subagent",
@@ -279,7 +317,113 @@ test("one delegation returns only the child's final text, with a read-only tool 
       true,
     );
     assert.equal(fixture.sent.length, 1);
-    assert.equal((await children(fixture.app, id)).length, 1);
+    const owned = await children(fixture.app, id);
+    assert.equal(owned.length, 1);
+    const agent = await (
+      await fixture.app.conversation(owned[0]!)
+    ).agent(context);
+    assert.equal(agent.instructions, SUBAGENT_CHILD_INSTRUCTIONS);
+    assert.equal(agent.maxTurns, 8);
+    assert.equal(agent.thinkingLevel, "low");
+  } finally {
+    await close(fixture);
+  }
+});
+
+test("a read role configures the child and limits which MCP reads are sent", async () => {
+  const fixture = await open({
+    config: ROLES,
+    parent: [
+      async () =>
+        call("subagent", { task: "Read the feed", role: "research" }, "d"),
+      async () => fauxAssistantMessage("done"),
+    ],
+    child: async (ctx) => {
+      switch (toolResults(ctx.messages).length) {
+        case 0:
+          return call(EXECUTE, { code: "delete all" }, "w");
+        case 1:
+          return call(FETCH, { id: "article" }, "blocked");
+        case 2:
+          return call(SEARCH, { query: "rss" }, "allowed");
+        default:
+          return fauxAssistantMessage("Sources checked.");
+      }
+    },
+  });
+  try {
+    const id = await fixture.app.create();
+    await fixture.app.submit(id, "turn", "Research the feed", "web");
+    await idle(fixture.app, id);
+    const [child] = await children(fixture.app, id);
+    assert.ok(child);
+    const agent = await (await fixture.app.conversation(child)).agent(context);
+    assert.equal(
+      agent.instructions,
+      `Cite primary sources.\n\n${SUBAGENT_CHILD_INSTRUCTIONS}`,
+    );
+    assert.equal(agent.maxTurns, 4);
+    assert.equal(agent.thinkingLevel, "high");
+    assert.equal(fixture.childRequests[0]?.reasoning, "high");
+    const results = toolResults(fixture.childRequests.at(-1)!.messages);
+    assert.equal(results[0]?.isError, true);
+    assert.equal(
+      textOf(results[0]),
+      "Subagents are read-only: this call was not sent. Return what you found and say the action must be done by the main assistant.",
+    );
+    assert.equal(results[1]?.isError, true);
+    assert.equal(
+      textOf(results[1]),
+      `Subagent role "research" does not allow MCP tool "${FETCH}".`,
+    );
+    assert.equal(results[2]?.isError, false);
+    assert.deepEqual(
+      fixture.sent.map((item) => item.tool),
+      ["search"],
+    );
+    assert.match(
+      lastToolResultText(fixture.parentRequests.at(-1)!),
+      /Sources checked/,
+    );
+  } finally {
+    await close(fixture);
+  }
+});
+
+test("unknown and write roles are refused without creating a child", async () => {
+  const fixture = await open({
+    config: ROLES,
+    parent: [
+      async () =>
+        call(
+          "subagent",
+          { task: "Read the feed", role: "constructor" },
+          "unknown",
+        ),
+      async () =>
+        call("subagent", { task: "Make a change", role: "coder" }, "write"),
+      async () => fauxAssistantMessage("done"),
+    ],
+    child: async () => fauxAssistantMessage("Unexpected child."),
+  });
+  try {
+    const id = await fixture.app.create();
+    await fixture.app.submit(id, "turn", "Delegate two tasks", "web");
+    await idle(fixture.app, id);
+    const results = toolResults(fixture.parentRequests.at(-1)!);
+    assert.deepEqual(
+      results.map((result) => result.isError),
+      [true, true],
+    );
+    assert.equal(
+      textOf(results[0]),
+      'Unknown subagent role "constructor". Configured read roles: "research", "reviewer".',
+    );
+    assert.equal(
+      textOf(results[1]),
+      'Subagent role "coder" is a write role. Use the sandbox job tool with writes=true.',
+    );
+    assert.deepEqual(await children(fixture.app, id), []);
   } finally {
     await close(fixture);
   }

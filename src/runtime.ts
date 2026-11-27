@@ -146,6 +146,7 @@ import {
   ownedConversations,
   SUBAGENT_MEDIA_OMITTED,
   SUBAGENT_WRITE_REFUSAL,
+  subagentToolRefusal,
 } from "./subagents.js";
 import { createAskUserTool } from "./ask-user.js";
 import {
@@ -1521,9 +1522,9 @@ export class Runtime {
         }),
       );
       // Off by default. Installed before MCP so guardToolExecutors wraps it too.
-      const { subagents } = harnessConfig;
+      const { subagents, roles } = harnessConfig;
       if (subagents.enabled)
-        registry.install(createSubagentExtension(app, subagents));
+        registry.install(createSubagentExtension(app, subagents, roles));
       await app.refreshMcpTools();
       app.durableDatabase = await openNodeSqliteDatabase(
         `${options.dir}/durable.sqlite`,
@@ -1862,6 +1863,14 @@ export class Runtime {
                       ],
                       isError: true,
                     };
+                  if (child) {
+                    const blocked = await subagentToolRefusal(
+                      mcpToolName(server.server, tool.name),
+                      api,
+                      callContext,
+                    );
+                    if (blocked) return blocked;
+                  }
                   const scheduled = child || this.scheduledTurn(conversationId);
                   // Executor, and any server that inherits its tool list, decides
                   // approval. A server with its own list still refuses a non-read
