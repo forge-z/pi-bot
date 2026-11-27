@@ -760,7 +760,8 @@ export class Runtime {
     this.guardGateway(options.gateway);
     // Read once at startup, like the other limits. A config change needs a restart.
     const env = options.env ?? process.env;
-    this.turnBudgetMs = loadHarnessConfig(env).interactiveTurnBudgetMs;
+    const config = loadHarnessConfig(env);
+    this.turnBudgetMs = config.interactiveTurnBudgetMs;
     this.longJobTool = longTaskToolName(env) || undefined;
     this.pendingJobs = new PendingJobs(this, env);
     this.store = options.store ?? new Store(options.dir);
@@ -825,7 +826,10 @@ export class Runtime {
     }
     this.settings = new Settings(this);
     this.tasks = new Tasks(this);
-    this.durableTasks = new DurableTasks(this.store, () => this.now());
+    this.durableTasks = new DurableTasks(this.store, () => this.now(), {
+      runtime: this,
+      config: config.durableTasks,
+    });
     this.telegramChats = new TelegramChats(this);
     options.initialize?.(this.store);
     this.commands = new Commands(this);
@@ -966,7 +970,7 @@ export class Runtime {
             defineTool({
               name: "durable_task",
               description:
-                "Use create, list, or show for durable tasks in this conversation, where each task is stored but no work starts or is scheduled for later.",
+                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation.",
               parameters: Type.Object({
                 action: Type.Union([
                   Type.Literal("create"),
@@ -1682,6 +1686,7 @@ export class Runtime {
         cursor = recovered.next;
       } while (cursor);
       app.queueDurableTaskRestartNotices();
+      await app.durableTasks.stopRestartedRuns();
       for (const row of app.store.all<RequestRow>(
         "SELECT * FROM requests WHERE status='pending' OR (source='system' AND status='deferred')",
       )) {
@@ -1773,6 +1778,7 @@ export class Runtime {
       return app;
     } catch (e) {
       await app?.tasks.close();
+      await app?.durableTasks.close();
       if (app?.harness) await app.harness.close(context);
       else await app?.durableDatabase?.close();
       app?.store.close();
@@ -4268,6 +4274,7 @@ export class Runtime {
     await this.trashSweep?.catch(() => {});
     await Promise.allSettled(this.purges);
     await this.tasks.close();
+    await this.durableTasks.close();
     await this.mcpCalls?.close();
     await this.harness.close(context);
     await Promise.allSettled(this.monitors.values());

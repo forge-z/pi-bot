@@ -67,6 +67,16 @@ const SUBAGENT_DEFAULTS: SubagentsConfig = {
 /** Default wall clock budget for one interactive turn. */
 export const DEFAULT_INTERACTIVE_BUDGET_MS = 180_000;
 
+export interface DurableTaskConfig {
+  maxTurns: number;
+  wallClockMs: number;
+}
+
+const DURABLE_TASK_DEFAULTS: DurableTaskConfig = {
+  maxTurns: 12,
+  wallClockMs: 900_000,
+};
+
 export interface HarnessConfig {
   mcpServers: Record<string, ServerTools>;
   asyncJobs: unknown[];
@@ -96,6 +106,7 @@ export interface HarnessConfig {
    * exempt. Invalid or missing keeps the default.
    */
   interactiveTurnBudgetMs: number;
+  durableTasks: DurableTaskConfig;
 }
 
 const WEB_DEFAULTS: WebConfig = {
@@ -157,6 +168,7 @@ const EMPTY: HarnessConfig = {
   memory: { enabled: true },
   whatsappAttachmentUrls: ATTACHMENT_URL_DEFAULTS,
   interactiveTurnBudgetMs: DEFAULT_INTERACTIVE_BUDGET_MS,
+  durableTasks: DURABLE_TASK_DEFAULTS,
 };
 const globCache = new Map<string, RegExp | null>();
 let cache: { key: string; config: HarnessConfig } | undefined;
@@ -307,6 +319,43 @@ function subagentsFrom(value: unknown): SubagentsConfig {
     else invalid("thinking");
   }
   return out;
+}
+
+function durableTasksFrom(value: unknown): DurableTaskConfig {
+  if (value === undefined) return DURABLE_TASK_DEFAULTS;
+  if (!isRecord(value)) {
+    console.error("Pi-Agent: durable_tasks is invalid. Using the default.");
+    return DURABLE_TASK_DEFAULTS;
+  }
+  const integer = (
+    field: string,
+    fallback: number,
+    min: number,
+    max: number,
+  ) => {
+    const n = value[field];
+    if (n === undefined) return fallback;
+    if (
+      typeof n === "number" &&
+      Number.isSafeInteger(n) &&
+      n >= min &&
+      n <= max
+    )
+      return n;
+    console.error(
+      `Pi-Agent: durable_tasks.${field} is invalid. Using the default.`,
+    );
+    return fallback;
+  };
+  return {
+    maxTurns: integer("max_turns", DURABLE_TASK_DEFAULTS.maxTurns, 1, 50),
+    wallClockMs: integer(
+      "wall_clock_ms",
+      DURABLE_TASK_DEFAULTS.wallClockMs,
+      Number.MIN_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+    ),
+  };
 }
 
 function rolesFrom(
@@ -469,6 +518,7 @@ function configFrom(
     interactiveTurnBudgetMs: interactiveBudgetFrom(
       raw.interactive_turn_budget_seconds,
     ),
+    durableTasks: durableTasksFrom(raw.durable_tasks),
   };
 }
 

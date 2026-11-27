@@ -287,6 +287,13 @@ reaction_delay_ms: 4000
 # restart. Override in $DATA_DIR/config.yaml.
 interactive_turn_budget_seconds: 180
 
+# Durable task execution limits. Read at startup.
+durable_tasks:
+  # Tool rounds per attempt, from 1 to 50. A task can override this limit.
+  max_turns: 12
+  # Wall clock budget per attempt in milliseconds.
+  wall_clock_ms: 900000
+
 # /receipt always works. Enable this to append a short line to final chat replies.
 turn_receipt:
   footer: false
