@@ -10,6 +10,7 @@ import {
   fauxAssistantMessage,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
+import type { Registry } from "@earendil-works/pi-durable";
 import { Runtime, assistantClock } from "../src/runtime.js";
 import { setupKey } from "../src/setup.js";
 import { Store, type Delivery, type RequestRow } from "../src/store.js";
@@ -185,6 +186,33 @@ test("the system prompt has no per-turn clock section", async () => {
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the assistant policy tells the model to drive durable tasks from ordinary speech", async () => {
+  for (const phoneGateway of ["telegram", "whatsapp"] as const) {
+    const dir = await temp();
+    const { models } = model([fauxAssistantMessage("ok")]);
+    const app = await Runtime.open({ dir, gateway, models, phoneGateway });
+    try {
+      const policy = (app as unknown as { registry: Registry }).registry
+        .snapshot()
+        .extension("personal-assistant")
+        ?.sections?.find((item) => item.key === "policy");
+      const text = String(
+        await policy?.render(undefined as never, undefined as never),
+      );
+      for (const sentence of [
+        "Drive durable tasks from what the user says in ordinary speech.",
+        "call durable_task create with the user's goal instead of doing the work in this turn",
+        "call durable_task steer with their words",
+        "Never ask the user to type tool syntax or an argument name, and never tell the user a `durable_task action=...` command to paste.",
+      ])
+        assert.ok(text.includes(sentence), `${phoneGateway}: ${text}`);
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

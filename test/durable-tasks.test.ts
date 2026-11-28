@@ -26,6 +26,7 @@ import { assertAppPurgeSafe } from "../src/conversation-trash.js";
 import {
   DurableTaskError,
   DurableTasks,
+  durableTaskSteeredText,
   durableTaskTerminalNoticeText,
   type DurableTask,
 } from "../src/durable-tasks.js";
@@ -392,7 +393,7 @@ function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
     );
     assert.equal(
       lines[1],
-      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
+      'Responda "aceito" para fechar, ou "refaça: <motivo>" para eu rodar de novo.',
     );
     assert.ok(!request.text.includes(task.artifactPath!));
     assert.ok(!request.text.includes(noticePath(task)));
@@ -1771,7 +1772,7 @@ test("durable_task create returns one line naming the short id and state", async
   const [task] = app.durableTasks.list(origin);
   assert.equal(
     text,
-    `Tarefa ${task!.id.slice(0, 8)} criada, na fila. O agendador a executa em uma conversa própria; use show para acompanhar.`,
+    `Tarefa ${task!.id.slice(0, 8)} criada, na fila. O agendador a executa em uma conversa própria. Pode me perguntar como está a qualquer momento.`,
   );
 });
 
@@ -1814,7 +1815,7 @@ test("durable_task show with an artifact returns a small block with the relative
       `Objetivo: ${goal}`,
       "Criada em 15/01 05:00, atualizada em 15/01 05:01",
       `Artefato versão 1, 0,8 KB, artifacts/durable/${task.id}/1.md`,
-      "Para fechar: accept com artifactVersion 1",
+      'Para fechar, responda "aceito".',
       `ID completo: ${task.id}`,
     ].join("\n"),
   );
@@ -2125,7 +2126,7 @@ test("the review notice is two lines with a comma decimal size and no full id or
     text,
     [
       "Tarefa 7bd7edaf pronta para revisão (v1, 1,1 KB)",
-      "Para fechar: accept com artifactVersion 1",
+      'Responda "aceito" para fechar, ou "refaça: <motivo>" para eu rodar de novo.',
     ].join("\n"),
   );
   assert.ok(!text.includes(id));
@@ -2154,4 +2155,32 @@ test("the review notice is two lines with a comma decimal size and no full id or
     assert.equal(notice, `Tarefa 7bd7edaf interrompida\nMotivo: ${reason}`);
     assert.ok(!notice.includes(id));
   }
+});
+
+test("no user-facing durable task line names tool syntax", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const forbidden = ["artifactVersion", "durable_task action", "accept com"];
+  const texts: [string, string][] = [];
+  const created = await call(1, { action: "create", goal: "Write the report" });
+  texts.push(["create", created]);
+  const id = createdId(app, origin, created);
+  texts.push(["list", await call(2, { action: "list" })]);
+  texts.push(["show without artifact", await call(3, { action: "show", id })]);
+  markReadyForReview(app, dir, id, epoch + 1_000);
+  texts.push(["show with artifact", await call(4, { action: "show", id })]);
+  const ready = app.durableTasks.get(origin, id)!;
+  texts.push(["review notice", durableTaskTerminalNoticeText(ready)]);
+  texts.push([
+    "reject",
+    await call(5, { action: "reject", id, reason: "ficou curto" }),
+  ]);
+  markReadyForReview(app, dir, id, epoch + 2_000);
+  texts.push([
+    "accept",
+    await call(6, { action: "accept", id, artifactVersion: 1 }),
+  ]);
+  texts.push(["steer", durableTaskSteeredText({ ...ready, state: "running" })]);
+  for (const [label, text] of texts)
+    for (const word of forbidden)
+      assert.ok(!text.includes(word), `${label}: ${text}`);
 });

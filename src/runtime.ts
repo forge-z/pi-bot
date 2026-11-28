@@ -222,14 +222,18 @@ const POLICY_DEFERRED_NOTE =
   "Deferred MCP tools are not offered yet: call tool_search to load them before calling them.";
 const ASK_USER_POLICY =
   "When a real decision is needed (choose A or B, or approve a draft), call ask_user with the question and at most six short choices, then stop. Do not call it for an ordinary reply. It is not an MCP approval card.";
+/** durable_task is registered on every gateway, so both policy bodies carry this. */
+const DURABLE_TASK_POLICY =
+  "Drive durable tasks from what the user says in ordinary speech. When a request is long, or the user says it can run in the background, call durable_task create with the user's goal instead of doing the work in this turn. When the user asks how a task is going, call durable_task list or show. When the user says something addressed to a task that is already running, call durable_task steer with their words. When the user accepts a task under review, call durable_task accept with its current artifact version; when they reject it, call durable_task reject with their reason. If you do not know which task or version they mean, call list or show first. Never ask the user to type tool syntax or an argument name, and never tell the user a `durable_task action=...` command to paste.";
+const POLICY_BODY = `${ASSISTANT_POLICY_BASE} ${DURABLE_TASK_POLICY}`;
 /** Same paragraph the policy section has always used when every MCP tool is direct. */
-export const ASSISTANT_POLICY = `${ASSISTANT_POLICY_BASE} ${ASK_USER_POLICY}`;
+export const ASSISTANT_POLICY = `${POLICY_BODY} ${ASK_USER_POLICY}`;
 /**
  * WhatsApp has no ask_user tool, so its prompt is the base without that sentence.
  * Built from the parts, so a wording edit cannot leave the sentence in by accident.
  */
 function assistantPolicy(deferred: boolean, whatsapp: boolean) {
-  const body = whatsapp ? ASSISTANT_POLICY_BASE : ASSISTANT_POLICY;
+  const body = whatsapp ? POLICY_BODY : ASSISTANT_POLICY;
   return deferred ? `${body} ${POLICY_DEFERRED_NOTE}` : body;
 }
 /** User zone for this turn. `TZ` when it is a real IANA zone, otherwise São Paulo. */
