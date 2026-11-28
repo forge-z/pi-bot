@@ -1,6 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   BACKGROUND_CONTEXT as context,
   withAbortSignal,
@@ -54,6 +65,10 @@ const COLUMNS = {
 const MAX_TIMER_MS = 2_147_483_647;
 const BUDGET_TIMEOUT = "budget_timeout";
 const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
+/** Characters of artifact content show prints. */
+const SHOW_ARTIFACT_CHARS = 4000;
+/** UTF-8 is at most 4 bytes per character: this many bytes hold one character past the cap. */
+const SHOW_ARTIFACT_READ_BYTES = (SHOW_ARTIFACT_CHARS + 1) * 4;
 /** Request source of a steer: task input that is not the execution admission. */
 export const DURABLE_TASK_STEER_SOURCE = "task-steer";
 
@@ -183,10 +198,18 @@ export function durableTaskListText(tasks: DurableTask[], now: number) {
   return [`${count} nesta conversa:`, ...lines].join("\n");
 }
 
+/** Prefix of an artifact file; null when it could not be read. */
+export type DurableTaskArtifactRead = {
+  text: string;
+  bytes: number;
+  truncated: boolean;
+} | null;
+
 export function durableTaskShowText(
   task: DurableTask,
   artifactPath: string | null,
   env: Record<string, string | undefined>,
+  artifact: DurableTaskArtifactRead = null,
 ) {
   const lines = [
     `Tarefa ${shortId(task.id)}, ${STATE_LABELS[task.state]}`,
@@ -201,6 +224,17 @@ export function durableTaskShowText(
   if (task.state === "ready_for_review")
     lines.push('Para fechar, responda "aceito".');
   if (shortId(task.id) !== task.id) lines.push(`ID completo: ${task.id}`);
+  if (artifactPath) {
+    lines.push("");
+    if (!artifact) lines.push("Não foi possível ler o conteúdo do artefato.");
+    else {
+      lines.push(artifact.text);
+      if (artifact.truncated)
+        lines.push(
+          `[mostrando os primeiros ${SHOW_ARTIFACT_CHARS} caracteres de ${artifactSizeText(artifact.bytes)}]`,
+        );
+    }
+  }
   return lines.join("\n");
 }
 
@@ -317,6 +351,47 @@ export class DurableTasks {
     return shown.startsWith("..") || isAbsolute(shown)
       ? path
       : shown.split(sep).join("/");
+  }
+
+  /**
+   * At most SHOW_ARTIFACT_CHARS characters of an artifact under the runtime's
+   * artifacts/durable root. Symlinks are resolved before the root check, and
+   * only a bounded prefix is read. Never throws and never touches the row.
+   */
+  readArtifact(path: string | null): DurableTaskArtifactRead {
+    if (!path || !this.execution) return null;
+    let fd: number | undefined;
+    try {
+      const root = realpathSync(
+        join(this.execution.dir, "artifacts", "durable"),
+      );
+      const file = realpathSync(resolve(this.execution.dir, path));
+      const inside = relative(root, file);
+      if (!inside || inside.startsWith("..") || isAbsolute(inside)) return null;
+      fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stats = fstatSync(fd);
+      if (!stats.isFile()) return null;
+      const buffer = Buffer.alloc(SHOW_ARTIFACT_READ_BYTES);
+      let length = 0;
+      while (length < buffer.length) {
+        const read = readSync(fd, buffer, length, buffer.length - length, null);
+        if (!read) break;
+        length += read;
+      }
+      // A partial character at a full buffer's end decodes past the cap.
+      const chars = [...buffer.toString("utf8", 0, length)];
+      const truncated =
+        length === buffer.length || chars.length > SHOW_ARTIFACT_CHARS;
+      return {
+        text: chars.slice(0, SHOW_ARTIFACT_CHARS).join(""),
+        bytes: stats.size,
+        truncated,
+      };
+    } catch {
+      return null;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
   }
 
   create(conversationId: string, goal: string, creationKey?: string) {

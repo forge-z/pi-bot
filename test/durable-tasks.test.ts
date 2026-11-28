@@ -7,6 +7,8 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +33,7 @@ import {
   type DurableTask,
 } from "../src/durable-tasks.js";
 import { loadHarnessConfig } from "../src/harness-config.js";
-import { Runtime } from "../src/runtime.js";
+import { ASSISTANT_POLICY, Runtime } from "../src/runtime.js";
 import { Store, type Delivery, type RequestRow } from "../src/store.js";
 import { Tasks } from "../src/tasks.js";
 
@@ -1817,7 +1819,161 @@ test("durable_task show with an artifact returns a small block with the relative
       `Artefato versão 1, 0,8 KB, artifacts/durable/${task.id}/1.md`,
       'Para fechar, responda "aceito".',
       `ID completo: ${task.id}`,
+      "",
+      ARTIFACT_UNREADABLE,
     ].join("\n"),
+  );
+});
+
+const ARTIFACT_UNREADABLE = "Não foi possível ler o conteúdo do artefato.";
+
+/** Writes the artifact file markReadyForReview points at. */
+async function writeReadyArtifact(dir: string, id: string, data: string) {
+  await mkdir(artifactDir(dir, id), { recursive: true });
+  const path = join(artifactDir(dir, id), "1.md");
+  await writeFile(path, data);
+  return path;
+}
+
+function showMetadata(task: DurableTask, goal: string) {
+  return [
+    `Tarefa ${task.id.slice(0, 8)}, pronta para revisão`,
+    `Objetivo: ${goal}`,
+    "Criada em 15/01 05:00, atualizada em 15/01 05:01",
+    `Artefato versão 1, 0,8 KB, artifacts/durable/${task.id}/1.md`,
+    'Para fechar, responda "aceito".',
+    `ID completo: ${task.id}`,
+  ];
+}
+
+test("durable_task show appends a blank line and the exact artifact content", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Small result");
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  const content = "Task: x\n\n---\n\n1 é um.\n2 é dois, ação.\n";
+  await writeReadyArtifact(dir, task.id, content);
+  assert.equal(
+    await call(1, { action: "show", id: task.id }),
+    [...showMetadata(task, "Small result"), "", content].join("\n"),
+  );
+});
+
+test("durable_task show stops at 4000 characters of a huge artifact without loading the file", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Huge result");
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  // Multi-byte characters: the cut counts characters, not bytes.
+  const unit = "ação-";
+  const size = 5 * 1024 * 1024;
+  const content = unit.repeat(Math.ceil(size / Buffer.byteLength(unit)));
+  const path = await writeReadyArtifact(dir, task.id, content);
+  const bytes = (await stat(path)).size;
+  const started = performance.now();
+  const shown = await call(1, { action: "show", id: task.id });
+  assert.ok(performance.now() - started < 1000);
+  assert.equal(
+    shown,
+    [
+      ...showMetadata(task, "Huge result"),
+      "",
+      [...content].slice(0, 4000).join(""),
+      `[mostrando os primeiros 4000 caracteres de ${(bytes / 1024).toFixed(1).replace(".", ",")} KB]`,
+    ].join("\n"),
+  );
+
+  // Past the 2 GiB limit of readFile: only a bounded read can show this prefix.
+  const prefix = "início ".repeat(1000);
+  await writeFile(path, prefix);
+  await truncate(path, 3 * 1024 ** 3);
+  const sparse = await call(2, { action: "show", id: task.id });
+  assert.ok(
+    sparse.endsWith(
+      `\n\n${[...prefix].slice(0, 4000).join("")}\n[mostrando os primeiros 4000 caracteres de 3145728,0 KB]`,
+    ),
+    sparse.slice(-200),
+  );
+});
+
+test("durable_task show of a missing artifact keeps the metadata and adds the could-not-read line", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Missing result");
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  const before = app.durableTasks.get(origin, task.id);
+  assert.equal(
+    await call(1, { action: "show", id: task.id }),
+    [...showMetadata(task, "Missing result"), "", ARTIFACT_UNREADABLE].join(
+      "\n",
+    ),
+  );
+  assert.deepEqual(app.durableTasks.get(origin, task.id), before);
+});
+
+test("durable_task show refuses an artifact path outside the artifacts root", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const secret = "SEGREDO fora da raiz";
+  const outside = join(dir, "outside.md");
+  await writeFile(outside, secret);
+  const task = app.durableTasks.create(origin, "Escaping result");
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  const inside = join(artifactDir(dir, task.id), "1.md");
+  await mkdir(artifactDir(dir, task.id), { recursive: true });
+  await symlink(outside, inside);
+  const traversal = join(
+    artifactDir(dir, task.id),
+    "..",
+    "..",
+    "..",
+    "outside.md",
+  );
+  for (const [n, path] of [
+    outside,
+    "outside.md",
+    traversal,
+    inside,
+  ].entries()) {
+    if (path !== inside)
+      app.store.run(
+        "UPDATE durable_tasks SET artifactPath=? WHERE id=?",
+        path,
+        task.id,
+      );
+    const before = app.durableTasks.get(origin, task.id);
+    const shown = await call(n + 1, { action: "show", id: task.id });
+    assert.ok(
+      shown.endsWith(`\n\n${ARTIFACT_UNREADABLE}`),
+      `${path}: ${shown}`,
+    );
+    assert.match(shown, /^Artefato versão 1, 0,8 KB, /m);
+    assert.ok(!shown.includes(secret), path);
+    assert.deepEqual(app.durableTasks.get(origin, task.id), before);
+    if (n === 2)
+      app.store.run(
+        "UPDATE durable_tasks SET artifactPath=? WHERE id=?",
+        inside,
+        task.id,
+      );
+  }
+});
+
+test("durable_task list stays metadata only when the artifact is readable", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Listed result");
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  await writeReadyArtifact(dir, task.id, "CONTEUDO-DO-ARTEFATO\n");
+  assert.equal(
+    await call(1, { action: "list" }),
+    [
+      "1 tarefa nesta conversa:",
+      `${task.id.slice(0, 8)} pronta para revisão, há 0s, Listed result`,
+    ].join("\n"),
+  );
+});
+
+test("the durable task policy tells the model to repeat the shown artifact content", () => {
+  assert.ok(
+    ASSISTANT_POLICY.includes(
+      "durable_task show returns the artifact text, so when the user asks for the result, call show and repeat the content in your reply instead of describing the file.",
+    ),
   );
 });
 
