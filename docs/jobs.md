@@ -103,13 +103,14 @@ A poller tick that throws is recorded on `health().last_tick_error` and logged a
 
 ## Durable tasks
 
-The `durable_task` tool creates, lists, and shows tasks in the calling conversation.
+The `durable_task` tool creates, lists, shows, accepts, and rejects tasks in the
+calling conversation.
 The scheduler claims one due task at a time and runs its goal in a separate
 conversation. Failed attempts retry up to the attempt limit. A turn or wall-clock
 budget stop interrupts the task. On startup, queued and running tasks are marked
 interrupted and the bot sends a restart notice to their origin.
 
-A successful attempt stores its answer at
+A successful attempt stops at `ready_for_review` and stores its answer at
 `${options.dir}/artifacts/durable/<taskId>/<attempt>.md`. The bot creates the
 directories with mode `0700` and writes the file with mode `0600` using a
 temporary file and atomic rename. The Markdown starts with `Task`, `State`,
@@ -132,10 +133,19 @@ attempt records an artifact. Attempt numbers determine filenames. A later
 successful attempt leaves earlier files untouched. `show` returns the four
 fields when an artifact exists, and `list` marks those rows with `hasArtifact`.
 
+Use `accept` with the task `id` and current `artifactVersion` to mark the task
+`done` and keep its artifact. Acceptance applies to that exact artifact
+version. A stale version or a repeated acceptance is refused. Use `reject`
+with the task `id` and a non-empty `reason` of up to 200 characters to queue
+the task for another run in 60 seconds. The task records the reason and keeps
+its attempt count and existing artifact. Tasks awaiting review stay in
+`ready_for_review` across restarts and are skipped by the scheduler.
+
 On success, terminal failure, or a budget stop, the bot queues one short
 notice to the origin's channel without starting a model turn. It includes
-the task ID, up to 80 characters of the goal, and the final state. A success
-notice also includes the path and size. The answer stays in the artifact file.
+the task ID, up to 80 characters of the goal, and the resulting state. A
+success notice includes the artifact version, path, size, and how to accept
+that version. The answer stays in the artifact file.
 The `requests` ledger deduplicates notices by task ID and artifact version
 for success or terminal state otherwise. Its `done` status keeps the notice
 out of model-request recovery on startup.

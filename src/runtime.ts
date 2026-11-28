@@ -132,6 +132,7 @@ import { Settings, SettingsError } from "./settings.js";
 import { Tasks, TaskError, type TaskOrigin } from "./tasks.js";
 import {
   DURABLE_TASK_GOAL_MAX,
+  DURABLE_TASK_REJECTION_REASON_MAX,
   DurableTasks,
   DurableTaskError,
 } from "./durable-tasks.js";
@@ -974,12 +975,14 @@ export class Runtime {
             defineTool({
               name: "durable_task",
               description:
-                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation.",
+                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation. For a task ready for review, use accept with its artifactVersion to mark it done, or reject with a reason to queue it again.",
               parameters: Type.Object({
                 action: Type.Union([
                   Type.Literal("create"),
                   Type.Literal("list"),
                   Type.Literal("show"),
+                  Type.Literal("accept"),
+                  Type.Literal("reject"),
                 ]),
                 goal: Type.Optional(
                   Type.String({
@@ -990,9 +993,19 @@ export class Runtime {
                 ),
                 id: Type.Optional(
                   Type.String({
-                    description: "Required for show",
+                    description: "Required for show, accept, and reject",
                     minLength: 1,
                     maxLength: 100,
+                  }),
+                ),
+                artifactVersion: Type.Optional(
+                  Type.Integer({ description: "Required for accept" }),
+                ),
+                reason: Type.Optional(
+                  Type.String({
+                    description: "Required for reject",
+                    minLength: 1,
+                    maxLength: DURABLE_TASK_REJECTION_REASON_MAX,
                   }),
                 ),
               }),
@@ -1058,6 +1071,25 @@ export class Runtime {
                             }
                           : {}),
                       };
+                      break;
+                    }
+                    case "accept":
+                    case "reject": {
+                      if (!args.id?.trim())
+                        throw new DurableTaskError("Task id is required");
+                      const { id, state } =
+                        args.action === "accept"
+                          ? tasks.accept(
+                              conversationId,
+                              args.id,
+                              args.artifactVersion,
+                            )
+                          : tasks.reject(
+                              conversationId,
+                              args.id,
+                              args.reason ?? "",
+                            );
+                      result = { id, state };
                       break;
                     }
                   }
