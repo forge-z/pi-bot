@@ -69,6 +69,15 @@ const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
 const SHOW_ARTIFACT_CHARS = 4000;
 /** UTF-8 is at most 4 bytes per character: this many bytes hold one character past the cap. */
 const SHOW_ARTIFACT_READ_BYTES = (SHOW_ARTIFACT_CHARS + 1) * 4;
+/**
+ * Age of updatedAt after which a finished task is pruned: its row and its whole
+ * artifacts/durable/<id> directory. Only done and cancelled tasks are finished.
+ * queued, running and ready_for_review are live work, and interrupted is the
+ * only evidence of a failure: none of them is ever pruned, and interrupted
+ * stays until someone acts on it.
+ */
+export const DURABLE_TASK_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const PRUNABLE_STATES = ["done", "cancelled"] as const;
 /** Request source of a steer: task input that is not the execution admission. */
 export const DURABLE_TASK_STEER_SOURCE = "task-steer";
 
@@ -92,6 +101,20 @@ type Outcome =
   | { kind: "done"; text: string }
   | { kind: "budget"; error: string }
   | { kind: "failure"; error: string };
+
+/** One tick's retention pass: rows deleted, rows kept because their directory is
+ * not their own under the artifacts root, and failures (rows kept). */
+export type DurableTaskPruneResult = {
+  pruned: number;
+  skipped: number;
+  failed: number;
+};
+
+/** A path strictly below root, the check the artifact read and prune share. */
+function insideRoot(root: string, path: string) {
+  const inside = relative(root, path);
+  return !!inside && !inside.startsWith("..") && !isAbsolute(inside);
+}
 
 function requestIdFor(task: Pick<DurableTask, "id" | "attempts">) {
   return `durable-task:${task.id}:${task.attempts}`;
@@ -366,8 +389,7 @@ export class DurableTasks {
         join(this.execution.dir, "artifacts", "durable"),
       );
       const file = realpathSync(resolve(this.execution.dir, path));
-      const inside = relative(root, file);
-      if (!inside || inside.startsWith("..") || isAbsolute(inside)) return null;
+      if (!insideRoot(root, file)) return null;
       fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       const stats = fstatSync(fd);
       if (!stats.isFile()) return null;
@@ -625,14 +647,16 @@ export class DurableTasks {
     throw new DurableTaskError("Durable task changed during review");
   }
 
-  async tick() {
-    if (
-      !this.execution ||
-      this.shutdown.signal.aborted ||
-      this.settlement ||
-      this.store.credentialMutation
-    )
-      return;
+  /**
+   * Prunes first, then claims. The prune is synchronous and never throws, so it
+   * cannot delay or fail the claim; running it ahead of the settlement guard
+   * keeps one long run from postponing retention, and it never holds provider
+   * admission. Returns the prune counts, or undefined when nothing ran.
+   */
+  async tick(): Promise<DurableTaskPruneResult | undefined> {
+    if (!this.execution || this.shutdown.signal.aborted) return;
+    const pruned = this.prune();
+    if (this.settlement || this.store.credentialMutation) return pruned;
     const { runtime, config } = this.execution;
     await runtime.withProviderAdmission(async () => {
       const now = this.clock();
@@ -699,6 +723,68 @@ export class DurableTasks {
         this.settle(task, this.failure(task, error));
       }
     });
+    return pruned;
+  }
+
+  /**
+   * Deletes finished tasks (PRUNABLE_STATES) last updated more than
+   * DURABLE_TASK_RETENTION_MS ago: the task's artifact directory first, the row
+   * last, so a crash between them leaves an orphan file and never a row naming
+   * a missing file. Each failure is counted and the row kept for the next tick.
+   */
+  private prune(): DurableTaskPruneResult {
+    const result = { pruned: 0, skipped: 0, failed: 0 };
+    try {
+      const states = PRUNABLE_STATES.map((state) => `'${state}'`).join(",");
+      const cutoff = this.clock() - DURABLE_TASK_RETENTION_MS;
+      for (const task of this.store.all<DurableTask>(
+        `SELECT * FROM durable_tasks WHERE state IN (${states}) AND updatedAt<?`,
+        cutoff,
+      ))
+        try {
+          if (!this.removeArtifactDir(task)) {
+            result.skipped += 1;
+            continue;
+          }
+          this.store.run(
+            `DELETE FROM durable_tasks WHERE id=? AND state IN (${states}) AND updatedAt<?`,
+            task.id,
+            cutoff,
+          );
+          result.pruned += 1;
+        } catch {
+          result.failed += 1;
+        }
+    } catch {
+      result.failed += 1;
+    }
+    return result;
+  }
+
+  /**
+   * Removes artifacts/durable/<id>, resolved like readArtifact: symlinks first,
+   * then the root check. False, with nothing removed, when the stored path is
+   * not in that directory or the directory resolves anywhere else. A missing
+   * directory is already removed.
+   */
+  private removeArtifactDir(task: DurableTask) {
+    const { dir } = this.execution!;
+    const root = join(dir, "artifacts", "durable");
+    const own = join(root, task.id);
+    if (task.artifactPath && dirname(resolve(dir, task.artifactPath)) !== own)
+      return false;
+    let real: string;
+    try {
+      real = realpathSync(own);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    const realRoot = realpathSync(root);
+    if (!insideRoot(realRoot, real) || relative(realRoot, real) !== task.id)
+      return false;
+    rmSync(real, { recursive: true, force: true });
+    return true;
   }
 
   private async watch(
