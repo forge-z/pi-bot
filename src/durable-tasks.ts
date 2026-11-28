@@ -12,6 +12,7 @@ import { settleFailureReason, type Runtime } from "./runtime.js";
 import { hash, type Store } from "./store.js";
 
 export const DURABLE_TASK_GOAL_MAX = 4000;
+export const DURABLE_TASK_REJECTION_REASON_MAX = 200;
 
 const STATES = [
   "queued",
@@ -25,9 +26,9 @@ type DurableTaskState = (typeof STATES)[number];
 
 const TRANSITIONS: Record<DurableTaskState, readonly DurableTaskState[]> = {
   queued: ["running", "interrupted"],
-  running: ["done", "queued", "interrupted"],
+  running: ["done", "queued", "interrupted", "ready_for_review"],
   interrupted: [],
-  ready_for_review: [],
+  ready_for_review: ["done", "queued", "cancelled"],
   done: [],
   cancelled: [],
 };
@@ -245,17 +246,91 @@ export class DurableTasks {
         `Invalid durable task transition ${prior.state} -> ${state}`,
       );
     const updated = this.store.get<DurableTask>(
-      "UPDATE durable_tasks SET state=?,updatedAt=?,lastError=? WHERE conversationId=? AND id=? AND state=? RETURNING *",
+      "UPDATE durable_tasks SET state=?,updatedAt=?,lastError=? WHERE conversationId=? AND id=? AND state=? AND artifactVersion=? RETURNING *",
       state,
       this.clock(),
       lastError,
       conversationId,
       id,
       prior.state,
+      prior.artifactVersion,
     );
     if (!updated)
       throw new DurableTaskError("Durable task changed before transition");
     return updated;
+  }
+
+  accept(
+    conversationId: string,
+    id: string,
+    artifactVersion: number | undefined,
+  ) {
+    if (artifactVersion === undefined || !Number.isInteger(artifactVersion))
+      throw new DurableTaskError("An integer artifactVersion is required");
+    return this.review(conversationId, id, { artifactVersion });
+  }
+
+  reject(conversationId: string, id: string, reason: string) {
+    if (
+      typeof reason !== "string" ||
+      !reason.trim() ||
+      reason.length > DURABLE_TASK_REJECTION_REASON_MAX
+    )
+      throw new DurableTaskError(
+        `Rejection reason must be non-empty and at most ${DURABLE_TASK_REJECTION_REASON_MAX} characters`,
+      );
+    return this.review(conversationId, id, { reason });
+  }
+
+  private taskForReview(
+    conversationId: string,
+    id: string,
+    artifactVersion?: number,
+  ) {
+    const task = this.get(conversationId, id);
+    if (!task) throw new DurableTaskError("Durable task not found");
+    if (task.state !== "ready_for_review")
+      throw new DurableTaskError(
+        `Durable task is ${task.state}. Review requires ready_for_review.`,
+      );
+    if (
+      artifactVersion !== undefined &&
+      task.artifactVersion !== artifactVersion
+    )
+      throw new DurableTaskError(
+        `Artifact version does not match. Current version is ${task.artifactVersion}.`,
+      );
+    return task;
+  }
+
+  private review(
+    conversationId: string,
+    id: string,
+    decision: { artifactVersion: number } | { reason: string },
+  ) {
+    const rejecting = "reason" in decision;
+    const task = this.taskForReview(
+      conversationId,
+      id,
+      rejecting ? undefined : decision.artifactVersion,
+    );
+    const now = this.clock();
+    const updated = this.store.get<DurableTask>(
+      `UPDATE durable_tasks
+       SET state=?, updatedAt=?, lastError=?, nextRun=COALESCE(?,nextRun)
+       WHERE conversationId=? AND id=? AND state='ready_for_review' AND artifactVersion=?
+       RETURNING *`,
+      rejecting ? "queued" : "done",
+      now,
+      rejecting ? `rejected: ${decision.reason}` : null,
+      rejecting ? now + 60_000 : null,
+      conversationId,
+      id,
+      task.artifactVersion,
+    );
+    if (updated) return updated;
+    this.taskForReview(conversationId, id, task.artifactVersion);
+    throw new DurableTaskError("Durable task changed during review");
   }
 
   async tick() {
@@ -415,7 +490,11 @@ export class DurableTasks {
     const retry =
       outcome.kind === "failure" && task.attempts < task.maxAttempts;
     const state =
-      outcome.kind === "done" ? "done" : retry ? "queued" : "interrupted";
+      outcome.kind === "done"
+        ? "ready_for_review"
+        : retry
+          ? "queued"
+          : "interrupted";
     const path =
       outcome.kind === "done"
         ? join(dir, "artifacts", "durable", task.id, `${task.attempts}.md`)
@@ -429,6 +508,7 @@ export class DurableTasks {
         // Validate the attempt before writing a file, and commit the row and notice only after rename.
         const row = this.store.get<DurableTask>(
           `UPDATE durable_tasks SET state=?, updatedAt=?, lastError=?, nextRun=?,
+           deadlineAt=CASE WHEN ? THEN NULL ELSE deadlineAt END,
            artifactPath=COALESCE(?,artifactPath),
            artifactSha256=COALESCE(?,artifactSha256),
            artifactBytes=COALESCE(?,artifactBytes),
@@ -438,6 +518,7 @@ export class DurableTasks {
           now,
           outcome.kind === "done" ? null : outcome.error,
           retry ? now + Math.min(60_000 * task.attempts, 3_600_000) : null,
+          outcome.kind === "done" ? 1 : 0,
           path,
           data ? createHash("sha256").update(data).digest("hex") : null,
           data?.byteLength ?? null,
@@ -467,20 +548,20 @@ export class DurableTasks {
     runtime: Execution["runtime"],
   ) {
     if (this.store.conversationDeleted(task.conversationId)) return false;
-    const versionOrState =
-      task.state === "done" ? task.artifactVersion : task.state;
+    const reviewing = task.state === "ready_for_review";
+    const versionOrState = reviewing ? task.artifactVersion : task.state;
     const requestId = `durable-task-terminal:${hash(JSON.stringify([task.id, versionOrState]))}`;
     const goal = [...task.goal.replace(/\s+/g, " ").trim()]
       .slice(0, 80)
       .join("");
-    let text = `Durable task ${task.id} · ${goal} · ${task.state}`;
-    if (task.state === "done" && task.artifactBytes !== null) {
+    let text = `Durable task ${task.id} · ${goal}`;
+    if (reviewing && task.artifactBytes !== null) {
       const size =
         task.artifactBytes < 1024
           ? `${task.artifactBytes} B`
           : `${(task.artifactBytes / 1024).toFixed(1)} KiB`;
-      text += ` · ${task.artifactPath} (${size})`;
-    }
+      text += ` · ready for review · version ${task.artifactVersion} · ${task.artifactPath} (${size}). Use durable_task accept with artifactVersion: ${task.artifactVersion}.`;
+    } else text += ` · ${task.state}`;
     const notice = this.store.run(
       "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
       task.conversationId,

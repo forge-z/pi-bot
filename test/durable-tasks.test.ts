@@ -301,12 +301,42 @@ function bindOrigin(app: Runtime, origin: string) {
   bindChannelChat(app.store, "whatsapp", "42", origin);
 }
 
+function registeredTool(app: Runtime) {
+  const registry = (app as unknown as { registry: Registry }).registry;
+  return registry
+    .snapshot()
+    .tools()
+    .find(({ tool }) => tool.name === "durable_task")?.tool;
+}
+
+async function callDurableTask(
+  app: Runtime,
+  conversationId: string,
+  taskId: number,
+  args: Record<string, string | number>,
+  callId = `call-${taskId}`,
+) {
+  const tool = registeredTool(app);
+  assert.ok(tool);
+  // The registered execution wrapper and this tool only need the invocation identity.
+  const api = {
+    conversationId: Number(conversationId),
+    taskId,
+    callId,
+  } as ToolExecutionApi;
+  const result = await tool.execute(args, api, context);
+  assert.ok("output" in result);
+  const item = result.output?.[0];
+  assert.ok(item?.type === "text");
+  return { text: item.text, isError: result.isError === true };
+}
+
 function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
   const key = createHash("sha256")
     .update(
       JSON.stringify([
         task.id,
-        task.state === "done" ? task.artifactVersion : task.state,
+        task.state === "ready_for_review" ? task.artifactVersion : task.state,
       ]),
     )
     .digest("hex");
@@ -329,7 +359,23 @@ function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
   assert.equal(delivery.text, request.text);
   assert.ok(request.text.includes(task.id));
   assert.ok(request.text.includes(task.goal.slice(0, 80)));
-  assert.ok(request.text.includes(task.state));
+  if (task.state === "ready_for_review") {
+    assert.match(request.text, /ready for review/);
+    assert.match(
+      request.text,
+      new RegExp(`\\bversion ${task.artifactVersion}\\b`),
+    );
+    assert.match(
+      request.text,
+      new RegExp(
+        `\\baccept\\b.*\\bartifactVersion: ${task.artifactVersion}\\b`,
+      ),
+    );
+    assert.ok(request.text.includes(task.artifactPath!));
+    assert.ok(request.text.includes(`(${task.artifactBytes} B)`));
+  } else {
+    assert.ok(request.text.includes(task.state));
+  }
   return { request, delivery };
 }
 
@@ -391,7 +437,7 @@ test("the scheduler claims one due durable task, skips credentials, and admits r
     await waitFor(() => assert.equal(faux.state.callCount, 1));
     setTime(epoch + 500);
     held.release();
-    await waitFor(() => assert.equal(get().state, "done"));
+    await waitFor(() => assert.equal(get().state, "ready_for_review"));
     assert.equal(get().nextRun, null);
     assert.equal(get().lastError, null);
     assert.equal(get().updatedAt, epoch + 500);
@@ -517,7 +563,10 @@ test("per-task turn budget overrides the startup default and stops further model
     );
     await app.tasks.tick();
     await waitFor(() =>
-      assert.equal(app.durableTasks.get(origin, defaultTask.id)?.state, "done"),
+      assert.equal(
+        app.durableTasks.get(origin, defaultTask.id)?.state,
+        "ready_for_review",
+      ),
     );
     assert.equal(faux.state.callCount, 2);
     await app.tasks.tick();
@@ -586,10 +635,13 @@ test("success writes a private artifact with the settled answer and records its 
     const task = app.durableTasks.create(origin, "Write a durable result");
     await app.tasks.tick();
     const get = () => app.durableTasks.get(origin, task.id)!;
-    await waitFor(() => assert.equal(get().state, "done"));
+    await waitFor(() => assert.equal(get().state, "ready_for_review"));
     const path = join(artifactDir(options.dir, task.id), "1.md");
     const row = get();
     assert.equal(row.artifactPath, path);
+    assert.equal(row.lastError, null);
+    assert.equal(row.nextRun, null);
+    assert.equal(row.deadlineAt, null);
     const data = await readFile(path);
     assert.equal(
       data.toString("utf8"),
@@ -635,7 +687,10 @@ test("the artifact body fits within 512 KiB and gives the original UTF-8 length 
     const task = app.durableTasks.create(origin, "Write a long result");
     await app.tasks.tick();
     await waitFor(() =>
-      assert.equal(app.durableTasks.get(origin, task.id)?.state, "done"),
+      assert.equal(
+        app.durableTasks.get(origin, task.id)?.state,
+        "ready_for_review",
+      ),
     );
     const artifact = await readFile(
       join(artifactDir(options.dir, task.id), "1.md"),
@@ -676,30 +731,37 @@ test("an artifact rename failure leaves no partial file or recorded metadata", a
   }
 });
 
-test("a later successful attempt advances the version and preserves the first file", async (t) => {
-  const { app, options } = await executionFixture(t, [
+test("rejection followed by a successful rerun preserves the first file and adds only the version 2 notice", async (t) => {
+  const { app, options, setTime } = await executionFixture(t, [
     fauxAssistantMessage("First result"),
     fauxAssistantMessage("Second result"),
   ]);
   try {
     const origin = await app.create();
+    bindOrigin(app, origin);
     const task = app.durableTasks.create(origin, "Run again");
     const dir = artifactDir(options.dir, task.id);
     const firstPath = join(dir, "1.md");
     const get = () => app.durableTasks.get(origin, task.id)!;
     await app.tasks.tick();
-    await waitFor(() => assert.equal(get().state, "done"));
+    await waitFor(() => assert.equal(get().state, "ready_for_review"));
     assert.equal(get().artifactVersion, 1);
+    const firstNotice = assertTerminalNotice(app, get(), "42").request;
     const firstContent = await readFile(firstPath, "utf8");
     const firstStat = await stat(firstPath);
 
-    // Simulate a later retry at the database boundary. This slice has no requeue tool.
-    app.store.run(
-      "UPDATE durable_tasks SET state='queued' WHERE id=?",
-      task.id,
-    );
+    const rejected = await callDurableTask(app, origin, 1, {
+      action: "reject",
+      id: task.id,
+      reason: "Expand the answer",
+    });
+    assert.equal(rejected.isError, false, rejected.text);
+    setTime(epoch + 59_999);
     await app.tasks.tick();
-    await waitFor(() => assert.equal(get().state, "done"));
+    assert.equal(get().attempts, 1);
+    setTime(epoch + 60_000);
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(get().state, "ready_for_review"));
     assert.equal(get().attempts, 2);
     assert.equal(get().artifactVersion, 2);
     assert.equal(get().artifactPath, join(dir, "2.md"));
@@ -710,12 +772,159 @@ test("a later successful attempt advances the version and preserves the first fi
     const currentStat = await stat(firstPath);
     assert.equal(currentStat.ino, firstStat.ino);
     assert.equal(currentStat.mtimeMs, firstStat.mtimeMs);
+    const secondNotice = assertTerminalNotice(app, get(), "42").request;
+    assert.notEqual(secondNotice.requestId, firstNotice.requestId);
+    assert.deepEqual(
+      app.store.all<RequestRow>(
+        "SELECT * FROM requests WHERE conversationId=? ORDER BY rowid",
+        origin,
+      ),
+      [firstNotice, secondNotice],
+    );
   } finally {
     await app.close();
   }
 });
 
-test("a terminal notice reaches the origin once without a model turn and is ignored on reboot and purge", async (t) => {
+async function reviewFixture(t: TestContext) {
+  const dir = await mkdtemp(join(tmpdir(), "pi-durable-tasks-"));
+  let now = epoch;
+  const app = await Runtime.open({ dir, gateway, env: {}, now: () => now });
+  t.after(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const origin = await app.create();
+  const { id } = app.durableTasks.create(origin, "Review the result");
+  app.store.run(
+    `UPDATE durable_tasks SET state='ready_for_review', attempts=3,
+       artifactPath='result.md', artifactSha256=?, artifactBytes=123,
+       artifactVersion=2 WHERE id=?`,
+    "a".repeat(64),
+    id,
+  );
+  return {
+    app,
+    origin,
+    id,
+    get: () => app.durableTasks.get(origin, id)!,
+    setTime: (time: number) => {
+      now = time;
+    },
+  };
+}
+
+test("accept requires the current artifact version and cannot accept it twice", async (t) => {
+  const { app, origin, id, get, setTime } = await reviewFixture(t);
+  const review = get();
+  const accept = { action: "accept", id, artifactVersion: 2 };
+
+  const missing = await callDurableTask(app, origin, 1, {
+    action: "accept",
+    id,
+  });
+  assert.equal(missing.isError, true, missing.text);
+  assert.match(missing.text, /artifactVersion/i);
+  const stale = await callDurableTask(app, origin, 2, {
+    ...accept,
+    artifactVersion: 1,
+  });
+  assert.equal(stale.isError, true, stale.text);
+  assert.match(stale.text, /current.*version.*\b2\b/i);
+  assert.deepEqual(get(), review);
+
+  setTime(epoch + 1_000);
+  const accepted = await callDurableTask(app, origin, 3, accept);
+  assert.equal(accepted.isError, false, accepted.text);
+  assert.deepEqual(
+    { ...get() },
+    {
+      ...review,
+      state: "done",
+      lastError: null,
+      updatedAt: epoch + 1_000,
+    },
+  );
+
+  const done = get();
+  setTime(epoch + 2_000);
+  const repeated = await callDurableTask(app, origin, 4, accept);
+  assert.equal(repeated.isError, true, repeated.text);
+  assert.match(repeated.text, /\bdone\b/);
+  assert.deepEqual(get(), done);
+});
+
+test("accept refuses queued and running tasks and reports their state", async (t) => {
+  const { app, origin } = await reviewFixture(t);
+  const queued = app.durableTasks.create(origin, "Queued goal");
+  const other = app.durableTasks.create(origin, "Running goal");
+  const running = app.durableTasks.transition(origin, other.id, "running");
+  for (const row of [queued, running]) {
+    const refused = await callDurableTask(app, origin, 1, {
+      action: "accept",
+      id: row.id,
+      artifactVersion: 0,
+    });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, new RegExp(`\\b${row.state}\\b`));
+    assert.deepEqual(app.durableTasks.get(origin, row.id), row);
+  }
+});
+
+test("reject requires a bounded reason and queues the same task for a minute later", async (t) => {
+  const { app, origin, id, get, setTime } = await reviewFixture(t);
+  const review = get();
+  const reject = { action: "reject", id };
+  for (const args of [
+    reject,
+    { ...reject, reason: "  " },
+    { ...reject, reason: "x".repeat(201) },
+  ]) {
+    const invalid = await callDurableTask(app, origin, 1, args);
+    assert.equal(invalid.isError, true, invalid.text);
+    assert.match(invalid.text, /reason/i);
+    assert.deepEqual(get(), review);
+  }
+
+  setTime(epoch + 1_000);
+  const reason = "x".repeat(200);
+  const rejected = await callDurableTask(app, origin, 2, { ...reject, reason });
+  assert.equal(rejected.isError, false, rejected.text);
+  const queued = get();
+  assert.deepEqual(
+    { ...queued },
+    {
+      ...review,
+      state: "queued",
+      nextRun: epoch + 61_000,
+      lastError: `rejected: ${reason}`,
+      updatedAt: epoch + 1_000,
+    },
+  );
+
+  const refused = await callDurableTask(app, origin, 3, { ...reject, reason });
+  assert.equal(refused.isError, true, refused.text);
+  assert.match(refused.text, /\bqueued\b/);
+  assert.deepEqual(get(), queued);
+});
+
+test("accept and reject cannot see or change tasks in another conversation", async (t) => {
+  const { app, id, get } = await reviewFixture(t);
+  const foreign = await app.create();
+  const review = get();
+  const actions: Record<string, string | number>[] = [
+    { action: "accept", id, artifactVersion: 2 },
+    { action: "reject", id, reason: "Foreign change" },
+  ];
+  for (const [index, args] of actions.entries()) {
+    const refused = await callDurableTask(app, foreign, index + 1, args);
+    assert.equal(refused.isError, true, refused.text);
+    assert.equal(refused.text, "Durable task not found");
+    assert.deepEqual(get(), review);
+  }
+});
+
+test("a review notice reaches the origin once and the task stays ready for review across ticks and restart", async (t) => {
   const answer = "Private answer text that belongs in the file";
   const {
     app: first,
@@ -731,7 +940,7 @@ test("a terminal notice reaches the origin once without a model turn and is igno
     const get = () => app.durableTasks.get(origin, task.id)!;
     const enqueue = t.mock.method(Store.prototype, "queueTelegram");
     await app.tasks.tick();
-    await waitFor(() => assert.equal(get().state, "done"));
+    await waitFor(() => assert.equal(get().state, "ready_for_review"));
     const row = get();
     const { request, delivery } = assertTerminalNotice(app, row, "42");
     assert.ok(request.text.includes(row.artifactPath!));
@@ -750,10 +959,14 @@ test("a terminal notice reaches the origin once without a model turn and is igno
     assert.deepEqual(get(), row);
     assert.deepEqual(await readFile(row.artifactPath!), payload);
     assert.equal((await stat(row.artifactPath!)).ino, file.ino);
+    await app.tasks.tick();
+    assert.deepEqual(get(), row);
 
     await app.close();
     app = await Runtime.open(options);
+    assert.deepEqual(get(), row);
     await app.tasks.tick();
+    assert.deepEqual(get(), row);
     assert.deepEqual(
       app.store.all<RequestRow>(
         "SELECT * FROM requests WHERE conversationId=?",
@@ -843,14 +1056,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
   try {
     const id = await app.create();
     const foreign = await app.create();
-    function registeredTool() {
-      const registry = (app as unknown as { registry: Registry }).registry;
-      return registry
-        .snapshot()
-        .tools()
-        .find(({ tool }) => tool.name === "durable_task")?.tool;
-    }
-    const tool = registeredTool();
+    const tool = registeredTool(app);
     assert.ok(tool, "durable_task must be registered");
     assert.equal(tool.replay, "safe");
     assert.match(tool.description, /stored but no work starts/);
@@ -860,19 +1066,8 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
       args: Record<string, string>,
       callId = `call-${taskId}`,
     ) {
-      const tool = registeredTool();
-      assert.ok(tool);
-      // The registered execution wrapper and this tool only need the invocation identity.
-      const api = {
-        conversationId: Number(conversationId),
-        taskId,
-        callId,
-      } as ToolExecutionApi;
-      const result = await tool.execute(args, api, context);
-      assert.ok("output" in result);
-      const item = result.output?.[0];
-      assert.ok(item?.type === "text");
-      return item.text;
+      return (await callDurableTask(app, conversationId, taskId, args, callId))
+        .text;
     }
     const create = { action: "create", goal: "First goal" };
     const created = await call(id, 1, create);
