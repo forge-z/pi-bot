@@ -136,6 +136,7 @@ import {
   durableTaskCreatedText,
   durableTaskListText,
   durableTaskRejectedText,
+  durableTaskRestartNoticeText,
   durableTaskShowText,
   durableTaskSteeredText,
 } from "./durable-tasks.js";
@@ -978,7 +979,7 @@ export class Runtime {
             defineTool({
               name: "durable_task",
               description:
-                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation. For a running task, use steer with a message to send it into that task's own conversation; it does not reach this conversation. For a task ready for review, use accept with its artifactVersion to mark it done, or reject with a reason to queue it again.",
+                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation. For a running task, use steer with a message to send it into that task's own conversation; it does not reach this conversation. For a task ready for review, use accept with its artifactVersion to mark it done, or reject with a reason to queue it again. The result is already formatted for the user: repeat it as plain text, without code fences and without markdown.",
               parameters: Type.Object({
                 action: Type.Union([
                   Type.Literal("create"),
@@ -2806,10 +2807,7 @@ export class Runtime {
         const requestId =
           DURABLE_TASK_RESTART_NOTICE +
           hash(JSON.stringify([conversationId, ids.sort()]));
-        const text =
-          ids.length === 1
-            ? "1 durable task was interrupted by a restart and remains interrupted."
-            : `${ids.length} durable tasks were interrupted by a restart and remain interrupted.`;
+        const text = durableTaskRestartNoticeText(ids);
         const notice = store.run(
           "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
           conversationId,

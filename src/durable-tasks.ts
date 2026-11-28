@@ -134,12 +134,18 @@ function writeArtifact(path: string, data: Buffer) {
 }
 
 const STATE_LABELS: Record<DurableTaskState, string> = {
-  queued: "queued",
-  running: "running",
-  ready_for_review: "ready for review",
-  done: "done",
-  interrupted: "interrupted",
-  cancelled: "cancelled",
+  queued: "na fila",
+  running: "em execução",
+  ready_for_review: "pronta para revisão",
+  done: "concluída",
+  interrupted: "interrompida",
+  cancelled: "cancelada",
+};
+/** Stored lastError codes the user reads as a reason; any other value is shown as is. */
+const REASON_LABELS: Record<string, string> = {
+  [BUDGET_TIMEOUT]: "tempo limite esgotado",
+  budget_turns: "limite de turnos esgotado",
+  restart: "reinício do serviço",
 };
 const LIST_GOAL_MAX = 60;
 /** Shortest id prefix the durable_task tool resolves; the full id is 36 characters. */
@@ -149,27 +155,32 @@ function shortId(id: string) {
   return id.slice(0, 8);
 }
 
+/** Kilobytes with one decimal and a comma separator: 1126 -> "1,1 KB". */
 function artifactSizeText(bytes: number) {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024).toFixed(1).replace(".", ",")} KB`;
+}
+
+function reasonText(lastError: string) {
+  return REASON_LABELS[lastError] ?? lastError;
 }
 
 /** Tool result of create: one line, no structured value for the model to echo. */
 export function durableTaskCreatedText(task: DurableTask) {
-  return `Task ${shortId(task.id)} created, ${STATE_LABELS[task.state]}. The scheduler runs it in its own conversation; use show to follow it.`;
+  return `Tarefa ${shortId(task.id)} criada, ${STATE_LABELS[task.state]}. O agendador a executa em uma conversa própria; use show para acompanhar.`;
 }
 
 export function durableTaskListText(tasks: DurableTask[], now: number) {
-  if (!tasks.length) return "No durable tasks in this conversation.";
+  if (!tasks.length) return "Nenhuma tarefa durável nesta conversa.";
   const lines = tasks.map((task) => {
     const goal = [...task.goal.replace(/\s+/g, " ").trim()];
     const excerpt =
       goal.length > LIST_GOAL_MAX
         ? `${goal.slice(0, LIST_GOAL_MAX).join("")}…`
         : goal.join("");
-    return `${shortId(task.id)} ${STATE_LABELS[task.state]}, ${elapsedText(now - task.createdAt)} old, ${excerpt}`;
+    return `${shortId(task.id)} ${STATE_LABELS[task.state]}, há ${elapsedText(now - task.createdAt)}, ${excerpt}`;
   });
-  const count = tasks.length === 1 ? "1 task" : `${tasks.length} tasks`;
-  return [`${count} in this conversation:`, ...lines].join("\n");
+  const count = tasks.length === 1 ? "1 tarefa" : `${tasks.length} tarefas`;
+  return [`${count} nesta conversa:`, ...lines].join("\n");
 }
 
 export function durableTaskShowText(
@@ -178,33 +189,62 @@ export function durableTaskShowText(
   env: Record<string, string | undefined>,
 ) {
   const lines = [
-    `Task ${shortId(task.id)}, ${STATE_LABELS[task.state]}`,
-    `Goal: ${task.goal}`,
-    `Created ${formatDayClock(task.createdAt, env)}, updated ${formatDayClock(task.updatedAt, env)}`,
+    `Tarefa ${shortId(task.id)}, ${STATE_LABELS[task.state]}`,
+    `Objetivo: ${task.goal}`,
+    `Criada em ${formatDayClock(task.createdAt, env)}, atualizada em ${formatDayClock(task.updatedAt, env)}`,
   ];
-  if (task.lastError) lines.push(`Last error: ${task.lastError}`);
+  if (task.lastError) lines.push(`Último erro: ${reasonText(task.lastError)}`);
   if (artifactPath)
     lines.push(
-      `Artifact version ${task.artifactVersion}, ${artifactSizeText(task.artifactBytes ?? 0)}, ${artifactPath}`,
+      `Artefato versão ${task.artifactVersion}, ${artifactSizeText(task.artifactBytes ?? 0)}, ${artifactPath}`,
     );
   if (task.state === "ready_for_review")
     lines.push(
-      `To close it: accept with artifactVersion ${task.artifactVersion}.`,
+      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
     );
-  if (shortId(task.id) !== task.id) lines.push(`Full id: ${task.id}`);
+  if (shortId(task.id) !== task.id) lines.push(`ID completo: ${task.id}`);
   return lines.join("\n");
 }
 
 export function durableTaskAcceptedText(task: DurableTask) {
-  return `Task ${shortId(task.id)} ${STATE_LABELS[task.state]}.`;
+  return `Tarefa ${shortId(task.id)} ${STATE_LABELS[task.state]}.`;
 }
 
 export function durableTaskRejectedText(task: DurableTask) {
-  return `Task ${shortId(task.id)} back in the queue; it runs again in about a minute and the reason is recorded.`;
+  return `Tarefa ${shortId(task.id)} de volta à fila; ela roda de novo em cerca de um minuto e o motivo fica registrado.`;
 }
 
 export function durableTaskSteeredText(task: DurableTask) {
-  return `Message delivered to task ${shortId(task.id)}.`;
+  return `Mensagem entregue à tarefa ${shortId(task.id)}.`;
+}
+
+/**
+ * Chat notice of a settled task: a heading line and an action or reason line.
+ * No goal, full id or path; show gives those.
+ */
+export function durableTaskTerminalNoticeText(task: DurableTask) {
+  const heading = `Tarefa ${shortId(task.id)} ${STATE_LABELS[task.state]}`;
+  if (task.state === "ready_for_review" && task.artifactBytes !== null)
+    return [
+      `${heading} (v${task.artifactVersion}, ${artifactSizeText(task.artifactBytes)})`,
+      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
+    ].join("\n");
+  if (task.state === "interrupted")
+    return [
+      heading,
+      `Motivo: ${task.lastError ? reasonText(task.lastError) : "não informado"}`,
+    ].join("\n");
+  return heading;
+}
+
+/** Chat notice after boot interrupted the running or queued tasks of one conversation. */
+export function durableTaskRestartNoticeText(ids: string[]) {
+  return [
+    ids.length === 1
+      ? `Tarefa ${shortId(ids[0]!)} interrompida`
+      : `${ids.length} tarefas interrompidas`,
+    `Motivo: ${REASON_LABELS.restart}`,
+  ].join("\n");
 }
 
 export class DurableTaskError extends Error {
@@ -730,14 +770,7 @@ export class DurableTasks {
     const reviewing = task.state === "ready_for_review";
     const versionOrState = reviewing ? task.artifactVersion : task.state;
     const requestId = `durable-task-terminal:${hash(JSON.stringify([task.id, versionOrState]))}`;
-    const goal = [...task.goal.replace(/\s+/g, " ").trim()]
-      .slice(0, 80)
-      .join("");
-    let text = `Durable task ${task.id} · ${goal}`;
-    if (reviewing && task.artifactBytes !== null) {
-      const size = artifactSizeText(task.artifactBytes);
-      text += ` · ready for review · version ${task.artifactVersion} · ${this.artifactDisplayPath(task.artifactPath)} (${size}). Use durable_task accept with artifactVersion: ${task.artifactVersion}.`;
-    } else text += ` · ${task.state}`;
+    const text = durableTaskTerminalNoticeText(task);
     const notice = this.store.run(
       "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
       task.conversationId,
