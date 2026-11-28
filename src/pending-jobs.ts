@@ -48,6 +48,24 @@ export function formatTickClock(
   return `${pick("hour")}:${pick("minute")}:${pick("second")}`;
 }
 
+/** DD/MM HH:MM in the same zone as formatTickClock. */
+export function formatDayClock(
+  at: number,
+  env: Record<string, string | undefined>,
+) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: assistantTimeZone(env),
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(at));
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  return `${pick("day")}/${pick("month")} ${pick("hour")}:${pick("minute")}`;
+}
+
 /** Short elapsed: 40s, 12m, 1h 05m. */
 export function elapsedText(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));

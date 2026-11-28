@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
@@ -331,6 +331,24 @@ async function callDurableTask(
   return { text: item.text, isError: result.isError === true };
 }
 
+/** Full id of the task a create result names by its 8-character short id. */
+function createdId(app: Runtime, conversationId: string, text: string) {
+  const short = /^Task ([a-f0-9]{8}) created, /.exec(text)?.[1];
+  assert.ok(short, text);
+  const rows = app.store.all<{ id: string }>(
+    "SELECT id FROM durable_tasks WHERE conversationId=? AND substr(id,1,8)=?",
+    conversationId,
+    short,
+  );
+  assert.equal(rows.length, 1);
+  return rows[0]!.id;
+}
+
+/** The artifact path as a notice prints it: relative to the artifacts root. */
+function noticePath(task: DurableTask) {
+  return `artifacts/durable/${task.id}/${basename(task.artifactPath!)}`;
+}
+
 function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
   const key = createHash("sha256")
     .update(
@@ -371,7 +389,8 @@ function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
         `\\baccept\\b.*\\bartifactVersion: ${task.artifactVersion}\\b`,
       ),
     );
-    assert.ok(request.text.includes(task.artifactPath!));
+    assert.ok(request.text.includes(noticePath(task)));
+    assert.ok(!request.text.includes(task.artifactPath!));
     assert.ok(request.text.includes(`(${task.artifactBytes} B)`));
   } else {
     assert.ok(request.text.includes(task.state));
@@ -943,7 +962,7 @@ test("a review notice reaches the origin once and the task stays ready for revie
     await waitFor(() => assert.equal(get().state, "ready_for_review"));
     const row = get();
     const { request, delivery } = assertTerminalNotice(app, row, "42");
-    assert.ok(request.text.includes(row.artifactPath!));
+    assert.ok(request.text.includes(` · ${noticePath(row)} (`));
     assert.match(request.text, /\b\d+ B\b/);
     assert.ok(!request.text.includes("beyond the excerpt"));
     assert.ok(!request.text.includes(answer));
@@ -1071,18 +1090,20 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     }
     const create = { action: "create", goal: "First goal" };
     const created = await call(id, 1, create);
-    const first = JSON.parse(created);
-    assert.deepEqual(first, { id: first.id, state: "queued" });
+    const first = { id: createdId(app, id, created) };
     assert.match(first.id, /^[a-f0-9-]{36}$/);
     assert.equal(await call(id, 1, create), created);
-    const own = JSON.parse(await call(id, 2, { action: "show", id: first.id }));
-    assert.equal(own.goal, "First goal");
-    assert.ok(!Object.hasOwn(own, "artifactPath"));
+    const own = await call(id, 2, { action: "show", id: first.id });
+    assert.match(own, /^Goal: First goal$/m);
+    assert.doesNotMatch(own, /^Artifact/m);
     assert.equal(
       await call(foreign, 3, { action: "show", id: first.id }),
       "Durable task not found",
     );
-    assert.equal(await call(foreign, 4, { action: "list" }), "[]");
+    assert.equal(
+      await call(foreign, 4, { action: "list" }),
+      "No durable tasks in this conversation.",
+    );
     assert.match(await call(id, 5, { action: "create" }), /goal/i);
     assert.match(await call(id, 6, { action: "show" }), /id/i);
     assert.equal(
@@ -1096,8 +1117,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
       async () => {
         const createSecond = { action: "create", goal: "Second goal" };
         const secondResult = await call(id, 1, createSecond, "call-1-second");
-        const second = JSON.parse(secondResult);
-        assert.deepEqual(second, { id: second.id, state: "queued" });
+        const second = { id: createdId(app, id, secondResult) };
         assert.match(second.id, /^[a-f0-9-]{36}$/);
         assert.notEqual(second.id, first.id);
         assert.equal(app.durableTasks.get(id, second.id)?.goal, "Second goal");
@@ -1111,31 +1131,25 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     const expectedIds: string[] = [];
     for (let index = 0; index < 21; index++) {
       now += 1000;
-      const row = JSON.parse(
-        await call(id, 10 + index, {
-          action: "create",
-          goal: `Goal ${index} ${"x".repeat(130)}`,
-        }),
-      );
-      expectedIds.unshift(row.id);
+      const text = await call(id, 10 + index, {
+        action: "create",
+        goal: `Goal ${index} ${"x".repeat(130)}`,
+      });
+      expectedIds.unshift(createdId(app, id, text));
     }
-    const listed = JSON.parse(await call(id, 40, { action: "list" })) as {
-      id: string;
-      goal: string;
-      age: string;
-      state: string;
-    }[];
-    assert.deepEqual(
-      listed.map((row) => row.id),
-      expectedIds.slice(0, 20),
+    const [header, ...listed] = (await call(id, 40, { action: "list" })).split(
+      "\n",
     );
-    assert.deepEqual(listed[0], {
-      id: expectedIds[0],
-      goal: `Goal 20 ${"x".repeat(112)}`,
-      age: "0s",
-      state: "queued",
-    });
-    assert.equal(listed.at(-1)?.age, "19s");
+    assert.equal(header, "20 tasks in this conversation:");
+    assert.deepEqual(
+      listed.map((line) => line.slice(0, 8)),
+      expectedIds.slice(0, 20).map((taskId) => taskId.slice(0, 8)),
+    );
+    assert.equal(
+      listed[0],
+      `${expectedIds[0]!.slice(0, 8)} queued, 0s old, Goal 20 ${"x".repeat(52)}…`,
+    );
+    assert.match(listed.at(-1)!, /^[a-f0-9]{8} queued, 19s old, /);
 
     const archived = await app.create();
     app.durableTasks.create(archived, "Archived goal");
@@ -1193,15 +1207,24 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
       artifact.artifactVersion,
       expectedIds[0]!,
     );
-    const shown = JSON.parse(
-      await call(id, 41, { action: "show", id: expectedIds[0]! }),
+    const shown = await call(id, 41, { action: "show", id: expectedIds[0]! });
+    assert.match(
+      shown,
+      new RegExp(
+        `^Artifact version 1, 123 B, artifacts/durable/${expectedIds[0]}/1\\.md$`,
+        "m",
+      ),
     );
-    for (const [key, value] of Object.entries(artifact))
-      assert.equal(shown[key], value);
-    const withArtifact = JSON.parse(await call(id, 42, { action: "list" }))[0];
-    assert.equal(withArtifact.id, expectedIds[0]);
-    assert.equal(withArtifact.hasArtifact, true);
-    assert.ok(!Object.hasOwn(withArtifact, "artifactPath"));
+    assert.ok(!shown.includes(artifact.artifactSha256));
+    assert.ok(!shown.includes(dir));
+    const withArtifact = (await call(id, 42, { action: "list" })).split(
+      "\n",
+    )[1];
+    assert.match(
+      withArtifact!,
+      new RegExp(`^${expectedIds[0]!.slice(0, 8)} done, `),
+    );
+    assert.ok(!withArtifact!.includes("artifacts/"));
     assert.equal(
       await call(foreign, 43, { action: "show", id: expectedIds[0]! }),
       "Durable task not found",
@@ -1308,7 +1331,10 @@ test("steer submits once into the running task's own conversation and never into
     message,
   });
   assert.equal(result.isError, false, result.text);
-  assert.deepEqual(JSON.parse(result.text), { id: task.id, state: "running" });
+  assert.equal(
+    result.text,
+    `Message delivered to task ${task.id.slice(0, 8)}.`,
+  );
 
   assert.equal(calls.length, 1);
   const [conversationId, requestId, text, source, chat, , , steer] = calls[0]!;
@@ -1457,7 +1483,10 @@ test("steer leaves the task row unchanged", async (t) => {
     message: "Keep going",
   });
   assert.equal(result.isError, false, result.text);
-  assert.deepEqual(JSON.parse(result.text), { id: task.id, state: "running" });
+  assert.equal(
+    result.text,
+    `Message delivered to task ${task.id.slice(0, 8)}.`,
+  );
   assert.deepEqual(
     calls.map(([conversationId, , text]) => [conversationId, text]),
     [[run, "Keep going"]],
@@ -1685,4 +1714,175 @@ test("T9: a chat message in an idle conversation still starts its own run, with 
     assert.ok(
       JSON.stringify((await app.snapshot(id)).view.entries).includes(answer),
     );
+});
+
+async function formatFixture(t: TestContext) {
+  const dir = await mkdtemp(join(tmpdir(), "pi-durable-tasks-"));
+  let now = epoch;
+  // env: {} pins the assistant zone to America/Sao_Paulo: epoch is 15/01 05:00 there.
+  const app = await Runtime.open({ dir, gateway, env: {}, now: () => now });
+  t.after(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const origin = await app.create();
+  return {
+    app,
+    dir,
+    origin,
+    call: async (taskId: number, args: Record<string, string | number>) => {
+      const result = await callDurableTask(app, origin, taskId, args);
+      assert.equal(result.isError, false, result.text);
+      return result.text;
+    },
+    setTime: (time: number) => {
+      now = time;
+    },
+  };
+}
+
+/** Puts a task into ready_for_review with an artifact under the runtime directory. */
+function markReadyForReview(app: Runtime, dir: string, id: string, at: number) {
+  app.store.run(
+    `UPDATE durable_tasks SET state='ready_for_review', updatedAt=?, artifactPath=?,
+       artifactSha256=?, artifactBytes=833, artifactVersion=1 WHERE id=?`,
+    at,
+    join(artifactDir(dir, id), "1.md"),
+    "b".repeat(64),
+    id,
+  );
+}
+
+test("durable_task create returns one line naming the short id and state", async (t) => {
+  const { app, origin, call } = await formatFixture(t);
+  const text = await call(1, { action: "create", goal: "Write the report" });
+  const [task] = app.durableTasks.list(origin);
+  assert.equal(
+    text,
+    `Task ${task!.id.slice(0, 8)} created, queued. The scheduler runs it in its own conversation; use show to follow it.`,
+  );
+});
+
+test("durable_task list with two tasks returns a header and one line per task, newest first", async (t) => {
+  const { app, origin, call, setTime } = await formatFixture(t);
+  const older = app.durableTasks.create(origin, "Short goal");
+  setTime(epoch + 48_000);
+  const goal = `Liste de 1 a 200 e uma frase para cada número, ${"y".repeat(40)}`;
+  const newer = app.durableTasks.create(origin, goal);
+  app.durableTasks.transition(origin, newer.id, "running");
+  setTime(epoch + 60_000);
+  assert.equal(
+    await call(1, { action: "list" }),
+    [
+      "2 tasks in this conversation:",
+      `${newer.id.slice(0, 8)} running, 12s old, ${[...goal].slice(0, 60).join("")}…`,
+      `${older.id.slice(0, 8)} queued, 1m old, Short goal`,
+    ].join("\n"),
+  );
+});
+
+test("durable_task list without tasks returns a single line", async (t) => {
+  const { call } = await formatFixture(t);
+  assert.equal(
+    await call(1, { action: "list" }),
+    "No durable tasks in this conversation.",
+  );
+});
+
+test("durable_task show with an artifact returns a small block with the relative path", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const goal =
+    "Liste de 1 a 200, um número por linha, com uma frase curta explicando cada um.";
+  const task = app.durableTasks.create(origin, goal);
+  markReadyForReview(app, dir, task.id, epoch + 61_000);
+  assert.equal(
+    await call(1, { action: "show", id: task.id }),
+    [
+      `Task ${task.id.slice(0, 8)}, ready for review`,
+      `Goal: ${goal}`,
+      "Created 15/01 05:00, updated 15/01 05:01",
+      `Artifact version 1, 833 B, artifacts/durable/${task.id}/1.md`,
+      "To close it: accept with artifactVersion 1.",
+    ].join("\n"),
+  );
+});
+
+test("durable_task show without an artifact omits the artifact line", async (t) => {
+  const { app, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Plain goal");
+  assert.equal(
+    await call(1, { action: "show", id: task.id }),
+    [
+      `Task ${task.id.slice(0, 8)}, queued`,
+      "Goal: Plain goal",
+      "Created 15/01 05:00, updated 15/01 05:00",
+    ].join("\n"),
+  );
+});
+
+test("durable_task accept returns one line", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Accept me");
+  markReadyForReview(app, dir, task.id, epoch);
+  assert.equal(
+    await call(1, { action: "accept", id: task.id, artifactVersion: 1 }),
+    `Task ${task.id.slice(0, 8)} done.`,
+  );
+});
+
+test("durable_task reject returns one line", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const task = app.durableTasks.create(origin, "Reject me");
+  markReadyForReview(app, dir, task.id, epoch);
+  assert.equal(
+    await call(1, { action: "reject", id: task.id, reason: "Too short" }),
+    `Task ${task.id.slice(0, 8)} back in the queue; it runs again in about a minute and the reason is recorded.`,
+  );
+});
+
+test("durable_task steer returns one line", async (t) => {
+  const { app, origin, task } = await steerFixture(t);
+  const result = await callDurableTask(app, origin, 7, {
+    action: "steer",
+    id: task.id,
+    message: "Shorter, please",
+  });
+  assert.equal(result.isError, false, result.text);
+  assert.equal(
+    result.text,
+    `Message delivered to task ${task.id.slice(0, 8)}.`,
+  );
+});
+
+test("no durable_task result line carries braces or the artifact hash", async (t) => {
+  const { app, options, origin, task } = await steerFixture(t);
+  const call = async (
+    taskId: number,
+    args: Record<string, string | number>,
+  ) => {
+    const result = await callDurableTask(app, origin, taskId, args);
+    assert.equal(result.isError, false, result.text);
+    return result.text;
+  };
+  const created = await call(1, { action: "create", goal: "Another goal" });
+  const id = createdId(app, origin, created);
+  const reviewed = app.durableTasks.create(origin, "Review goal");
+  markReadyForReview(app, options.dir, reviewed.id, epoch);
+  const outputs = [
+    created,
+    await call(2, { action: "list" }),
+    await call(3, { action: "show", id }),
+    await call(4, { action: "show", id: reviewed.id }),
+    await call(5, { action: "steer", id: task.id, message: "Keep going" }),
+    await call(6, { action: "reject", id: reviewed.id, reason: "Again" }),
+  ];
+  markReadyForReview(app, options.dir, reviewed.id, epoch);
+  outputs.push(
+    await call(7, { action: "accept", id: reviewed.id, artifactVersion: 1 }),
+  );
+  for (const line of outputs.flatMap((text) => text.split("\n"))) {
+    assert.ok(!line.includes("{"), line);
+    assert.ok(!line.includes("artifactSha256"), line);
+    assert.ok(!line.includes("b".repeat(64)), line);
+  }
 });
