@@ -142,6 +142,8 @@ const STATE_LABELS: Record<DurableTaskState, string> = {
   cancelled: "cancelled",
 };
 const LIST_GOAL_MAX = 60;
+/** Shortest id prefix the durable_task tool resolves; the full id is 36 characters. */
+export const DURABLE_TASK_ID_PREFIX_MIN = 4;
 
 function shortId(id: string) {
   return id.slice(0, 8);
@@ -189,6 +191,7 @@ export function durableTaskShowText(
     lines.push(
       `To close it: accept with artifactVersion ${task.artifactVersion}.`,
     );
+  if (shortId(task.id) !== task.id) lines.push(`Full id: ${task.id}`);
   return lines.join("\n");
 }
 
@@ -326,6 +329,32 @@ export class DurableTasks {
       conversationId,
       id,
     );
+  }
+
+  /**
+   * Full id of the task in this conversation that `ref` names: the exact id, or
+   * a prefix of at least DURABLE_TASK_ID_PREFIX_MIN characters that only one of
+   * its tasks starts with. Comparison is exact (case-sensitive), like get().
+   * When nothing matches, `ref` is returned unchanged so the caller's own lookup
+   * answers "Durable task not found" in its usual order.
+   */
+  resolveId(conversationId: string, ref: string) {
+    if (
+      ref.length < DURABLE_TASK_ID_PREFIX_MIN ||
+      this.get(conversationId, ref)
+    )
+      return ref;
+    const matches = this.store.all<{ id: string }>(
+      "SELECT id FROM durable_tasks WHERE conversationId=? AND substr(id,1,length(?))=?",
+      conversationId,
+      ref,
+      ref,
+    );
+    if (matches.length > 1)
+      throw new DurableTaskError(
+        `Task id ${ref} matches ${matches.length} tasks in this conversation. Use more characters of the id.`,
+      );
+    return matches[0]?.id ?? ref;
   }
 
   transition(
