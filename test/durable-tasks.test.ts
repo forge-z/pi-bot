@@ -267,6 +267,37 @@ async function waitFor(assertion: () => void) {
   }
 }
 
+test("job delivery falls back to an unowned run conversation", async (t) => {
+  const { app } = await executionFixture(t, []);
+  t.after(() => app.close());
+  const run = await app.create("Durable task");
+  assert.deepEqual(app.resolveJobConversation(run), { conversationId: run });
+});
+
+test("job delivery redirects only the conversation assigned to the task's run", async (t) => {
+  const { app } = await executionFixture(t, []);
+  t.after(() => app.close());
+  const origin = await app.create("Origin");
+  const other = await app.create("Another conversation");
+  const run = await app.create("Durable task");
+  const task = app.durableTasks.create(origin, "Run job");
+  app.store.run(
+    "UPDATE durable_tasks SET runConversationId=? WHERE id=?",
+    run,
+    task.id,
+  );
+  assert.deepEqual(app.resolveJobConversation(run), {
+    conversationId: origin,
+    taskId: task.id,
+  });
+  assert.deepEqual(app.resolveJobConversation(origin), {
+    conversationId: origin,
+  });
+  assert.deepEqual(app.resolveJobConversation(other), {
+    conversationId: other,
+  });
+});
+
 function heldResponse() {
   let release!: () => void;
   const held = new Promise<void>((resolve) => {

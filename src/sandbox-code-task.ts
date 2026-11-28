@@ -18,6 +18,8 @@ import {
   sandboxCall,
 } from "./pending-jobs.js";
 import { SCHEDULED_APPROVAL_REFUSAL } from "./guards.js";
+import { durableTaskJobPrefix } from "./durable-tasks.js";
+import { executorBodies, isExecutorApproval } from "./executor-result.js";
 
 export const JOB_INDETERMINATE =
   "The call started, but the provider lost its response due to an internal Executor error. The job is still running and the result will arrive automatically in this topic. Do not repeat the request or start another job.";
@@ -182,6 +184,33 @@ function writePreview(task: Task, input: Record<string, unknown>) {
   return lines.join("\n");
 }
 
+/** Give the existing Executor card a task label without changing its resume data. */
+function labelExecutorApproval(result: unknown, prefix: string) {
+  if (!prefix) return result;
+  const pause = executorBodies(result).find(isExecutorApproval);
+  if (!pause) return result;
+  const elicitation = pause.elicitation;
+  const labeled = {
+    ...pause,
+    message:
+      prefix +
+      (typeof pause.message === "string" && pause.message.trim()
+        ? pause.message
+        : "Confirm this action in Executor."),
+    ...(isRecord(elicitation) && typeof elicitation.message === "string"
+      ? {
+          elicitation: {
+            ...elicitation,
+            message: prefix + elicitation.message,
+          },
+        }
+      : {}),
+  };
+  return isRecord(result) && Array.isArray(result.content)
+    ? { ...result, structuredContent: labeled }
+    : labeled;
+}
+
 function renderExec(
   task: Task,
   env: Env,
@@ -265,19 +294,20 @@ async function dispatchJob(
   task: Task,
   executor: string,
   usesSandbox: boolean,
-  conversationId: string,
+  { conversationId, taskId }: ReturnType<Runtime["resolveJobConversation"]>,
   input: Record<string, unknown>,
   call: Call,
   writes: boolean,
   signal?: AbortSignal,
   roleInstructions?: string,
 ): Promise<DispatchText> {
+  const prefix = taskId ? durableTaskJobPrefix(taskId) : "";
   const json = (body: unknown, rejected?: true): DispatchText => ({
     text: JSON.stringify(body),
     ...(rejected ? { rejected } : {}),
   });
   const resolved = await resolveTemplates(env, call, [task.exec.args ?? {}]);
-  if (!resolved.ok) return json({ error: resolved.error }, true);
+  if (!resolved.ok) return json({ error: prefix + resolved.error }, true);
 
   const jobId = createJobId(task.idPrefix ?? "job-");
   const goal = task.goal
@@ -310,11 +340,13 @@ async function dispatchJob(
       jobId,
       goal,
       account,
+      taskId,
     )
   )
     return json(
       {
         error:
+          prefix +
           "Job status reading is invalid or disabled. The task was not registered.",
       },
       true,
@@ -324,7 +356,7 @@ async function dispatchJob(
   const failed = (detail: string): DispatchText => {
     app.pendingJobs.closeKnownUnstarted(jobId, conversationId);
     return json(
-      { error: `Failed to start the task: ${detail}`.slice(0, 800) },
+      { error: prefix + `Failed to start the task: ${detail}`.slice(0, 800) },
       true,
     );
   };
@@ -363,7 +395,7 @@ async function dispatchJob(
         // A scheduled run cannot wait for a card. The command has not run, so
         // refusing here neither repeats it nor needs a resume.
         if (app.scheduledTurn(conversationId))
-          return { text: SCHEDULED_APPROVAL_REFUSAL, isError: true };
+          return { text: prefix + SCHEDULED_APPROVAL_REFUSAL, isError: true };
         // Nothing ran yet: leave the row open so a later approval delivers.
         let approvalRequested = false;
         try {
@@ -372,7 +404,7 @@ async function dispatchJob(
             server,
             tool,
             callArgs,
-            rawResult,
+            labelExecutorApproval(rawResult, prefix),
           );
         } catch {
           /* the tool result still reports the pending approval */
@@ -383,6 +415,7 @@ async function dispatchJob(
             status: "approval_pending",
             ...(outcome.requestId ? { requestId: outcome.requestId } : {}),
             message:
+              prefix +
               "The call is paused for approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.",
           }),
           approvalRequested,
@@ -391,7 +424,7 @@ async function dispatchJob(
       if (outcome.kind === "failure")
         return outcome.deterministic
           ? failed(outcome.message)
-          : { text: JOB_INDETERMINATE };
+          : { text: prefix + JOB_INDETERMINATE };
       const exitCode = commandExitCode(outcome.value);
       if (exitCode !== undefined && exitCode !== 0) {
         const record = isRecord(outcome.value) ? outcome.value : {};
@@ -405,6 +438,7 @@ async function dispatchJob(
         jobId,
         status: "dispatched",
         message:
+          prefix +
           "The task started in the sandbox. The result will arrive in this topic when it finishes; no follow-up is needed.",
       });
     } catch (error) {
@@ -435,7 +469,7 @@ async function dispatchJob(
         return failed(error instanceof Error ? error.message : String(error));
       // Indeterminate timeout or transient error: keep the row open and
       // let the poller confirm via the manifest's observe tool.
-      return { text: JOB_INDETERMINATE };
+      return { text: prefix + JOB_INDETERMINATE };
     }
   }
 }
@@ -484,11 +518,12 @@ export function createSandboxCodeTaskTool(
     const conversationId =
       typeof spec.conversationId === "string" ? spec.conversationId : "";
     const input = isRecord(spec.input) ? spec.input : undefined;
+    const taskId = typeof spec.taskId === "string" ? spec.taskId : undefined;
     const call = (app.options.gateway as { callDirect?: Call }).callDirect;
     if (!conversationId || input?.writes !== true || !call)
       return {
         state: "failed",
-        text: "The write task did not start.",
+        text: `${taskId ? durableTaskJobPrefix(taskId) : ""}The write task did not start.`,
       };
     const outcome = await dispatchJob(
       app,
@@ -496,7 +531,7 @@ export function createSandboxCodeTaskTool(
       task,
       executor,
       usesSandbox,
-      conversationId,
+      { conversationId, taskId },
       input,
       call,
       true,
@@ -580,13 +615,20 @@ export function createSandboxCodeTaskTool(
         return reply({
           error: "The direct MCP gateway is unavailable to start the job.",
         });
-      const conversationId = String(api.conversationId);
+      const destination = app.resolveJobConversation(
+        String(api.conversationId),
+      );
+      const { conversationId, taskId } = destination;
+      const prefix = taskId ? durableTaskJobPrefix(taskId) : "";
       if (input.writes === true) {
         // A scheduled run cannot wait for a card, and nothing has been sent.
         if (app.scheduledTurn(conversationId))
           return {
             output: [
-              { type: "text" as const, text: SCHEDULED_APPROVAL_REFUSAL },
+              {
+                type: "text" as const,
+                text: prefix + SCHEDULED_APPROVAL_REFUSAL,
+              },
             ],
             isError: true,
           };
@@ -595,20 +637,22 @@ export function createSandboxCodeTaskTool(
           conversationId,
           server,
           task.tool,
-          writePreview(task, input),
+          prefix + writePreview(task, input),
           roleInstructions
-            ? { conversationId, input: taskInput, roleInstructions }
-            : { conversationId, input },
+            ? { ...destination, input: taskInput, roleInstructions }
+            : { ...destination, input },
         );
         if (!requestId)
           return reply({
-            error: "Approval is unavailable. The write task did not start.",
+            error:
+              prefix + "Approval is unavailable. The write task did not start.",
           });
         return {
           ...reply({
             status: "approval_pending",
             requestId,
             message:
+              prefix +
               "Writing requires approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.",
           }),
           details: { receiptApprovalRequested: true },
@@ -621,7 +665,7 @@ export function createSandboxCodeTaskTool(
           task,
           executor,
           usesSandbox,
-          conversationId,
+          destination,
           input,
           gateway.callDirect,
           false,

@@ -30,6 +30,9 @@ import {
   type ReadInput,
 } from "./job-manifest.js";
 import { loadHarnessConfig } from "./harness-config.js";
+import { durableTaskJobPrefix } from "./durable-tasks.js";
+
+const DURABLE_TASK_ORIGIN = "durable-task:";
 
 /** HH:MM:SS in TZ, or America/Sao_Paulo when TZ is missing or not a real zone. */
 export function formatTickClock(
@@ -662,12 +665,13 @@ export class PendingJobs {
     runId?: string | null;
     goal?: string | null;
     accountId?: string | null;
+    originSource?: string;
   }): boolean {
     const runId = this.runIdOrNull(input.runId);
     const tool = normalizeToolPath(input.tool);
     const accountId = input.accountId?.trim() || null;
     const goal = input.goal ?? null;
-    const origin = this.requester(input.conversationId);
+    const origin = input.originSource ?? this.requester(input.conversationId);
     if (runId) {
       const existing = this.app.store.get<{ id: number }>(
         "SELECT id FROM pending_jobs WHERE run_id=?",
@@ -1145,6 +1149,7 @@ export class PendingJobs {
     runId: string,
     goal?: string,
     accountId?: string,
+    taskId?: string,
   ): boolean {
     this.ensure();
     if (this.inJobTurn(conversationId)) return false;
@@ -1155,7 +1160,7 @@ export class PendingJobs {
       void this.announce(
         conversationId,
         `job:shape:${entry.path}`,
-        `Reading ${entry.path} failed validation: ${broken}`,
+        `${taskId ? durableTaskJobPrefix(taskId) : ""}Reading ${entry.path} failed validation: ${broken}`,
       );
       return false;
     }
@@ -1168,6 +1173,8 @@ export class PendingJobs {
       runId: clean,
       goal: goal ?? null,
       accountId: accountId ?? null,
+      // Keep attribution with the job even if the durable task is later pruned.
+      originSource: taskId ? DURABLE_TASK_ORIGIN + taskId : undefined,
     });
   }
 
@@ -2445,19 +2452,31 @@ export class PendingJobs {
   private dedupeFor(row: PendingJob) {
     return `job:${row.id}:${row.run_id ?? "unknown"}`;
   }
-  /**
-   * True when this completion request belongs to a job a person started.
-   * A schedule that dispatched the job stays on the silence rule.
-   */
-  userDispatched(requestId: string) {
+  private deliveryOrigin(requestId: string) {
     const id = /^job:(\d+):/.exec(requestId)?.[1];
-    if (!id) return false;
+    if (!id) return;
     this.ensure();
-    const origin = this.app.store.get<{ origin_source: string | null }>(
+    return this.app.store.get<{ origin_source: string | null }>(
       "SELECT origin_source FROM pending_jobs WHERE id=?",
       Number(id),
     )?.origin_source;
-    return origin === "telegram" || origin === "web";
+  }
+
+  /** A durable task's job delivers like a user dispatch, even in an idle chat. */
+  userDispatched(requestId: string) {
+    const origin = this.deliveryOrigin(requestId);
+    return (
+      origin === "telegram" ||
+      origin === "web" ||
+      !!origin?.startsWith(DURABLE_TASK_ORIGIN)
+    );
+  }
+
+  deliveryPrefix(requestId: string) {
+    const origin = this.deliveryOrigin(requestId);
+    return origin?.startsWith(DURABLE_TASK_ORIGIN)
+      ? durableTaskJobPrefix(origin.slice(DURABLE_TASK_ORIGIN.length))
+      : "";
   }
   /** Source of the turn that is dispatching, while that request is still pending. */
   private requester(conversationId: string) {

@@ -206,6 +206,8 @@ test("the assistant policy tells the model to drive durable tasks from ordinary 
         "Drive durable tasks from what the user says in ordinary speech.",
         "call durable_task create with the user's goal instead of doing the work in this turn",
         "call durable_task steer with their words",
+        "A durable task may dispatch a code job with writes=true.",
+        "The approval card and the job result arrive in the chat where the task was created, prefixed with the task id.",
         "Never ask the user to type tool syntax or an argument name, and never tell the user a `durable_task action=...` command to paste.",
       ])
         assert.ok(text.includes(sentence), `${phoneGateway}: ${text}`);
