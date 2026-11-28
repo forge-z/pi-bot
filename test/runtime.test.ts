@@ -320,7 +320,12 @@ test("boot sends one durable-task notice to each affected topic and skips delete
     );
     for (const row of recorded) {
       assert.match(row.requestId, /^durable-task-restart:[a-f0-9]{64}$/);
-      assert.match(row.text, /interrupted by a restart and remain/);
+      assert.equal(
+        row.text,
+        row.conversationId === topic
+          ? "2 tarefas interrompidas\nMotivo: reinício do serviço"
+          : `Tarefa ${otherTask.id.slice(0, 8)} interrompida\nMotivo: reinício do serviço`,
+      );
       assert.equal(row.status, "done");
       assert.equal(row.submissionId, null);
       assert.ok(

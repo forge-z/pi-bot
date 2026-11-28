@@ -26,6 +26,7 @@ import { assertAppPurgeSafe } from "../src/conversation-trash.js";
 import {
   DurableTaskError,
   DurableTasks,
+  durableTaskTerminalNoticeText,
   type DurableTask,
 } from "../src/durable-tasks.js";
 import { loadHarnessConfig } from "../src/harness-config.js";
@@ -333,7 +334,7 @@ async function callDurableTask(
 
 /** Full id of the task a create result names by its 8-character short id. */
 function createdId(app: Runtime, conversationId: string, text: string) {
-  const short = /^Task ([a-f0-9]{8}) created, /.exec(text)?.[1];
+  const short = /^Tarefa ([a-f0-9]{8}) criada, /.exec(text)?.[1];
   assert.ok(short, text);
   const rows = app.store.all<{ id: string }>(
     "SELECT id FROM durable_tasks WHERE conversationId=? AND substr(id,1,8)=?",
@@ -375,25 +376,29 @@ function assertTerminalNotice(app: Runtime, task: DurableTask, chat: string) {
   assert.equal(delivery.channel, "whatsapp");
   assert.equal(delivery.chat, chat);
   assert.equal(delivery.text, request.text);
-  assert.ok(request.text.includes(task.id));
-  assert.ok(request.text.includes(task.goal.slice(0, 80)));
+  // Two short lines: short id and state, then the action or the reason.
+  const lines = request.text.split("\n");
+  assert.equal(lines.length, 2, request.text);
+  const short = task.id.slice(0, 8);
+  assert.ok(!request.text.includes(task.id), request.text);
+  assert.ok(!request.text.includes("·"), request.text);
+  assert.ok(!request.text.includes("artifacts/"), request.text);
   if (task.state === "ready_for_review") {
-    assert.match(request.text, /ready for review/);
     assert.match(
-      request.text,
-      new RegExp(`\\bversion ${task.artifactVersion}\\b`),
-    );
-    assert.match(
-      request.text,
+      lines[0]!,
       new RegExp(
-        `\\baccept\\b.*\\bartifactVersion: ${task.artifactVersion}\\b`,
+        `^Tarefa ${short} pronta para revisão \\(v${task.artifactVersion}, \\d+,\\d KB\\)$`,
       ),
     );
-    assert.ok(request.text.includes(noticePath(task)));
+    assert.equal(
+      lines[1],
+      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
+    );
     assert.ok(!request.text.includes(task.artifactPath!));
-    assert.ok(request.text.includes(`(${task.artifactBytes} B)`));
+    assert.ok(!request.text.includes(noticePath(task)));
   } else {
-    assert.ok(request.text.includes(task.state));
+    assert.equal(lines[0], `Tarefa ${short} interrompida`);
+    assert.match(lines[1]!, /^Motivo: \S/);
   }
   return { request, delivery };
 }
@@ -962,8 +967,8 @@ test("a review notice reaches the origin once and the task stays ready for revie
     await waitFor(() => assert.equal(get().state, "ready_for_review"));
     const row = get();
     const { request, delivery } = assertTerminalNotice(app, row, "42");
-    assert.ok(request.text.includes(` · ${noticePath(row)} (`));
-    assert.match(request.text, /\b\d+ B\b/);
+    assert.ok(!request.text.includes(noticePath(row)));
+    assert.match(request.text, /\(v1, \d+,\d KB\)/);
     assert.ok(!request.text.includes("beyond the excerpt"));
     assert.ok(!request.text.includes(answer));
     assert.doesNotThrow(() => assertAppPurgeSafe(app.store, origin));
@@ -1094,15 +1099,15 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     assert.match(first.id, /^[a-f0-9-]{36}$/);
     assert.equal(await call(id, 1, create), created);
     const own = await call(id, 2, { action: "show", id: first.id });
-    assert.match(own, /^Goal: First goal$/m);
-    assert.doesNotMatch(own, /^Artifact/m);
+    assert.match(own, /^Objetivo: First goal$/m);
+    assert.doesNotMatch(own, /^Artefato/m);
     assert.equal(
       await call(foreign, 3, { action: "show", id: first.id }),
       "Durable task not found",
     );
     assert.equal(
       await call(foreign, 4, { action: "list" }),
-      "No durable tasks in this conversation.",
+      "Nenhuma tarefa durável nesta conversa.",
     );
     assert.match(await call(id, 5, { action: "create" }), /goal/i);
     assert.match(await call(id, 6, { action: "show" }), /id/i);
@@ -1140,21 +1145,24 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     const [header, ...listed] = (await call(id, 40, { action: "list" })).split(
       "\n",
     );
-    assert.equal(header, "20 tasks in this conversation:");
+    assert.equal(header, "20 tarefas nesta conversa:");
     assert.deepEqual(
       listed.map((line) => line.slice(0, 8)),
       expectedIds.slice(0, 20).map((taskId) => taskId.slice(0, 8)),
     );
     assert.equal(
       listed[0],
-      `${expectedIds[0]!.slice(0, 8)} queued, 0s old, Goal 20 ${"x".repeat(52)}…`,
+      `${expectedIds[0]!.slice(0, 8)} na fila, há 0s, Goal 20 ${"x".repeat(52)}…`,
     );
-    assert.match(listed.at(-1)!, /^[a-f0-9]{8} queued, 19s old, /);
+    assert.match(listed.at(-1)!, /^[a-f0-9]{8} na fila, há 19s, /);
 
     const archived = await app.create();
     app.durableTasks.create(archived, "Archived goal");
     await app.deleteConversation(archived);
-    app.durableTasks.create(foreign, "Another conversation's goal");
+    const foreignTask = app.durableTasks.create(
+      foreign,
+      "Another conversation's goal",
+    );
 
     await app.close();
     app = await Runtime.open(options);
@@ -1181,11 +1189,11 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     );
     assert.equal(
       requests.find((row) => row.conversationId === id)?.text,
-      "23 durable tasks were interrupted by a restart and remain interrupted.",
+      "23 tarefas interrompidas\nMotivo: reinício do serviço",
     );
     assert.equal(
       requests.find((row) => row.conversationId === foreign)?.text,
-      "1 durable task was interrupted by a restart and remains interrupted.",
+      `Tarefa ${foreignTask.id.slice(0, 8)} interrompida\nMotivo: reinício do serviço`,
     );
     for (const request of requests) assert.equal(request.status, "done");
 
@@ -1211,7 +1219,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     assert.match(
       shown,
       new RegExp(
-        `^Artifact version 1, 123 B, artifacts/durable/${expectedIds[0]}/1\\.md$`,
+        `^Artefato versão 1, 0,1 KB, artifacts/durable/${expectedIds[0]}/1\\.md$`,
         "m",
       ),
     );
@@ -1222,7 +1230,7 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     )[1];
     assert.match(
       withArtifact!,
-      new RegExp(`^${expectedIds[0]!.slice(0, 8)} done, `),
+      new RegExp(`^${expectedIds[0]!.slice(0, 8)} concluída, `),
     );
     assert.ok(!withArtifact!.includes("artifacts/"));
     assert.equal(
@@ -1337,7 +1345,7 @@ test("steer submits once into the running task's own conversation and never into
   assert.equal(result.isError, false, result.text);
   assert.equal(
     result.text,
-    `Message delivered to task ${task.id.slice(0, 8)}.`,
+    `Mensagem entregue à tarefa ${task.id.slice(0, 8)}.`,
   );
 
   assert.equal(calls.length, 1);
@@ -1489,7 +1497,7 @@ test("steer leaves the task row unchanged", async (t) => {
   assert.equal(result.isError, false, result.text);
   assert.equal(
     result.text,
-    `Message delivered to task ${task.id.slice(0, 8)}.`,
+    `Mensagem entregue à tarefa ${task.id.slice(0, 8)}.`,
   );
   assert.deepEqual(
     calls.map(([conversationId, , text]) => [conversationId, text]),
@@ -1763,7 +1771,7 @@ test("durable_task create returns one line naming the short id and state", async
   const [task] = app.durableTasks.list(origin);
   assert.equal(
     text,
-    `Task ${task!.id.slice(0, 8)} created, queued. The scheduler runs it in its own conversation; use show to follow it.`,
+    `Tarefa ${task!.id.slice(0, 8)} criada, na fila. O agendador a executa em uma conversa própria; use show para acompanhar.`,
   );
 });
 
@@ -1778,9 +1786,9 @@ test("durable_task list with two tasks returns a header and one line per task, n
   assert.equal(
     await call(1, { action: "list" }),
     [
-      "2 tasks in this conversation:",
-      `${newer.id.slice(0, 8)} running, 12s old, ${[...goal].slice(0, 60).join("")}…`,
-      `${older.id.slice(0, 8)} queued, 1m old, Short goal`,
+      "2 tarefas nesta conversa:",
+      `${newer.id.slice(0, 8)} em execução, há 12s, ${[...goal].slice(0, 60).join("")}…`,
+      `${older.id.slice(0, 8)} na fila, há 1m, Short goal`,
     ].join("\n"),
   );
 });
@@ -1789,7 +1797,7 @@ test("durable_task list without tasks returns a single line", async (t) => {
   const { call } = await formatFixture(t);
   assert.equal(
     await call(1, { action: "list" }),
-    "No durable tasks in this conversation.",
+    "Nenhuma tarefa durável nesta conversa.",
   );
 });
 
@@ -1802,12 +1810,12 @@ test("durable_task show with an artifact returns a small block with the relative
   assert.equal(
     await call(1, { action: "show", id: task.id }),
     [
-      `Task ${task.id.slice(0, 8)}, ready for review`,
-      `Goal: ${goal}`,
-      "Created 15/01 05:00, updated 15/01 05:01",
-      `Artifact version 1, 833 B, artifacts/durable/${task.id}/1.md`,
-      "To close it: accept with artifactVersion 1.",
-      `Full id: ${task.id}`,
+      `Tarefa ${task.id.slice(0, 8)}, pronta para revisão`,
+      `Objetivo: ${goal}`,
+      "Criada em 15/01 05:00, atualizada em 15/01 05:01",
+      `Artefato versão 1, 0,8 KB, artifacts/durable/${task.id}/1.md`,
+      "Para fechar: accept com artifactVersion 1",
+      `ID completo: ${task.id}`,
     ].join("\n"),
   );
 });
@@ -1818,10 +1826,10 @@ test("durable_task show without an artifact omits the artifact line", async (t) 
   assert.equal(
     await call(1, { action: "show", id: task.id }),
     [
-      `Task ${task.id.slice(0, 8)}, queued`,
-      "Goal: Plain goal",
-      "Created 15/01 05:00, updated 15/01 05:00",
-      `Full id: ${task.id}`,
+      `Tarefa ${task.id.slice(0, 8)}, na fila`,
+      "Objetivo: Plain goal",
+      "Criada em 15/01 05:00, atualizada em 15/01 05:00",
+      `ID completo: ${task.id}`,
     ].join("\n"),
   );
 });
@@ -1832,7 +1840,7 @@ test("durable_task accept returns one line", async (t) => {
   markReadyForReview(app, dir, task.id, epoch);
   assert.equal(
     await call(1, { action: "accept", id: task.id, artifactVersion: 1 }),
-    `Task ${task.id.slice(0, 8)} done.`,
+    `Tarefa ${task.id.slice(0, 8)} concluída.`,
   );
 });
 
@@ -1842,7 +1850,7 @@ test("durable_task reject returns one line", async (t) => {
   markReadyForReview(app, dir, task.id, epoch);
   assert.equal(
     await call(1, { action: "reject", id: task.id, reason: "Too short" }),
-    `Task ${task.id.slice(0, 8)} back in the queue; it runs again in about a minute and the reason is recorded.`,
+    `Tarefa ${task.id.slice(0, 8)} de volta à fila; ela roda de novo em cerca de um minuto e o motivo fica registrado.`,
   );
 });
 
@@ -1856,11 +1864,11 @@ test("durable_task steer returns one line", async (t) => {
   assert.equal(result.isError, false, result.text);
   assert.equal(
     result.text,
-    `Message delivered to task ${task.id.slice(0, 8)}.`,
+    `Mensagem entregue à tarefa ${task.id.slice(0, 8)}.`,
   );
 });
 
-test("no durable_task result line carries braces or the artifact hash", async (t) => {
+test("no durable_task result line carries braces, backticks or the artifact hash", async (t) => {
   const { app, options, origin, task } = await steerFixture(t);
   const call = async (
     taskId: number,
@@ -1888,6 +1896,7 @@ test("no durable_task result line carries braces or the artifact hash", async (t
   );
   for (const line of outputs.flatMap((text) => text.split("\n"))) {
     assert.ok(!line.includes("{"), line);
+    assert.ok(!line.includes("`"), line);
     assert.ok(!line.includes("artifactSha256"), line);
     assert.ok(!line.includes("b".repeat(64)), line);
   }
@@ -1895,7 +1904,7 @@ test("no durable_task result line carries braces or the artifact hash", async (t
 
 /** The 8-character id a create result prints. */
 function printedShortId(text: string) {
-  const short = /^Task ([a-f0-9]{8}) created, /.exec(text)?.[1];
+  const short = /^Tarefa ([a-f0-9]{8}) criada, /.exec(text)?.[1];
   assert.ok(short, text);
   return short;
 }
@@ -1930,13 +1939,13 @@ test("P-T1: the 8-character id printed by create works for show, accept, reject 
   const acceptShort = printedShortId(acceptText);
   const accepted = createdId(app, origin, acceptText);
   const shown = await call(2, { action: "show", id: acceptShort });
-  assert.match(shown, new RegExp(`^Task ${acceptShort}, queued$`, "m"));
-  assert.match(shown, /^Goal: Accept me$/m);
-  assert.match(shown, new RegExp(`^Full id: ${accepted}$`, "m"));
+  assert.match(shown, new RegExp(`^Tarefa ${acceptShort}, na fila$`, "m"));
+  assert.match(shown, /^Objetivo: Accept me$/m);
+  assert.match(shown, new RegExp(`^ID completo: ${accepted}$`, "m"));
   markReadyForReview(app, dir, accepted, epoch);
   assert.equal(
     await call(3, { action: "accept", id: acceptShort, artifactVersion: 1 }),
-    `Task ${acceptShort} done.`,
+    `Tarefa ${acceptShort} concluída.`,
   );
   assert.equal(app.durableTasks.get(origin, accepted)?.state, "done");
 
@@ -1946,7 +1955,7 @@ test("P-T1: the 8-character id printed by create works for show, accept, reject 
   markReadyForReview(app, dir, rejected, epoch);
   assert.equal(
     await call(5, { action: "reject", id: rejectShort, reason: "Too short" }),
-    `Task ${rejectShort} back in the queue; it runs again in about a minute and the reason is recorded.`,
+    `Tarefa ${rejectShort} de volta à fila; ela roda de novo em cerca de um minuto e o motivo fica registrado.`,
   );
   const row = app.durableTasks.get(origin, rejected)!;
   assert.equal(row.state, "queued");
@@ -1974,14 +1983,14 @@ test("P-T1: steer with the 8-character id printed by create reaches that task's 
     id: short,
   });
   assert.equal(shown.isError, false, shown.text);
-  assert.match(shown.text, new RegExp(`^Task ${short}, running$`, "m"));
+  assert.match(shown.text, new RegExp(`^Tarefa ${short}, em execução$`, "m"));
   const result = await callDurableTask(app, origin, 3, {
     action: "steer",
     id: short,
     message: "Shorter, please",
   });
   assert.equal(result.isError, false, result.text);
-  assert.equal(result.text, `Message delivered to task ${short}.`);
+  assert.equal(result.text, `Mensagem entregue à tarefa ${short}.`);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]![0], run);
   assert.equal(calls[0]![2], "Shorter, please");
@@ -2022,8 +2031,8 @@ test("P-T2: a prefix shared by two tasks is refused with the count; a longer uni
       id: prefix,
     });
     assert.equal(shown.isError, false, shown.text);
-    assert.match(shown.text, new RegExp(`^Goal: Goal of ${task.id}$`, "m"));
-    assert.match(shown.text, new RegExp(`^Full id: ${task.id}$`, "m"));
+    assert.match(shown.text, new RegExp(`^Objetivo: Goal of ${task.id}$`, "m"));
+    assert.match(shown.text, new RegExp(`^ID completo: ${task.id}$`, "m"));
   }
 });
 
@@ -2052,7 +2061,7 @@ test("P-T3: a prefix matching nothing is not found, and a 3-character prefix nev
     id: "e2cd",
   });
   assert.equal(shown.isError, false, shown.text);
-  assert.match(shown.text, new RegExp(`^Full id: ${task.id}$`, "m"));
+  assert.match(shown.text, new RegExp(`^ID completo: ${task.id}$`, "m"));
 });
 
 test("P-T4: the full id still resolves, and another conversation's prefix is not found", async (t) => {
@@ -2070,7 +2079,7 @@ test("P-T4: the full id still resolves, and another conversation's prefix is not
     id: task.id,
   });
   assert.equal(shown.isError, false, shown.text);
-  assert.match(shown.text, /^Goal: Full id goal$/m);
+  assert.match(shown.text, /^Objetivo: Full id goal$/m);
   for (const id of [task.id.slice(0, 8), task.id.slice(0, 4), task.id])
     for (const args of idActions(id)) {
       const refused = await callDurableTask(app, await app.create(), 2, args);
@@ -2084,5 +2093,65 @@ test("P-T4: the full id still resolves, and another conversation's prefix is not
     artifactVersion: 1,
   });
   assert.equal(accepted.isError, false, accepted.text);
-  assert.equal(accepted.text, `Task ${task.id.slice(0, 8)} done.`);
+  assert.equal(accepted.text, `Tarefa ${task.id.slice(0, 8)} concluída.`);
+});
+
+test("the durable_task description tells the model to repeat the result as plain text", async (t) => {
+  const { app } = await formatFixture(t);
+  const description = registeredTool(app)?.description ?? "";
+  assert.ok(
+    description.includes(
+      "The result is already formatted for the user: repeat it as plain text, without code fences and without markdown.",
+    ),
+    description,
+  );
+});
+
+test("the review notice is two lines with a comma decimal size and no full id or path", async (t) => {
+  const { app, origin } = await formatFixture(t);
+  const base = app.durableTasks.create(origin, "Liste de 1 a 200");
+  const id = "7bd7edaf-1111-4111-8111-111111111111";
+  const ready: DurableTask = {
+    ...base,
+    id,
+    state: "ready_for_review",
+    artifactPath: `/srv/runtime/artifacts/durable/${id}/1.md`,
+    artifactSha256: "c".repeat(64),
+    artifactBytes: 1126,
+    artifactVersion: 1,
+  };
+  const text = durableTaskTerminalNoticeText(ready);
+  assert.equal(
+    text,
+    [
+      "Tarefa 7bd7edaf pronta para revisão (v1, 1,1 KB)",
+      "Para fechar: accept com artifactVersion 1",
+    ].join("\n"),
+  );
+  assert.ok(!text.includes(id));
+  assert.ok(!text.includes("/"));
+  assert.ok(!text.includes("·"));
+  assert.ok(!text.includes("Liste"));
+  assert.equal(
+    durableTaskTerminalNoticeText({
+      ...ready,
+      artifactBytes: 512 * 1024,
+      artifactVersion: 3,
+    }).split("\n")[0],
+    "Tarefa 7bd7edaf pronta para revisão (v3, 512,0 KB)",
+  );
+  for (const [lastError, reason] of [
+    ["budget_timeout", "tempo limite esgotado"],
+    ["budget_turns", "limite de turnos esgotado"],
+    ["Invalid request second line", "Invalid request second line"],
+  ]) {
+    const notice = durableTaskTerminalNoticeText({
+      ...base,
+      id,
+      state: "interrupted",
+      lastError,
+    });
+    assert.equal(notice, `Tarefa 7bd7edaf interrompida\nMotivo: ${reason}`);
+    assert.ok(!notice.includes(id));
+  }
 });
