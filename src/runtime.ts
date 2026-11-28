@@ -997,7 +997,8 @@ export class Runtime {
                 ),
                 id: Type.Optional(
                   Type.String({
-                    description: "Required for show, accept, reject, and steer",
+                    description:
+                      "Required for show, accept, reject, and steer; the full id or a unique prefix of at least 4 characters works",
                     minLength: 1,
                     maxLength: 100,
                   }),
@@ -1049,7 +1050,10 @@ export class Runtime {
                     case "show": {
                       if (!args.id?.trim())
                         throw new DurableTaskError("Task id is required");
-                      const task = tasks.get(conversationId, args.id);
+                      const task = tasks.get(
+                        conversationId,
+                        tasks.resolveId(conversationId, args.id),
+                      );
                       if (!task)
                         throw new DurableTaskError("Durable task not found");
                       text = durableTaskShowText(
@@ -1063,19 +1067,20 @@ export class Runtime {
                     case "reject": {
                       if (!args.id?.trim())
                         throw new DurableTaskError("Task id is required");
+                      const id = tasks.resolveId(conversationId, args.id);
                       text =
                         args.action === "accept"
                           ? durableTaskAcceptedText(
                               tasks.accept(
                                 conversationId,
-                                args.id,
+                                id,
                                 args.artifactVersion,
                               ),
                             )
                           : durableTaskRejectedText(
                               tasks.reject(
                                 conversationId,
-                                args.id,
+                                id,
                                 args.reason ?? "",
                               ),
                             );
@@ -1087,7 +1092,7 @@ export class Runtime {
                       text = durableTaskSteeredText(
                         await tasks.steer(
                           conversationId,
-                          args.id,
+                          tasks.resolveId(conversationId, args.id),
                           args.message ?? "",
                         ),
                       );

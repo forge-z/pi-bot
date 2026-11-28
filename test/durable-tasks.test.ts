@@ -1259,7 +1259,11 @@ function recordInputs(app: Runtime) {
   return inputs;
 }
 
-async function steerFixture(t: TestContext) {
+async function steerFixture(
+  t: TestContext,
+  create = async (app: Runtime, origin: string) =>
+    app.durableTasks.create(origin, "Steerable goal"),
+) {
   const held = heldResponse();
   const transcripts: string[] = [];
   const steered: FauxResponseStep = (transcript) => {
@@ -1273,7 +1277,7 @@ async function steerFixture(t: TestContext) {
     await app.close();
   });
   const origin = await app.create();
-  const task = app.durableTasks.create(origin, "Steerable goal");
+  const task = await create(app, origin);
   await app.tasks.tick();
   const get = () => app.durableTasks.get(origin, task.id)!;
   assert.equal(get().state, "running");
@@ -1803,6 +1807,7 @@ test("durable_task show with an artifact returns a small block with the relative
       "Created 15/01 05:00, updated 15/01 05:01",
       `Artifact version 1, 833 B, artifacts/durable/${task.id}/1.md`,
       "To close it: accept with artifactVersion 1.",
+      `Full id: ${task.id}`,
     ].join("\n"),
   );
 });
@@ -1816,6 +1821,7 @@ test("durable_task show without an artifact omits the artifact line", async (t) 
       `Task ${task.id.slice(0, 8)}, queued`,
       "Goal: Plain goal",
       "Created 15/01 05:00, updated 15/01 05:00",
+      `Full id: ${task.id}`,
     ].join("\n"),
   );
 });
@@ -1885,4 +1891,198 @@ test("no durable_task result line carries braces or the artifact hash", async (t
     assert.ok(!line.includes("artifactSha256"), line);
     assert.ok(!line.includes("b".repeat(64)), line);
   }
+});
+
+/** The 8-character id a create result prints. */
+function printedShortId(text: string) {
+  const short = /^Task ([a-f0-9]{8}) created, /.exec(text)?.[1];
+  assert.ok(short, text);
+  return short;
+}
+
+/** One call per action that takes an id, each naming `id`. */
+function idActions(id: string): Record<string, string | number>[] {
+  return [
+    { action: "show", id },
+    { action: "accept", id, artifactVersion: 1 },
+    { action: "reject", id, reason: "No" },
+    { action: "steer", id, message: "Hi" },
+  ];
+}
+
+/** Inserts a task with a chosen id, so prefix collisions are deterministic. */
+function insertTask(app: Runtime, conversationId: string, id: string) {
+  app.store.run(
+    `INSERT INTO durable_tasks(id,conversationId,goal,state,createdAt,updatedAt)
+     VALUES (?,?,?,'queued',?,?)`,
+    id,
+    conversationId,
+    `Goal of ${id}`,
+    epoch,
+    epoch,
+  );
+  return app.durableTasks.get(conversationId, id)!;
+}
+
+test("P-T1: the 8-character id printed by create works for show, accept, reject and steer", async (t) => {
+  const { app, dir, origin, call } = await formatFixture(t);
+  const acceptText = await call(1, { action: "create", goal: "Accept me" });
+  const acceptShort = printedShortId(acceptText);
+  const accepted = createdId(app, origin, acceptText);
+  const shown = await call(2, { action: "show", id: acceptShort });
+  assert.match(shown, new RegExp(`^Task ${acceptShort}, queued$`, "m"));
+  assert.match(shown, /^Goal: Accept me$/m);
+  assert.match(shown, new RegExp(`^Full id: ${accepted}$`, "m"));
+  markReadyForReview(app, dir, accepted, epoch);
+  assert.equal(
+    await call(3, { action: "accept", id: acceptShort, artifactVersion: 1 }),
+    `Task ${acceptShort} done.`,
+  );
+  assert.equal(app.durableTasks.get(origin, accepted)?.state, "done");
+
+  const rejectText = await call(4, { action: "create", goal: "Reject me" });
+  const rejectShort = printedShortId(rejectText);
+  const rejected = createdId(app, origin, rejectText);
+  markReadyForReview(app, dir, rejected, epoch);
+  assert.equal(
+    await call(5, { action: "reject", id: rejectShort, reason: "Too short" }),
+    `Task ${rejectShort} back in the queue; it runs again in about a minute and the reason is recorded.`,
+  );
+  const row = app.durableTasks.get(origin, rejected)!;
+  assert.equal(row.state, "queued");
+  assert.equal(row.lastError, "rejected: Too short");
+  assert.equal(app.durableTasks.get(origin, accepted)?.state, "done");
+});
+
+test("P-T1: steer with the 8-character id printed by create reaches that task's run", async (t) => {
+  let short = "";
+  const { app, origin, task, run, calls } = await steerFixture(
+    t,
+    async (app, origin) => {
+      const result = await callDurableTask(app, origin, 1, {
+        action: "create",
+        goal: "Steer me by short id",
+      });
+      assert.equal(result.isError, false, result.text);
+      short = printedShortId(result.text);
+      return app.durableTasks.get(origin, createdId(app, origin, result.text))!;
+    },
+  );
+  assert.equal(task.id.slice(0, 8), short);
+  const shown = await callDurableTask(app, origin, 2, {
+    action: "show",
+    id: short,
+  });
+  assert.equal(shown.isError, false, shown.text);
+  assert.match(shown.text, new RegExp(`^Task ${short}, running$`, "m"));
+  const result = await callDurableTask(app, origin, 3, {
+    action: "steer",
+    id: short,
+    message: "Shorter, please",
+  });
+  assert.equal(result.isError, false, result.text);
+  assert.equal(result.text, `Message delivered to task ${short}.`);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], run);
+  assert.equal(calls[0]![2], "Shorter, please");
+});
+
+test("P-T2: a prefix shared by two tasks is refused with the count; a longer unique prefix resolves", async (t) => {
+  const { app, origin } = await formatFixture(t);
+  const first = insertTask(app, origin, "e2cdd1d7-1111-4111-8111-111111111111");
+  const second = insertTask(
+    app,
+    origin,
+    "e2cdd1d8-2222-4222-8222-222222222222",
+  );
+  const before = app.store.all("SELECT * FROM durable_tasks ORDER BY id");
+  for (const args of <Record<string, string | number>[]>[
+    { action: "show", id: "e2cdd1d" },
+    { action: "accept", id: "e2cd", artifactVersion: 1 },
+    { action: "reject", id: "e2cdd", reason: "No" },
+    { action: "steer", id: "e2cdd1", message: "Hi" },
+  ]) {
+    const refused = await callDurableTask(app, origin, 1, args);
+    assert.equal(refused.isError, true, refused.text);
+    assert.equal(
+      refused.text,
+      `Task id ${args.id} matches 2 tasks in this conversation. Use more characters of the id.`,
+    );
+  }
+  assert.deepEqual(
+    app.store.all("SELECT * FROM durable_tasks ORDER BY id"),
+    before,
+  );
+  for (const [prefix, task] of [
+    ["e2cdd1d7", first],
+    ["e2cdd1d8-2", second],
+  ] as const) {
+    const shown = await callDurableTask(app, origin, 2, {
+      action: "show",
+      id: prefix,
+    });
+    assert.equal(shown.isError, false, shown.text);
+    assert.match(shown.text, new RegExp(`^Goal: Goal of ${task.id}$`, "m"));
+    assert.match(shown.text, new RegExp(`^Full id: ${task.id}$`, "m"));
+  }
+});
+
+test("P-T3: a prefix matching nothing is not found, and a 3-character prefix never resolves", async (t) => {
+  const { app, dir, origin } = await formatFixture(t);
+  const task = insertTask(app, origin, "e2cdd1d7-1111-4111-8111-111111111111");
+  markReadyForReview(app, dir, task.id, epoch);
+  for (const id of ["ffff", "e2cdd1d6", "e2c", "e2", "e"]) {
+    for (const args of idActions(id)) {
+      const result = await callDurableTask(app, origin, 1, args);
+      assert.equal(result.isError, true, `${args.action} ${id}`);
+      assert.equal(
+        result.text,
+        "Durable task not found",
+        `${args.action} ${id}`,
+      );
+    }
+  }
+  assert.equal(
+    app.durableTasks.get(origin, task.id)?.state,
+    "ready_for_review",
+  );
+  // Four characters is the minimum that resolves.
+  const shown = await callDurableTask(app, origin, 2, {
+    action: "show",
+    id: "e2cd",
+  });
+  assert.equal(shown.isError, false, shown.text);
+  assert.match(shown.text, new RegExp(`^Full id: ${task.id}$`, "m"));
+});
+
+test("P-T4: the full id still resolves, and another conversation's prefix is not found", async (t) => {
+  const { app, dir, origin } = await formatFixture(t);
+  const foreign = await app.create();
+  const task = app.durableTasks.create(origin, "Full id goal");
+  // A task in the other conversation sharing the prefix must not make it ambiguous.
+  insertTask(
+    app,
+    foreign,
+    `${task.id.slice(0, 8)}-ffff-4fff-8fff-ffffffffffff`,
+  );
+  const shown = await callDurableTask(app, origin, 1, {
+    action: "show",
+    id: task.id,
+  });
+  assert.equal(shown.isError, false, shown.text);
+  assert.match(shown.text, /^Goal: Full id goal$/m);
+  for (const id of [task.id.slice(0, 8), task.id.slice(0, 4), task.id])
+    for (const args of idActions(id)) {
+      const refused = await callDurableTask(app, await app.create(), 2, args);
+      assert.equal(refused.isError, true, refused.text);
+      assert.equal(refused.text, "Durable task not found");
+    }
+  markReadyForReview(app, dir, task.id, epoch);
+  const accepted = await callDurableTask(app, origin, 3, {
+    action: "accept",
+    id: task.id,
+    artifactVersion: 1,
+  });
+  assert.equal(accepted.isError, false, accepted.text);
+  assert.equal(accepted.text, `Task ${task.id.slice(0, 8)} done.`);
 });
