@@ -20,11 +20,7 @@ import {
   outboundMedia,
   type OutboundMedia,
 } from "./outbound.js";
-import {
-  deterministicFailure,
-  elapsedText,
-  PendingJobs,
-} from "./pending-jobs.js";
+import { deterministicFailure, PendingJobs } from "./pending-jobs.js";
 import { redactSecretPatterns } from "./config.js";
 import { readWebKeys, resolveWebKeys } from "./web-config.js";
 import { createWebTools } from "./web-tools.js";
@@ -136,6 +132,12 @@ import {
   DurableTasks,
   DurableTaskError,
   DURABLE_TASK_STEER_SOURCE,
+  durableTaskAcceptedText,
+  durableTaskCreatedText,
+  durableTaskListText,
+  durableTaskRejectedText,
+  durableTaskShowText,
+  durableTaskSteeredText,
 } from "./durable-tasks.js";
 import {
   isBlankMessage,
@@ -1023,28 +1025,25 @@ export class Runtime {
               execute: async (args, api) => {
                 const conversationId = String(api.conversationId);
                 const tasks = app!.durableTasks;
-                let result: unknown;
+                let text: string;
                 try {
                   switch (args.action) {
                     case "create": {
                       const goal = args.goal ?? "";
-                      const { id, state } = tasks.create(
-                        conversationId,
-                        goal,
-                        `chat:${conversationId}:${api.taskId}:${hash(goal)}`,
+                      text = durableTaskCreatedText(
+                        tasks.create(
+                          conversationId,
+                          goal,
+                          `chat:${conversationId}:${api.taskId}:${hash(goal)}`,
+                        ),
                       );
-                      result = { id, state };
                       break;
                     }
                     case "list": {
-                      const now = app!.now();
-                      result = tasks.list(conversationId, 20).map((task) => ({
-                        id: task.id,
-                        state: task.state,
-                        goal: task.goal.slice(0, 120),
-                        age: elapsedText(now - task.createdAt),
-                        ...(task.artifactPath ? { hasArtifact: true } : {}),
-                      }));
+                      text = durableTaskListText(
+                        tasks.list(conversationId, 20),
+                        app!.now(),
+                      );
                       break;
                     }
                     case "show": {
@@ -1053,64 +1052,45 @@ export class Runtime {
                       const task = tasks.get(conversationId, args.id);
                       if (!task)
                         throw new DurableTaskError("Durable task not found");
-                      const {
-                        id,
-                        state,
-                        goal,
-                        createdAt,
-                        updatedAt,
-                        lastError,
-                        artifactPath,
-                        artifactSha256,
-                        artifactBytes,
-                        artifactVersion,
-                      } = task;
-                      result = {
-                        id,
-                        state,
-                        goal,
-                        createdAt,
-                        updatedAt,
-                        lastError,
-                        ...(artifactPath
-                          ? {
-                              artifactPath,
-                              artifactSha256,
-                              artifactBytes,
-                              artifactVersion,
-                            }
-                          : {}),
-                      };
+                      text = durableTaskShowText(
+                        task,
+                        tasks.artifactDisplayPath(task.artifactPath),
+                        app!.options.env ?? process.env,
+                      );
                       break;
                     }
                     case "accept":
                     case "reject": {
                       if (!args.id?.trim())
                         throw new DurableTaskError("Task id is required");
-                      const { id, state } =
+                      text =
                         args.action === "accept"
-                          ? tasks.accept(
-                              conversationId,
-                              args.id,
-                              args.artifactVersion,
+                          ? durableTaskAcceptedText(
+                              tasks.accept(
+                                conversationId,
+                                args.id,
+                                args.artifactVersion,
+                              ),
                             )
-                          : tasks.reject(
-                              conversationId,
-                              args.id,
-                              args.reason ?? "",
+                          : durableTaskRejectedText(
+                              tasks.reject(
+                                conversationId,
+                                args.id,
+                                args.reason ?? "",
+                              ),
                             );
-                      result = { id, state };
                       break;
                     }
                     case "steer": {
                       if (!args.id?.trim())
                         throw new DurableTaskError("Task id is required");
-                      const { id, state } = await tasks.steer(
-                        conversationId,
-                        args.id,
-                        args.message ?? "",
+                      text = durableTaskSteeredText(
+                        await tasks.steer(
+                          conversationId,
+                          args.id,
+                          args.message ?? "",
+                        ),
                       );
-                      result = { id, state };
                       break;
                     }
                   }
@@ -1121,11 +1101,7 @@ export class Runtime {
                     output: [{ type: "text" as const, text: error.message }],
                   };
                 }
-                return {
-                  output: [
-                    { type: "text" as const, text: JSON.stringify(result) },
-                  ],
-                };
+                return { output: [{ type: "text" as const, text }] };
               },
             }),
             defineTool({

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   BACKGROUND_CONTEXT as context,
   withAbortSignal,
@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { DurableTaskConfig } from "./harness-config.js";
 import { logFailure } from "./log.js";
+import { elapsedText, formatDayClock } from "./pending-jobs.js";
 import { settleFailureReason, type Runtime } from "./runtime.js";
 import { hash, type Store } from "./store.js";
 
@@ -132,6 +133,77 @@ function writeArtifact(path: string, data: Buffer) {
   }
 }
 
+const STATE_LABELS: Record<DurableTaskState, string> = {
+  queued: "queued",
+  running: "running",
+  ready_for_review: "ready for review",
+  done: "done",
+  interrupted: "interrupted",
+  cancelled: "cancelled",
+};
+const LIST_GOAL_MAX = 60;
+
+function shortId(id: string) {
+  return id.slice(0, 8);
+}
+
+function artifactSizeText(bytes: number) {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+/** Tool result of create: one line, no structured value for the model to echo. */
+export function durableTaskCreatedText(task: DurableTask) {
+  return `Task ${shortId(task.id)} created, ${STATE_LABELS[task.state]}. The scheduler runs it in its own conversation; use show to follow it.`;
+}
+
+export function durableTaskListText(tasks: DurableTask[], now: number) {
+  if (!tasks.length) return "No durable tasks in this conversation.";
+  const lines = tasks.map((task) => {
+    const goal = [...task.goal.replace(/\s+/g, " ").trim()];
+    const excerpt =
+      goal.length > LIST_GOAL_MAX
+        ? `${goal.slice(0, LIST_GOAL_MAX).join("")}…`
+        : goal.join("");
+    return `${shortId(task.id)} ${STATE_LABELS[task.state]}, ${elapsedText(now - task.createdAt)} old, ${excerpt}`;
+  });
+  const count = tasks.length === 1 ? "1 task" : `${tasks.length} tasks`;
+  return [`${count} in this conversation:`, ...lines].join("\n");
+}
+
+export function durableTaskShowText(
+  task: DurableTask,
+  artifactPath: string | null,
+  env: Record<string, string | undefined>,
+) {
+  const lines = [
+    `Task ${shortId(task.id)}, ${STATE_LABELS[task.state]}`,
+    `Goal: ${task.goal}`,
+    `Created ${formatDayClock(task.createdAt, env)}, updated ${formatDayClock(task.updatedAt, env)}`,
+  ];
+  if (task.lastError) lines.push(`Last error: ${task.lastError}`);
+  if (artifactPath)
+    lines.push(
+      `Artifact version ${task.artifactVersion}, ${artifactSizeText(task.artifactBytes ?? 0)}, ${artifactPath}`,
+    );
+  if (task.state === "ready_for_review")
+    lines.push(
+      `To close it: accept with artifactVersion ${task.artifactVersion}.`,
+    );
+  return lines.join("\n");
+}
+
+export function durableTaskAcceptedText(task: DurableTask) {
+  return `Task ${shortId(task.id)} ${STATE_LABELS[task.state]}.`;
+}
+
+export function durableTaskRejectedText(task: DurableTask) {
+  return `Task ${shortId(task.id)} back in the queue; it runs again in about a minute and the reason is recorded.`;
+}
+
+export function durableTaskSteeredText(task: DurableTask) {
+  return `Message delivered to task ${shortId(task.id)}.`;
+}
+
 export class DurableTaskError extends Error {
   constructor(message: string) {
     super(message);
@@ -195,6 +267,15 @@ export class DurableTasks {
       CREATE UNIQUE INDEX IF NOT EXISTS durable_tasks_creation ON durable_tasks(conversationId, creationKey);
       CREATE INDEX IF NOT EXISTS durable_tasks_conversation ON durable_tasks(conversationId, createdAt);
     `);
+  }
+
+  /** Artifact path relative to the runtime directory: artifacts/durable/<id>/<n>.md. */
+  artifactDisplayPath(path: string | null) {
+    if (!path || !this.execution || !isAbsolute(path)) return path;
+    const shown = relative(this.execution.dir, path);
+    return shown.startsWith("..") || isAbsolute(shown)
+      ? path
+      : shown.split(sep).join("/");
   }
 
   create(conversationId: string, goal: string, creationKey?: string) {
@@ -625,11 +706,8 @@ export class DurableTasks {
       .join("");
     let text = `Durable task ${task.id} · ${goal}`;
     if (reviewing && task.artifactBytes !== null) {
-      const size =
-        task.artifactBytes < 1024
-          ? `${task.artifactBytes} B`
-          : `${(task.artifactBytes / 1024).toFixed(1)} KiB`;
-      text += ` · ready for review · version ${task.artifactVersion} · ${task.artifactPath} (${size}). Use durable_task accept with artifactVersion: ${task.artifactVersion}.`;
+      const size = artifactSizeText(task.artifactBytes);
+      text += ` · ready for review · version ${task.artifactVersion} · ${this.artifactDisplayPath(task.artifactPath)} (${size}). Use durable_task accept with artifactVersion: ${task.artifactVersion}.`;
     } else text += ` · ${task.state}`;
     const notice = this.store.run(
       "INSERT OR IGNORE INTO requests(conversationId,requestId,text,source,status) VALUES (?,?,?,'system','done')",
