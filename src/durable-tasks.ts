@@ -166,7 +166,7 @@ function reasonText(lastError: string) {
 
 /** Tool result of create: one line, no structured value for the model to echo. */
 export function durableTaskCreatedText(task: DurableTask) {
-  return `Tarefa ${shortId(task.id)} criada, ${STATE_LABELS[task.state]}. O agendador a executa em uma conversa própria; use show para acompanhar.`;
+  return `Tarefa ${shortId(task.id)} criada, ${STATE_LABELS[task.state]}. O agendador a executa em uma conversa própria. Pode me perguntar como está a qualquer momento.`;
 }
 
 export function durableTaskListText(tasks: DurableTask[], now: number) {
@@ -199,9 +199,7 @@ export function durableTaskShowText(
       `Artefato versão ${task.artifactVersion}, ${artifactSizeText(task.artifactBytes ?? 0)}, ${artifactPath}`,
     );
   if (task.state === "ready_for_review")
-    lines.push(
-      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
-    );
+    lines.push('Para fechar, responda "aceito".');
   if (shortId(task.id) !== task.id) lines.push(`ID completo: ${task.id}`);
   return lines.join("\n");
 }
@@ -227,7 +225,7 @@ export function durableTaskTerminalNoticeText(task: DurableTask) {
   if (task.state === "ready_for_review" && task.artifactBytes !== null)
     return [
       `${heading} (v${task.artifactVersion}, ${artifactSizeText(task.artifactBytes)})`,
-      `Para fechar: accept com artifactVersion ${task.artifactVersion}`,
+      'Responda "aceito" para fechar, ou "refaça: <motivo>" para eu rodar de novo.',
     ].join("\n");
   if (task.state === "interrupted")
     return [
