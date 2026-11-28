@@ -135,6 +135,7 @@ import {
   DURABLE_TASK_REJECTION_REASON_MAX,
   DurableTasks,
   DurableTaskError,
+  DURABLE_TASK_STEER_SOURCE,
 } from "./durable-tasks.js";
 import {
   isBlankMessage,
@@ -975,7 +976,7 @@ export class Runtime {
             defineTool({
               name: "durable_task",
               description:
-                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation. For a task ready for review, use accept with its artifactVersion to mark it done, or reject with a reason to queue it again.",
+                "Use create, list, or show for durable tasks in this conversation. A new task is stored but no work starts during the tool call. The scheduler runs the queued goal in a separate conversation. For a running task, use steer with a message to send it into that task's own conversation; it does not reach this conversation. For a task ready for review, use accept with its artifactVersion to mark it done, or reject with a reason to queue it again.",
               parameters: Type.Object({
                 action: Type.Union([
                   Type.Literal("create"),
@@ -983,6 +984,7 @@ export class Runtime {
                   Type.Literal("show"),
                   Type.Literal("accept"),
                   Type.Literal("reject"),
+                  Type.Literal("steer"),
                 ]),
                 goal: Type.Optional(
                   Type.String({
@@ -993,7 +995,7 @@ export class Runtime {
                 ),
                 id: Type.Optional(
                   Type.String({
-                    description: "Required for show, accept, and reject",
+                    description: "Required for show, accept, reject, and steer",
                     minLength: 1,
                     maxLength: 100,
                   }),
@@ -1006,6 +1008,14 @@ export class Runtime {
                     description: "Required for reject",
                     minLength: 1,
                     maxLength: DURABLE_TASK_REJECTION_REASON_MAX,
+                  }),
+                ),
+                message: Type.Optional(
+                  Type.String({
+                    description:
+                      "Required for steer: input for the running task's own conversation",
+                    minLength: 1,
+                    maxLength: DURABLE_TASK_GOAL_MAX,
                   }),
                 ),
               }),
@@ -1089,6 +1099,17 @@ export class Runtime {
                               args.id,
                               args.reason ?? "",
                             );
+                      result = { id, state };
+                      break;
+                    }
+                    case "steer": {
+                      if (!args.id?.trim())
+                        throw new DurableTaskError("Task id is required");
+                      const { id, state } = await tasks.steer(
+                        conversationId,
+                        args.id,
+                        args.message ?? "",
+                      );
                       result = { id, state };
                       break;
                     }
@@ -3241,8 +3262,14 @@ export class Runtime {
         source !== "system" &&
         source !== "task");
     const whenBusy = shouldSteer ? "steer" : "followUp";
+    // A durable task steer only joins the live run: an idle conversation refuses
+    // it with ConversationIdle instead of starting a run no task claims. Chat also
+    // passes steer=true (from admit), so the source marks this path, not the flag.
+    const steerOnly = steer === true && source === DURABLE_TASK_STEER_SOURCE;
     const submission = await conversation.submit(
-      { type: "input", content, requestId, whenBusy },
+      steerOnly
+        ? { type: "input", content, requestId, whenBusy, whenIdle: "reject" }
+        : { type: "input", content, requestId, whenBusy },
       context,
     );
     if (!this.activeTurnStarts.has(conversationId)) {
@@ -3927,8 +3954,10 @@ export class Runtime {
   scheduledTurn(conversationId: string) {
     return (
       this.store.get<{ source: string }>(
-        "SELECT source FROM requests WHERE conversationId=? AND status='pending' ORDER BY rowid DESC LIMIT 1",
+        // A steer joins the run it steers, so it never replaces that run's source.
+        "SELECT source FROM requests WHERE conversationId=? AND status='pending' AND source<>? ORDER BY rowid DESC LIMIT 1",
         conversationId,
+        DURABLE_TASK_STEER_SOURCE,
       )?.source === "task"
     );
   }

@@ -103,8 +103,8 @@ A poller tick that throws is recorded on `health().last_tick_error` and logged a
 
 ## Durable tasks
 
-The `durable_task` tool creates, lists, shows, accepts, and rejects tasks in the
-calling conversation.
+The `durable_task` tool creates, lists, shows, steers, accepts, and rejects
+tasks in the calling conversation.
 The scheduler claims one due task at a time and runs its goal in a separate
 conversation. Failed attempts retry up to the attempt limit. A turn or wall-clock
 budget stop interrupts the task. On startup, queued and running tasks are marked
@@ -140,6 +140,22 @@ with the task `id` and a non-empty `reason` of up to 200 characters to queue
 the task for another run in 60 seconds. The task records the reason and keeps
 its attempt count and existing artifact. Tasks awaiting review stay in
 `ready_for_review` across restarts and are skipped by the scheduler.
+
+Use `steer` with the task `id` and a non-empty `message` of up to 4000
+characters to redirect a task while it runs. Steering applies only to a
+`running` task; any other state is refused with the current state and nothing
+is sent. The message goes into the task's own execution conversation as a
+steer of its current run, never into the conversation that called the tool, so
+the origin gets no turn and no message from it. Steering does not change the
+task state, attempt count, deadline, next run, last error, or artifact fields.
+Each steer is recorded in `requests` with source `task-steer` and a request ID
+derived from the task ID, the current attempt, and the trimmed message: a
+replayed call is delivered once, and different messages in the same attempt
+are each delivered. A steer that reaches the execution conversation after its
+run has already answered is refused the same way: the message is not delivered,
+no new run starts, and its request is marked `unanswered`. On startup every
+pending `task-steer` request is withdrawn and marked `unanswered`, because the
+run it was sent to did not survive the restart.
 
 On success, terminal failure, or a budget stop, the bot queues one short
 notice to the origin's channel without starting a model turn. It includes

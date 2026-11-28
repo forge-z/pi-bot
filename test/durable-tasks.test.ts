@@ -1210,3 +1210,479 @@ test("the registered durable_task tool scopes, bounds and deduplicates calls", a
     await app.close();
   }
 });
+
+type SubmitCall = Parameters<Runtime["submit"]>;
+type Draft = Parameters<
+  Awaited<ReturnType<Runtime["conversation"]>>["submit"]
+>[0];
+
+/** Records every input draft the runtime hands to a conversation from now on. */
+function recordInputs(app: Runtime) {
+  const inputs: { conversationId: string; draft: Draft }[] = [];
+  const wrapped = new WeakSet<object>();
+  const open = app.conversation.bind(app);
+  app.conversation = (async (id: string) => {
+    const conversation = await open(id);
+    if (!wrapped.has(conversation)) {
+      wrapped.add(conversation);
+      const submit = conversation.submit.bind(conversation);
+      conversation.submit = (draft, ctx) => {
+        if (draft.type === "input") inputs.push({ conversationId: id, draft });
+        return submit(draft, ctx);
+      };
+    }
+    return conversation;
+  }) as Runtime["conversation"];
+  return inputs;
+}
+
+async function steerFixture(t: TestContext) {
+  const held = heldResponse();
+  const transcripts: string[] = [];
+  const steered: FauxResponseStep = (transcript) => {
+    transcripts.push(JSON.stringify(transcript.messages));
+    return fauxAssistantMessage("Steered result");
+  };
+  const fixture = await executionFixture(t, [held.response, steered]);
+  const { app, faux } = fixture;
+  t.after(async () => {
+    held.release();
+    await app.close();
+  });
+  const origin = await app.create();
+  const task = app.durableTasks.create(origin, "Steerable goal");
+  await app.tasks.tick();
+  const get = () => app.durableTasks.get(origin, task.id)!;
+  assert.equal(get().state, "running");
+  await waitFor(() => assert.equal(faux.state.callCount, 1));
+  const run = get().runConversationId!;
+  assert.ok(run);
+  assert.notEqual(run, origin);
+  // Observe every submission issued after the claim, through the runtime the task uses.
+  const calls: SubmitCall[] = [];
+  const submit = app.submit.bind(app);
+  app.submit = ((...args: SubmitCall) => {
+    calls.push(args);
+    return submit(...args);
+  }) as Runtime["submit"];
+  const inputs = recordInputs(app);
+  const requests = (conversationId: string) =>
+    app.store.all<RequestRow>(
+      "SELECT * FROM requests WHERE conversationId=? ORDER BY rowid",
+      conversationId,
+    );
+  return {
+    ...fixture,
+    held,
+    transcripts,
+    origin,
+    task: get(),
+    get,
+    run,
+    calls,
+    inputs,
+    requests,
+  };
+}
+
+test("steer submits once into the running task's own conversation and never into the origin", async (t) => {
+  const {
+    app,
+    faux,
+    held,
+    transcripts,
+    origin,
+    task,
+    get,
+    run,
+    calls,
+    inputs,
+    requests,
+  } = await steerFixture(t);
+  const originBefore = requests(origin);
+  const runBefore = requests(run);
+  const message = "  Focus on the second section first.  ";
+  const result = await callDurableTask(app, origin, 7, {
+    action: "steer",
+    id: task.id,
+    message,
+  });
+  assert.equal(result.isError, false, result.text);
+  assert.deepEqual(JSON.parse(result.text), { id: task.id, state: "running" });
+
+  assert.equal(calls.length, 1);
+  const [conversationId, requestId, text, source, chat, , , steer] = calls[0]!;
+  assert.equal(conversationId, run);
+  assert.equal(steer, true);
+  assert.equal(text, message.trim());
+  assert.equal(source, "task-steer");
+  assert.equal(chat, null);
+  assert.equal(
+    requestId,
+    `durable-task-steer:${createHash("sha256")
+      .update(JSON.stringify([task.id, task.attempts, message.trim()]))
+      .digest("hex")}`,
+  );
+  assert.notEqual(requestId, `durable-task:${task.id}:${task.attempts}`);
+  // An explicit steer may only join a live run: an idle conversation must refuse it.
+  assert.deepEqual(
+    inputs.map(({ conversationId, draft }) => [
+      conversationId,
+      draft.type === "input" && draft.whenBusy,
+      draft.type === "input" && draft.whenIdle,
+    ]),
+    [[run, "steer", "reject"]],
+  );
+  const added = requests(run).slice(runBefore.length);
+  assert.deepEqual(
+    added.map((row) => [row.requestId, row.source, row.text]),
+    [[requestId, "task-steer", message.trim()]],
+  );
+  assert.ok(added[0]?.submissionId);
+  // The epic property: the origin conversation gets no turn and no message.
+  assert.ok(calls.every(([id]) => id !== origin));
+  assert.deepEqual(requests(origin), originBefore);
+  assert.deepEqual(originBefore, []);
+  assert.deepEqual(app.store.all("SELECT * FROM deliveries"), []);
+  assert.equal(faux.state.callCount, 1);
+  // The execution request stays the scheduled turn of the run conversation.
+  assert.equal(app.scheduledTurn(run), true);
+
+  held.release();
+  await waitFor(() => assert.equal(get().state, "ready_for_review"));
+  assert.equal(faux.state.callCount, 2);
+  assert.ok(transcripts[0]?.includes(message.trim()));
+  assert.deepEqual(
+    requests(origin).map((row) => row.source),
+    ["system"],
+    "only the terminal notice reaches the origin",
+  );
+});
+
+test("steer is refused outside running and names the current state", async (t) => {
+  const { app, origin, task, get, calls, requests } = await steerFixture(t);
+  const running = get();
+  for (const state of [
+    "queued",
+    "ready_for_review",
+    "done",
+    "interrupted",
+    "cancelled",
+  ]) {
+    const other = app.durableTasks.create(origin, `Goal in ${state}`);
+    app.store.run(
+      "UPDATE durable_tasks SET state=? WHERE id=?",
+      state,
+      other.id,
+    );
+    const row = app.durableTasks.get(origin, other.id)!;
+    const refused = await callDurableTask(app, origin, 8, {
+      action: "steer",
+      id: row.id,
+      message: "Change course",
+    });
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, new RegExp(`\\b${state}\\b`));
+    assert.match(refused.text, /\brunning\b/);
+    assert.deepEqual(app.durableTasks.get(origin, row.id), row);
+  }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(requests(origin), []);
+  assert.deepEqual(get(), running);
+  assert.equal(task.id, running.id);
+});
+
+test("steer cannot see a running task from another conversation", async (t) => {
+  const { app, task, get, run, calls, requests } = await steerFixture(t);
+  const foreign = await app.create();
+  const before = get();
+  const runBefore = requests(run);
+  const refused = await callDurableTask(app, foreign, 9, {
+    action: "steer",
+    id: task.id,
+    message: "Foreign steer",
+  });
+  assert.equal(refused.isError, true, refused.text);
+  assert.equal(refused.text, "Durable task not found");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(requests(foreign), []);
+  assert.deepEqual(requests(run), runBefore);
+  assert.deepEqual(get(), before);
+});
+
+test("a replayed steer deduplicates and two messages in one attempt both submit", async (t) => {
+  const { app, origin, task, run, calls, requests } = await steerFixture(t);
+  const runBefore = requests(run).length;
+  const steer = { action: "steer", id: task.id, message: "First note" };
+  const first = await callDurableTask(app, origin, 10, steer);
+  const replay = await callDurableTask(app, origin, 10, {
+    ...steer,
+    message: " First note\n",
+  });
+  assert.equal(first.isError, false, first.text);
+  assert.equal(replay.isError, false, replay.text);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]![1], calls[1]![1]);
+  assert.equal(requests(run).length, runBefore + 1);
+  const second = await callDurableTask(app, origin, 11, {
+    ...steer,
+    message: "Second note",
+  });
+  assert.equal(second.isError, false, second.text);
+  assert.equal(calls.length, 3);
+  assert.notEqual(calls[2]![1], calls[0]![1]);
+  const steers = requests(run).filter((row) => row.source === "task-steer");
+  assert.deepEqual(
+    steers.map((row) => row.text),
+    ["First note", "Second note"],
+  );
+  assert.equal(new Set(steers.map((row) => row.submissionId)).size, 2);
+  assert.deepEqual(requests(origin), []);
+});
+
+test("steer leaves the task row unchanged", async (t) => {
+  const { app, origin, task, get, run, calls, setTime } = await steerFixture(t);
+  app.store.run(
+    "UPDATE durable_tasks SET nextRun=?, lastError=? WHERE id=?",
+    epoch + 5,
+    "earlier error",
+    task.id,
+  );
+  const before = get();
+  const conversations = app.store.all("SELECT id FROM conversations");
+  setTime(epoch + 1_000);
+  const result = await callDurableTask(app, origin, 12, {
+    action: "steer",
+    id: task.id,
+    message: "Keep going",
+  });
+  assert.equal(result.isError, false, result.text);
+  assert.deepEqual(JSON.parse(result.text), { id: task.id, state: "running" });
+  assert.deepEqual(
+    calls.map(([conversationId, , text]) => [conversationId, text]),
+    [[run, "Keep going"]],
+  );
+  const after = get();
+  assert.deepEqual(after, before);
+  assert.equal(after.state, "running");
+  assert.equal(after.attempts, 1);
+  assert.equal(after.deadlineAt, epoch + 900_000);
+  assert.equal(after.nextRun, epoch + 5);
+  assert.equal(after.lastError, "earlier error");
+  assert.equal(after.updatedAt, before.updatedAt);
+  assertNoArtifact(after);
+  assert.deepEqual(
+    app.store.all("SELECT id FROM conversations"),
+    conversations,
+  );
+});
+
+test("steer validates the message before submitting", async (t) => {
+  const { app, origin, task, get, run, calls, requests } =
+    await steerFixture(t);
+  const before = get();
+  const runBefore = requests(run);
+  const steer = { action: "steer", id: task.id };
+  for (const args of [
+    steer,
+    { ...steer, message: "" },
+    { ...steer, message: " \n\t" },
+    { ...steer, message: "x".repeat(4001) },
+  ]) {
+    const refused = await callDurableTask(app, origin, 13, args);
+    assert.equal(refused.isError, true, refused.text);
+    assert.match(refused.text, /message/i);
+  }
+  const missingId = await callDurableTask(app, origin, 14, {
+    action: "steer",
+    message: "No id",
+  });
+  assert.equal(missingId.isError, true, missingId.text);
+  assert.match(missingId.text, /id/i);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(requests(run), runBefore);
+  assert.deepEqual(get(), before);
+
+  const bounded = await callDurableTask(app, origin, 15, {
+    ...steer,
+    message: "x".repeat(4000),
+  });
+  assert.equal(bounded.isError, false, bounded.text);
+  assert.equal(calls.length, 1);
+});
+
+test("T7: steer into a run that has already answered is refused as not running and starts no run", async (t) => {
+  const { app, faux, held, origin, task, get, run, calls, inputs, requests } =
+    await steerFixture(t);
+  held.release();
+  await waitFor(() => assert.equal(get().state, "ready_for_review"));
+  await (await app.conversation(run)).waitForIdle(context);
+  // The race window: the run answered, but the row has not left running yet.
+  app.store.run("UPDATE durable_tasks SET state='running' WHERE id=?", task.id);
+  const before = get();
+  const callCount = faux.state.callCount;
+  const runBefore = requests(run);
+  const originBefore = requests(origin);
+  const entriesBefore = (await app.snapshot(run)).view.entries.length;
+
+  const refused = await callDurableTask(app, origin, 16, {
+    action: "steer",
+    id: task.id,
+    message: "Too late",
+  });
+  assert.equal(refused.isError, true, refused.text);
+  assert.match(refused.text, /\brunning\b/);
+  assert.match(refused.text, /finished/);
+  assert.match(refused.text, /not delivered/);
+  assert.deepEqual(
+    inputs.map(({ conversationId, draft }) => [
+      conversationId,
+      draft.type === "input" && draft.whenIdle,
+    ]),
+    [[run, "reject"]],
+  );
+  assert.equal(calls.length, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(app.isTurnBusy(run), false);
+  assert.equal(faux.state.callCount, callCount);
+  assert.equal((await app.snapshot(run)).view.entries.length, entriesBefore);
+  const { submissions } = await app.harness.inspect(context);
+  assert.deepEqual(
+    submissions.filter(({ conversationId }) => String(conversationId) === run),
+    [],
+  );
+  assert.deepEqual(get(), before);
+  // The refused steer is settled, so boot cannot replay it into a new run.
+  assert.deepEqual(
+    requests(run)
+      .slice(runBefore.length)
+      .map((row) => [row.source, row.text, row.status, row.submissionId]),
+    [["task-steer", "Too late", "unanswered", null]],
+  );
+  assert.deepEqual(requests(origin), originBefore);
+});
+
+test("T8: boot withdraws pending task-steer requests and never places them", async (t) => {
+  const held = heldResponse();
+  const run = await executionFixture(t, [held.response]);
+  let app: Runtime | undefined = run.app;
+  const steerRows = (store: Store, conversationId: string) =>
+    store
+      .all<{ text: string; status: string }>(
+        "SELECT text,status FROM requests WHERE conversationId=? AND source='task-steer' ORDER BY rowid",
+        conversationId,
+      )
+      .map((row) => [row.text, row.status]);
+  try {
+    const origin = await app.create();
+    const task = app.durableTasks.create(origin, "Steer then restart");
+    await app.tasks.tick();
+    await waitFor(() => assert.equal(run.faux.state.callCount, 1));
+    const runId = app.durableTasks.get(origin, task.id)!.runConversationId!;
+    assert.ok(runId);
+    const steered = await callDurableTask(app, origin, 17, {
+      action: "steer",
+      id: task.id,
+      message: "Admitted steer",
+    });
+    assert.equal(steered.isError, false, steered.text);
+    assert.ok(
+      !JSON.stringify((await app.snapshot(runId)).view.entries).includes(
+        "Admitted steer",
+      ),
+      "the steer is still queued behind the held model call",
+    );
+    await app.close();
+    app = undefined;
+    const db = new Store(run.options.dir);
+    try {
+      // A crash between the requests insert and the harness admission leaves a row with no submission.
+      db.run(
+        "INSERT INTO requests(conversationId,requestId,text,source,chat) VALUES (?,?,?,'task-steer',NULL)",
+        runId,
+        `durable-task-steer:${"0".repeat(64)}`,
+        "Orphan steer",
+      );
+      assert.deepEqual(steerRows(db, runId), [
+        ["Admitted steer", "pending"],
+        ["Orphan steer", "pending"],
+      ]);
+    } finally {
+      db.close();
+    }
+    run.faux.appendResponses([
+      fauxAssistantMessage("Unexpected steer run"),
+      fauxAssistantMessage("Unexpected steer run"),
+    ]);
+
+    app = await Runtime.open(run.options);
+    assert.equal(app.durableTasks.get(origin, task.id)?.state, "interrupted");
+    assert.deepEqual(steerRows(app.store, runId), [
+      ["Admitted steer", "unanswered"],
+      ["Orphan steer", "unanswered"],
+    ]);
+    // The execution submission is the existing boot path's (stopped through abortTask).
+    const { submissions } = await app.harness.inspect(context);
+    assert.deepEqual(
+      submissions.filter(
+        ({ conversationId, requestId }) =>
+          String(conversationId) === runId &&
+          requestId?.startsWith("durable-task-steer:"),
+      ),
+      [],
+    );
+    await app.tasks.tick();
+    await (await app.conversation(runId)).waitForIdle(context);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(run.faux.state.callCount, 1);
+    const entries = JSON.stringify((await app.snapshot(runId)).view.entries);
+    assert.ok(!entries.includes("Admitted steer"));
+    assert.ok(!entries.includes("Orphan steer"));
+    assert.equal(app.durableTasks.get(origin, task.id)?.state, "interrupted");
+  } finally {
+    held.release();
+    await app?.close();
+  }
+});
+
+test("T9: a chat message in an idle conversation still starts its own run, with no whenIdle", async (t) => {
+  const { app, faux } = await executionFixture(t, [
+    fauxAssistantMessage("Web answer"),
+    fauxAssistantMessage("WhatsApp answer"),
+  ]);
+  t.after(() => app.close());
+  const inputs = recordInputs(app);
+  const web = await app.create();
+  await app.submit(web, "chat-web-1", "Hello from the web");
+  await waitFor(() => assert.equal(faux.state.callCount, 1));
+  await (await app.conversation(web)).waitForIdle(context);
+  // A channel message reaches submit with an explicit steer=true from admit.
+  const chat = await app.create();
+  bindOrigin(app, chat);
+  await app.admit(chat, "chat-whatsapp-1", "Hello from WhatsApp", {
+    source: "whatsapp",
+    user: "42",
+    chat: "42",
+  });
+  await waitFor(() => assert.equal(faux.state.callCount, 2));
+  await (await app.conversation(chat)).waitForIdle(context);
+  assert.deepEqual(
+    inputs.map(({ conversationId, draft }) => [
+      conversationId,
+      draft.type === "input" && draft.whenBusy,
+      "whenIdle" in draft,
+    ]),
+    [
+      [web, "steer", false],
+      [chat, "steer", false],
+    ],
+  );
+  for (const [id, answer] of [
+    [web, "Web answer"],
+    [chat, "WhatsApp answer"],
+  ] as const)
+    assert.ok(
+      JSON.stringify((await app.snapshot(id)).view.entries).includes(answer),
+    );
+});

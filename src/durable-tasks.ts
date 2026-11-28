@@ -5,7 +5,11 @@ import {
   BACKGROUND_CONTEXT as context,
   withAbortSignal,
 } from "@earendil-works/chord/context";
-import type { Conversation, SubmissionId } from "@earendil-works/pi-durable";
+import {
+  ConversationIdle,
+  type Conversation,
+  type SubmissionId,
+} from "@earendil-works/pi-durable";
 import type { DurableTaskConfig } from "./harness-config.js";
 import { logFailure } from "./log.js";
 import { settleFailureReason, type Runtime } from "./runtime.js";
@@ -49,6 +53,8 @@ const COLUMNS = {
 const MAX_TIMER_MS = 2_147_483_647;
 const BUDGET_TIMEOUT = "budget_timeout";
 const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
+/** Request source of a steer: task input that is not the execution admission. */
+export const DURABLE_TASK_STEER_SOURCE = "task-steer";
 
 type Execution = {
   runtime: Pick<
@@ -73,6 +79,14 @@ type Outcome =
 
 function requestIdFor(task: Pick<DurableTask, "id" | "attempts">) {
   return `durable-task:${task.id}:${task.attempts}`;
+}
+
+/** Same task, attempt and trimmed message: one request; anything else is new input. */
+function steerRequestIdFor(
+  task: Pick<DurableTask, "id" | "attempts">,
+  text: string,
+) {
+  return `durable-task-steer:${hash(JSON.stringify([task.id, task.attempts, text]))}`;
 }
 
 function artifactContent(task: Attempt, finished: number, text: string) {
@@ -280,6 +294,61 @@ export class DurableTasks {
         `Rejection reason must be non-empty and at most ${DURABLE_TASK_REJECTION_REASON_MAX} characters`,
       );
     return this.review(conversationId, id, { reason });
+  }
+
+  /**
+   * Delivers a message into the running task's own conversation as a steer of
+   * its current run. The row and the origin conversation are left untouched.
+   */
+  async steer(conversationId: string, id: string, message: string) {
+    if (
+      typeof message !== "string" ||
+      !message.trim() ||
+      message.length > DURABLE_TASK_GOAL_MAX
+    )
+      throw new DurableTaskError(
+        `Steer message must be non-empty and at most ${DURABLE_TASK_GOAL_MAX} characters`,
+      );
+    const task = this.get(conversationId, id);
+    if (!task) throw new DurableTaskError("Durable task not found");
+    if (task.state !== "running")
+      throw new DurableTaskError(
+        `Durable task is ${task.state}. Steering requires running.`,
+      );
+    const runId = task.runConversationId;
+    if (!this.execution || !runId || runId === task.conversationId)
+      throw new DurableTaskError(
+        "Durable task has no execution conversation yet",
+      );
+    const text = message.trim();
+    const requestId = steerRequestIdFor(task, text);
+    try {
+      await this.execution.runtime.submit(
+        runId,
+        requestId,
+        text,
+        DURABLE_TASK_STEER_SOURCE,
+        null,
+        undefined,
+        undefined,
+        true,
+      );
+    } catch (error) {
+      if (!(error instanceof ConversationIdle)) throw error;
+      // The run answered before the row left running. The harness wrote nothing;
+      // settle the request row too, so boot never replays it into a new run.
+      this.store.run(
+        `UPDATE requests SET status='unanswered'
+         WHERE conversationId=? AND requestId=? AND source=? AND status='pending'`,
+        runId,
+        requestId,
+        DURABLE_TASK_STEER_SOURCE,
+      );
+      throw new DurableTaskError(
+        "Durable task run has already finished. Steering requires running. The message was not delivered.",
+      );
+    }
+    return task;
   }
 
   private taskForReview(
@@ -602,17 +671,36 @@ export class DurableTasks {
        WHERE state='interrupted' AND lastError IN ('restart', 'budget_timeout')
          AND runConversationId<>conversationId`,
     );
-    if (!tasks.length) return;
+    // A steer only joins the run it was sent to, and no run survives a restart:
+    // the boot scan has interrupted every running task. Withdraw each pending
+    // steer here, so the boot loop over pending requests never places it.
+    const steers = this.store.all<{
+      conversationId: string;
+      requestId: string;
+    }>(
+      "SELECT conversationId, requestId FROM requests WHERE source=? AND status='pending'",
+      DURABLE_TASK_STEER_SOURCE,
+    );
+    if (!tasks.length && !steers.length) return;
     const { harness } = this.execution.runtime;
     const { tasks: live, submissions } = await harness.inspect(context);
     const runs = new Map(
       tasks.map((task) => [task.runConversationId, requestIdFor(task)]),
     );
+    const steered = new Set(
+      steers.map((row) => JSON.stringify([row.conversationId, row.requestId])),
+    );
     // Mark and withdraw before anything can enable the harness scheduler.
     for (const submission of submissions)
       if (
         submission.requestId &&
-        runs.get(String(submission.conversationId)) === submission.requestId
+        (runs.get(String(submission.conversationId)) === submission.requestId ||
+          steered.has(
+            JSON.stringify([
+              String(submission.conversationId),
+              submission.requestId,
+            ]),
+          ))
       )
         await harness.abortSubmission(
           submission.id,
@@ -628,6 +716,14 @@ export class DurableTasks {
          WHERE conversationId=? AND requestId=? AND source='task' AND status='pending'`,
         runId,
         requestId,
+      );
+    for (const { conversationId, requestId } of steers)
+      this.store.run(
+        `UPDATE requests SET status='unanswered'
+         WHERE conversationId=? AND requestId=? AND source=? AND status='pending'`,
+        conversationId,
+        requestId,
+        DURABLE_TASK_STEER_SOURCE,
       );
   }
 }
