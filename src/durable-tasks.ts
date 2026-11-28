@@ -193,6 +193,10 @@ function shortId(id: string) {
   return id.slice(0, 8);
 }
 
+export function durableTaskJobPrefix(id: string) {
+  return `Tarefa ${shortId(id)} · `;
+}
+
 /** Kilobytes with one decimal and a comma separator: 1126 -> "1,1 KB". */
 function artifactSizeText(bytes: number) {
   return `${(bytes / 1024).toFixed(1).replace(".", ",")} KB`;

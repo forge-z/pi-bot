@@ -224,7 +224,7 @@ const ASK_USER_POLICY =
   "When a real decision is needed (choose A or B, or approve a draft), call ask_user with the question and at most six short choices, then stop. Do not call it for an ordinary reply. It is not an MCP approval card.";
 /** durable_task is registered on every gateway, so both policy bodies carry this. */
 const DURABLE_TASK_POLICY =
-  "Drive durable tasks from what the user says in ordinary speech. When a request is long, or the user says it can run in the background, call durable_task create with the user's goal instead of doing the work in this turn. When the user asks how a task is going, call durable_task list or show. durable_task show returns the artifact text, so when the user asks for the result, call show and repeat the content in your reply instead of describing the file. When the user says something addressed to a task that is already running, call durable_task steer with their words. When the user accepts a task under review, call durable_task accept with its current artifact version; when they reject it, call durable_task reject with their reason. If you do not know which task or version they mean, call list or show first. Never ask the user to type tool syntax or an argument name, and never tell the user a `durable_task action=...` command to paste.";
+  "Drive durable tasks from what the user says in ordinary speech. When a request is long, or the user says it can run in the background, call durable_task create with the user's goal instead of doing the work in this turn. When the user asks how a task is going, call durable_task list or show. durable_task show returns the artifact text, so when the user asks for the result, call show and repeat the content in your reply instead of describing the file. When the user says something addressed to a task that is already running, call durable_task steer with their words. When the user accepts a task under review, call durable_task accept with its current artifact version; when they reject it, call durable_task reject with their reason. If you do not know which task or version they mean, call list or show first. Never ask the user to type tool syntax or an argument name, and never tell the user a `durable_task action=...` command to paste. A durable task may dispatch a code job with writes=true. The approval card and the job result arrive in the chat where the task was created, prefixed with the task id.";
 const POLICY_BODY = `${ASSISTANT_POLICY_BASE} ${DURABLE_TASK_POLICY}`;
 /** Same paragraph the policy section has always used when every MCP tool is direct. */
 export const ASSISTANT_POLICY = `${POLICY_BODY} ${ASK_USER_POLICY}`;
@@ -3503,6 +3503,8 @@ export class Runtime {
           requestId,
         );
         let answer = "";
+        const jobPrefix =
+          source === "job" ? this.pendingJobs.deliveryPrefix(requestId) : "";
         // One place for the reply route: the mirrored topic when the request came in
         // through Telegram, otherwise the origin chat.
         const reply = (text: string) => {
@@ -3538,7 +3540,7 @@ export class Runtime {
               this.store.queueTelegram(
                 key,
                 route.chat,
-                text,
+                jobPrefix + text,
                 3500,
                 conversationId,
                 route.messageThreadId,
@@ -3550,7 +3552,7 @@ export class Runtime {
                   this.store,
                   key,
                   bound.chatId,
-                  text,
+                  jobPrefix + text,
                   conversationId,
                 );
             }
@@ -3595,7 +3597,7 @@ export class Runtime {
               conversationId,
               requestId,
               "completion",
-              withReceipt(answer),
+              jobPrefix + withReceipt(answer),
             );
           if (
             answer &&
@@ -3933,6 +3935,19 @@ export class Runtime {
     } catch (error) {
       logFailure("Pi-Agent: failed to stop subagents", error);
     }
+  }
+  /** Route traffic from a durable task's private run to the chat that created it. */
+  resolveJobConversation(conversationId: string): {
+    conversationId: string;
+    taskId?: string;
+  } {
+    const task = this.store.get<{ conversationId: string; taskId: string }>(
+      "SELECT conversationId, id AS taskId FROM durable_tasks WHERE runConversationId=?",
+      conversationId,
+    );
+    return task
+      ? { conversationId: task.conversationId, taskId: task.taskId }
+      : { conversationId };
   }
   /** True while the conversation is running an admitted scheduled occurrence. */
   scheduledTurn(conversationId: string) {

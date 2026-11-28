@@ -3,8 +3,12 @@ import { test } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+} from "@earendil-works/pi-ai/providers/faux";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { Runtime } from "../src/runtime.js";
 import { McpGateway } from "../src/mcp.js";
@@ -15,6 +19,9 @@ import {
   sandboxTaskSteer,
 } from "../src/sandbox-code-task.js";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { configureTelegram } from "../src/telegram-polling.js";
+import { queueMcpApprovals } from "../src/telegram-approvals.js";
+import type { Delivery } from "../src/store.js";
 
 function executorCompleted(value: unknown) {
   return {
@@ -78,12 +85,11 @@ async function createFixture(
 ) {
   const dir = await mkdtemp(join(tmpdir(), "pi-sandbox-task-test-"));
   const models = createModels();
-  models.setProvider(
-    fauxProvider({
-      provider: "faux",
-      models: [{ id: "mock-model" }],
-    }).provider,
-  );
+  const faux = fauxProvider({
+    provider: "faux",
+    models: [{ id: "mock-model" }],
+  });
+  models.setProvider(faux.provider);
 
   const calls: {
     server: string;
@@ -139,11 +145,13 @@ async function createFixture(
     dir,
     gateway,
     models,
+    modelId: faux.getModel().id,
     env,
   });
 
   return {
     app,
+    faux,
     dir,
     env,
     calls,
@@ -217,6 +225,76 @@ async function approveJob(app: Runtime, conversationId: string) {
   return result.content?.[0]?.text ?? "";
 }
 
+const APPROVAL_MESSAGE =
+  "Writing requires approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.";
+const DISPATCH_MESSAGE =
+  "The task started in the sandbox. The result will arrive in this topic when it finishes; no follow-up is needed.";
+const SCHEDULED_REFUSAL = "needs approval; not available in scheduled runs";
+
+function markScheduled(app: Runtime, conversationId: string) {
+  app.store.run(
+    "INSERT INTO requests(conversationId,requestId,text,source) VALUES (?,?,'Run job','task')",
+    conversationId,
+    "scheduled-job-test",
+  );
+}
+
+async function taskRun(app: Runtime, origin: string) {
+  const task = app.durableTasks.create(origin, "Run job");
+  const run = await app.create("Durable task");
+  app.store.run(
+    "UPDATE durable_tasks SET state='running',runConversationId=? WHERE id=?",
+    run,
+    task.id,
+  );
+  markScheduled(app, run);
+  assert.equal(app.scheduledTurn(run), true);
+  assert.equal(app.scheduledTurn(origin), false);
+  return { run, prefix: `Tarefa ${task.id.slice(0, 8)} · ` };
+}
+
+async function deliveryTopic(app: Runtime) {
+  configureTelegram(
+    app.store,
+    { token: "synthetic", users: ["42"], chats: ["-100123"] },
+    { id: 123 },
+  );
+  return app.telegramChats.ensure({
+    chat: "-100123",
+    user: "42",
+    messageThreadId: 11,
+  });
+}
+
+async function expectJobDelivery(app: Runtime, origin: string, text: string) {
+  await app.pendingJobs.tick();
+  await (await app.conversation(origin)).waitForIdle(context);
+  const jobRequest = () =>
+    app.store.get<{ status: string }>(
+      "SELECT status FROM requests WHERE conversationId=? AND source='job'",
+      origin,
+    );
+  assert.ok(jobRequest(), "the poller submitted the result to the origin");
+  for (
+    let attempt = 0;
+    attempt < 200 && jobRequest()?.status === "pending";
+    attempt++
+  )
+    await delay(5);
+  assert.equal(jobRequest()?.status, "done");
+  const deliveries = app.store.all<Delivery>(
+    "SELECT * FROM deliveries WHERE id LIKE '%:notify:completion:%'",
+  );
+  assert.deepEqual(
+    deliveries.map(({ chat, messageThreadId, text }) => ({
+      chat,
+      messageThreadId,
+      text,
+    })),
+    [{ chat: "-100123", messageThreadId: 11, text: `${text}\n\n` }],
+  );
+}
+
 test("writes=true waits for approval and dispatches only after accept", async () => {
   const f = await createFixture();
   try {
@@ -240,6 +318,11 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     };
     assert.equal(output.status, "approval_pending");
     assert.match(output.requestId ?? "", /^exec_local_/);
+    assert.deepEqual(output, {
+      status: "approval_pending",
+      requestId: output.requestId,
+      message: APPROVAL_MESSAGE,
+    });
     assert.equal(launched(f.calls).length, 0);
     assert.equal(jobCount(f.app, convId), 0);
     const interaction = f.app.mcpCalls!.interactions(convId)[0]!;
@@ -260,6 +343,10 @@ test("writes=true waits for approval and dispatches only after accept", async ()
       0,
     );
     const message = payload.elicitation.message;
+    assert.equal(
+      message,
+      "Code task with write access\nrepo: example/app\nagent: agy\nbranch: feature/x\nprompt: abra um PR [link] com o parser",
+    );
     assert.match(message, /example\/app/);
     assert.match(message, /agy/);
     assert.match(message, /feature\/x/);
@@ -271,6 +358,11 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     };
     assert.equal(dispatched.status, "dispatched");
     assert.match(dispatched.jobId, /^cj-[a-z0-9-]+$/);
+    assert.deepEqual(dispatched, {
+      status: "dispatched",
+      jobId: dispatched.jobId,
+      message: DISPATCH_MESSAGE,
+    });
     assert.equal(f.calls[0]?.server, "executor");
     assert.equal(f.calls[0]?.tool, "execute");
     const execInput = JSON.parse(
@@ -300,6 +392,117 @@ test("writes=true waits for approval and dispatches only after accept", async ()
     );
     assert.equal(row?.run_id, dispatched.jobId);
     assert.equal(row?.tool, "internal.instabox.codeTask");
+  } finally {
+    await f.close();
+  }
+});
+
+test("writes=true in a normal scheduled conversation still refuses approval", async () => {
+  const f = await createFixture();
+  try {
+    const origin = await f.app.create("Scheduled write");
+    markScheduled(f.app, origin);
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const result = await tool.execute(
+      { repo: "example/app", agent: "pi", prompt: "Run job", writes: true },
+      { conversationId: origin } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(result.isError, true);
+    assert.equal(getText(result), SCHEDULED_REFUSAL);
+    assert.equal(f.app.mcpCalls!.interactions(origin).length, 0);
+    assert.equal(f.calls.length, 0);
+    assert.equal(jobCount(f.app, origin), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an Executor approval outcome still refuses if a normal conversation became scheduled", async () => {
+  const f = await createFixture();
+  try {
+    const origin = await f.app.create("Scheduled during dispatch");
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const pending = await tool.execute(
+      { repo: "example/app", agent: "pi", prompt: "Run job", writes: true },
+      { conversationId: origin } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(JSON.parse(getText(pending)).status, "approval_pending");
+    markScheduled(f.app, origin);
+    f.setCallDirectHandler(async () => ({
+      status: "approval-required",
+      requestId: "apr_executor_test",
+    }));
+    assert.equal(await approveJob(f.app, origin), SCHEDULED_REFUSAL);
+    assert.equal(f.app.mcpCalls!.interactions(origin).length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a durable write job queues the approval card and result in the task's origin topic", async () => {
+  const f = await createFixture();
+  try {
+    const origin = await deliveryTopic(f.app);
+    const { run, prefix } = await taskRun(f.app, origin);
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const pending = await tool.execute(
+      { repo: "example/app", agent: "pi", prompt: "Run job", writes: true },
+      { conversationId: run } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(pending.isError, undefined, getText(pending));
+    const receipt = JSON.parse(getText(pending));
+    assert.equal(receipt.status, "approval_pending");
+    assert.equal(receipt.message, prefix + APPROVAL_MESSAGE);
+    assert.equal(f.app.mcpCalls!.interactions(run).length, 0);
+    assert.equal(launched(f.calls).length, 0);
+    const [interaction] = f.app.mcpCalls!.interactions(origin);
+    assert.ok(interaction);
+    const preview = `${prefix}Code task with write access\nrepo: example/app\nagent: pi\nbranch: (job default)\nprompt: Run job`;
+    assert.equal(JSON.parse(interaction.payload).elicitation.message, preview);
+    queueMcpApprovals(f.app);
+    const card = f.app.store.get<Delivery>(
+      "SELECT * FROM deliveries WHERE id LIKE ?",
+      `%${interaction.id}%`,
+    );
+    assert.equal(card?.messageThreadId, 11);
+    assert.ok(card?.text.includes(preview));
+    assert.match(
+      f.app.store.get<{ value: string }>(
+        "SELECT value FROM meta WHERE key=?",
+        `telegram:markup:${card.id}`,
+      )?.value ?? "",
+      /"text":"Approve"/,
+    );
+    assert.equal(jobCount(f.app, origin), 0);
+
+    const dispatched = JSON.parse(await approveJob(f.app, origin));
+    assert.equal(dispatched.status, "dispatched");
+    assert.equal(dispatched.message, prefix + DISPATCH_MESSAGE);
+    assert.equal(jobCount(f.app, origin), 1);
+    assert.equal(jobCount(f.app, run), 0);
+
+    f.setCallDirectHandler(async () =>
+      executorCompleted({
+        path: `/data/home/jobs/${dispatched.jobId}/status.json`,
+        type: "file",
+        content: JSON.stringify({ state: "DONE", result: "Patch ready." }),
+      }),
+    );
+    f.faux.setResponses([fauxAssistantMessage("Patch ready.")]);
+    await expectJobDelivery(f.app, origin, `${prefix}Patch ready.`);
+
+    markScheduled(f.app, origin);
+    const refused = await tool.execute(
+      { repo: "example/app", agent: "pi", prompt: "Run again", writes: true },
+      { conversationId: run } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(refused.isError, true);
+    assert.equal(getText(refused), prefix + SCHEDULED_REFUSAL);
+    assert.equal(f.app.mcpCalls!.interactions(origin).length, 1);
   } finally {
     await f.close();
   }
@@ -507,47 +710,47 @@ test("indeterminate timeout keeps the row open for the poller", async () => {
   }
 });
 
+const FREESTYLE_CONFIG = [
+  "async_jobs:",
+  "  freestyle:",
+  "    tool: freestyle.jobs.start",
+  "    server: freestyle",
+  "    dispatch:",
+  "      mode: immediate",
+  "    observe:",
+  "      mode: poll",
+  "      tool: freestyle.jobs.get",
+  "      args:",
+  '        id: "${id}"',
+  "      statePath: state",
+  "      resultPath: result",
+  "sandbox_code_task:",
+  "  tool: sandbox_code_task",
+  "  job: freestyle.jobs.start",
+  "  idPrefix: fs-",
+  "  server: freestyle",
+  "  goal: task",
+  "  requires: []",
+  "  allow: null",
+  "  exec:",
+  "    tool: freestyle.jobs.start",
+  "    args:",
+  "      accountId: null",
+  "      input: null",
+  '      task: "${payload}"',
+  "  parameters:",
+  "    type: object",
+  "    required: [task]",
+  "    properties:",
+  "      task:",
+  "        type: string",
+  "",
+].join("\n");
+
 test("a config file swaps the sandbox without code changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-sandbox-config-"));
   const configPath = join(root, "config.yaml");
-  await writeFile(
-    configPath,
-    [
-      "async_jobs:",
-      "  freestyle:",
-      "    tool: freestyle.jobs.start",
-      "    server: freestyle",
-      "    dispatch:",
-      "      mode: immediate",
-      "    observe:",
-      "      mode: poll",
-      "      tool: freestyle.jobs.get",
-      "      args:",
-      '        id: "${id}"',
-      "      statePath: state",
-      "sandbox_code_task:",
-      "  tool: sandbox_code_task",
-      "  job: freestyle.jobs.start",
-      "  idPrefix: fs-",
-      "  server: freestyle",
-      "  goal: task",
-      "  requires: []",
-      "  allow: null",
-      "  exec:",
-      "    tool: freestyle.jobs.start",
-      "    args:",
-      "      accountId: null",
-      "      input: null",
-      '      task: "${payload}"',
-      "  parameters:",
-      "    type: object",
-      "    required: [task]",
-      "    properties:",
-      "      task:",
-      "        type: string",
-      "",
-    ].join("\n"),
-  );
+  await writeFile(configPath, FREESTYLE_CONFIG);
   const f = await createFixture({
     CONFIG_FILE: configPath,
     DATA_DIR: root,
@@ -566,6 +769,11 @@ test("a config file swaps the sandbox without code changes", async () => {
     };
     assert.equal(output.status, "dispatched");
     assert.match(output.jobId, /^fs-/);
+    assert.deepEqual(output, {
+      jobId: output.jobId,
+      status: "dispatched",
+      message: DISPATCH_MESSAGE,
+    });
     assert.deepEqual(f.calls[0], {
       server: "freestyle",
       tool: "freestyle.jobs.start",
@@ -579,6 +787,79 @@ test("a config file swaps the sandbox without code changes", async () => {
   } finally {
     await f.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a durable read-only job registers and reports in the task's origin topic", async () => {
+  const f = await createFixture({}, FREESTYLE_CONFIG);
+  try {
+    const origin = await deliveryTopic(f.app);
+    const { run, prefix } = await taskRun(f.app, origin);
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const result = await tool.execute(
+      { task: "Review the parser", writes: false },
+      { conversationId: run } as unknown as ToolExecutionApi,
+      context,
+    );
+    const dispatched = JSON.parse(getText(result));
+    assert.equal(dispatched.status, "dispatched");
+    assert.equal(dispatched.message, prefix + DISPATCH_MESSAGE);
+    assert.equal(jobCount(f.app, origin), 1);
+    assert.equal(jobCount(f.app, run), 0);
+    assert.equal(f.app.mcpCalls!.interactions(origin).length, 0);
+
+    f.setCallDirectHandler(async () =>
+      executorCompleted({
+        run_id: dispatched.jobId,
+        state: "DONE",
+        result: "Review ready.",
+      }),
+    );
+    f.faux.setResponses([fauxAssistantMessage("Review ready.")]);
+    await expectJobDelivery(f.app, origin, `${prefix}Review ready.`);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an Executor approval outcome for a durable job uses the origin topic and task prefix", async () => {
+  const f = await createFixture({}, FREESTYLE_CONFIG);
+  try {
+    const origin = await deliveryTopic(f.app);
+    const { run, prefix } = await taskRun(f.app, origin);
+    f.setCallDirectHandler(async () => ({
+      status: "approval-required",
+      requestId: "apr_executor_task_test",
+      executionId: "exec_task_test",
+      message: "Confirm this sandbox action.",
+    }));
+    const tool = createSandboxCodeTaskTool(f.app, f.env)!;
+    const result = await tool.execute(
+      { task: "Review the parser" },
+      { conversationId: run } as unknown as ToolExecutionApi,
+      context,
+    );
+    assert.equal(result.isError, undefined, getText(result));
+    const pending = JSON.parse(getText(result));
+    assert.equal(pending.status, "approval_pending");
+    assert.equal(pending.requestId, "apr_executor_task_test");
+    assert.equal(
+      pending.message,
+      `${prefix}The call is paused for approval. The task has not started. Approve it using the card in this conversation. Do not repeat the request or say the job started.`,
+    );
+    assert.equal(jobCount(f.app, origin), 1);
+    assert.equal(jobCount(f.app, run), 0);
+    assert.equal(f.app.mcpCalls!.interactions(run).length, 0);
+    const [interaction] = f.app.mcpCalls!.interactions(origin);
+    assert.ok(interaction);
+    const payload = JSON.parse(interaction.payload);
+    assert.equal(payload.executionId, "exec_task_test");
+    assert.equal(
+      payload.elicitation.message,
+      `${prefix}Confirm this sandbox action.`,
+    );
+  } finally {
+    await f.close();
   }
 });
 
