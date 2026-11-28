@@ -2340,3 +2340,235 @@ test("no user-facing durable task line names tool syntax", async (t) => {
     for (const word of forbidden)
       assert.ok(!text.includes(word), `${label}: ${text}`);
 });
+
+const RETENTION = 30 * 24 * 60 * 60 * 1000;
+const AFTER_RETENTION = epoch + RETENTION + 1;
+
+/**
+ * Puts a task into `state`, last updated at `at`, with two attempt files under
+ * its own artifact directory: pruning removes the directory, not one attempt.
+ */
+async function agedTask(
+  app: Runtime,
+  dir: string,
+  origin: string,
+  state: DurableTask["state"],
+  at = epoch,
+) {
+  const task = app.durableTasks.create(origin, `Aged ${state}`);
+  await mkdir(artifactDir(dir, task.id), { recursive: true });
+  await writeFile(join(artifactDir(dir, task.id), "1.md"), "first");
+  await writeFile(join(artifactDir(dir, task.id), "2.md"), "second");
+  app.store.run(
+    `UPDATE durable_tasks SET state=?, updatedAt=?, artifactPath=?,
+       artifactSha256=?, artifactBytes=6, artifactVersion=2 WHERE id=?`,
+    state,
+    at,
+    join(artifactDir(dir, task.id), "2.md"),
+    "c".repeat(64),
+    task.id,
+  );
+  return app.durableTasks.get(origin, task.id)!;
+}
+
+async function exists(path: string) {
+  return stat(path).then(
+    () => true,
+    () => false,
+  );
+}
+
+test("X1: a done task older than 30 days loses its row and its whole artifact directory", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const task = await agedTask(app, dir, origin, "done");
+  setTime(AFTER_RETENTION);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 1,
+    skipped: 0,
+    failed: 0,
+  });
+  assert.equal(app.durableTasks.get(origin, task.id), undefined);
+  assert.equal(await exists(artifactDir(dir, task.id)), false);
+  assert.equal(await exists(join(dir, "artifacts", "durable")), true);
+});
+
+test("X2: a done task newer than 30 days is kept", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const task = await agedTask(app, dir, origin, "done");
+  setTime(epoch + RETENTION);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 0,
+    skipped: 0,
+    failed: 0,
+  });
+  assert.deepEqual(app.durableTasks.get(origin, task.id), task);
+  assert.deepEqual((await readdir(artifactDir(dir, task.id))).sort(), [
+    "1.md",
+    "2.md",
+  ]);
+});
+
+test("X3: ready_for_review, interrupted, queued and running tasks older than 30 days are kept", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  // The running task also keeps the scheduler from claiming the queued one.
+  const kept = [];
+  for (const state of [
+    "ready_for_review",
+    "interrupted",
+    "queued",
+    "running",
+  ] as const)
+    kept.push(await agedTask(app, dir, origin, state));
+  setTime(AFTER_RETENTION);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 0,
+    skipped: 0,
+    failed: 0,
+  });
+  for (const task of kept) {
+    assert.deepEqual(app.durableTasks.get(origin, task.id), task, task.state);
+    assert.deepEqual(
+      (await readdir(artifactDir(dir, task.id))).sort(),
+      ["1.md", "2.md"],
+      task.state,
+    );
+  }
+});
+
+test("X4: a cancelled task older than 30 days is pruned", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const task = await agedTask(app, dir, origin, "cancelled");
+  setTime(AFTER_RETENTION);
+  assert.equal((await app.durableTasks.tick())?.pruned, 1);
+  assert.equal(app.durableTasks.get(origin, task.id), undefined);
+  assert.equal(await exists(artifactDir(dir, task.id)), false);
+});
+
+test("X5: a done task whose artifact directory is already gone is pruned without throwing", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const task = await agedTask(app, dir, origin, "done");
+  await rm(artifactDir(dir, task.id), { recursive: true });
+  const bare = await agedTask(app, dir, origin, "done");
+  await rm(join(dir, "artifacts"), { recursive: true });
+  setTime(AFTER_RETENTION);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 2,
+    skipped: 0,
+    failed: 0,
+  });
+  assert.equal(app.durableTasks.get(origin, task.id), undefined);
+  assert.equal(app.durableTasks.get(origin, bare.id), undefined);
+});
+
+test("X6: pruning is idempotent: the second tick removes nothing and does not throw", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const pruned = await agedTask(app, dir, origin, "done");
+  const kept = await agedTask(app, dir, origin, "interrupted");
+  setTime(AFTER_RETENTION);
+  assert.equal((await app.durableTasks.tick())?.pruned, 1);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 0,
+    skipped: 0,
+    failed: 0,
+  });
+  assert.equal(app.durableTasks.get(origin, pruned.id), undefined);
+  assert.deepEqual(app.durableTasks.get(origin, kept.id), kept);
+  assert.equal(await exists(artifactDir(dir, kept.id)), true);
+});
+
+test("X7: an artifact path outside the artifacts root is never followed for deletion", async (t) => {
+  const { app, dir, origin, setTime } = await formatFixture(t);
+  const outside = join(dir, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "1.md"), "SEGREDO fora da raiz");
+  const neighbour = await agedTask(app, dir, origin, "interrupted");
+  const escaping = [];
+  for (const path of [
+    join(outside, "1.md"),
+    "outside/1.md",
+    join(dir, "artifacts", "durable", "x", "..", "..", "..", "outside", "1.md"),
+    // Inside the root, but another task's directory.
+    join(artifactDir(dir, neighbour.id), "1.md"),
+  ]) {
+    const task = await agedTask(app, dir, origin, "done");
+    app.store.run(
+      "UPDATE durable_tasks SET artifactPath=? WHERE id=?",
+      path,
+      task.id,
+    );
+    escaping.push(app.durableTasks.get(origin, task.id)!);
+  }
+  // The task's own directory is a symlink that leaves the root.
+  const linked = await agedTask(app, dir, origin, "done");
+  await rm(artifactDir(dir, linked.id), { recursive: true });
+  await symlink(outside, artifactDir(dir, linked.id));
+  escaping.push(linked);
+
+  setTime(AFTER_RETENTION);
+  assert.deepEqual(await app.durableTasks.tick(), {
+    pruned: 0,
+    skipped: 5,
+    failed: 0,
+  });
+  assert.equal(
+    await readFile(join(outside, "1.md"), "utf8"),
+    "SEGREDO fora da raiz",
+  );
+  assert.deepEqual(await readdir(outside), ["1.md"]);
+  assert.deepEqual((await readdir(artifactDir(dir, neighbour.id))).sort(), [
+    "1.md",
+    "2.md",
+  ]);
+  for (const task of escaping)
+    assert.deepEqual(app.durableTasks.get(origin, task.id), task);
+  assert.equal((await app.durableTasks.tick())?.skipped, 5);
+});
+
+test("X8: pruning does not disturb scheduling, and a failing prune leaves the tick intact", async (t) => {
+  const { app, options, setTime } = await executionFixture(t, [
+    fauxAssistantMessage("Finished"),
+    fauxAssistantMessage("Finished again"),
+  ]);
+  try {
+    const origin = await app.create();
+    const old = await agedTask(app, options.dir, origin, "done");
+    const due = app.durableTasks.create(origin, "Due goal");
+    setTime(AFTER_RETENTION);
+    assert.equal((await app.durableTasks.tick())?.pruned, 1);
+    assert.equal(app.durableTasks.get(origin, old.id), undefined);
+    assert.equal(app.durableTasks.get(origin, due.id)?.attempts, 1);
+    await waitFor(() =>
+      assert.equal(
+        app.durableTasks.get(origin, due.id)?.state,
+        "ready_for_review",
+      ),
+    );
+    await settlementAccess(app.durableTasks).settlement;
+
+    // A prune that throws is counted and swallowed; the claim still runs.
+    const second = app.durableTasks.create(origin, "Second due goal");
+    const all = app.store.all.bind(app.store);
+    app.store.all = ((sql: string, ...params: (string | number | null)[]) => {
+      if (sql.includes("'cancelled'")) throw new Error("prune broke");
+      return all(sql, ...params);
+    }) as typeof app.store.all;
+    try {
+      assert.deepEqual(await app.durableTasks.tick(), {
+        pruned: 0,
+        skipped: 0,
+        failed: 1,
+      });
+    } finally {
+      app.store.all = all;
+    }
+    assert.equal(app.durableTasks.get(origin, second.id)?.attempts, 1);
+    await waitFor(() =>
+      assert.equal(
+        app.durableTasks.get(origin, second.id)?.state,
+        "ready_for_review",
+      ),
+    );
+  } finally {
+    await app.close();
+  }
+});
